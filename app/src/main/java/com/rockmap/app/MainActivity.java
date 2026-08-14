@@ -626,7 +626,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView.onStop();
         super.onStop();
     }
-    @Override protected void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
+    @Override public void onLowMemory() { super.onLowMemory(); mapView.onLowMemory(); }
     @Override protected void onSaveInstanceState(Bundle outState) { super.onSaveInstanceState(outState); mapView.onSaveInstanceState(outState); }
     @Override protected void onDestroy() {
         clearUpdateObserver();
