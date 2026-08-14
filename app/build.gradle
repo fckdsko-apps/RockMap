@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
 }
 
-def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha2')
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha3')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
 def dataReleaseTag = 'rockmap-basemap-alpha2-20260722-z14'
@@ -10,6 +10,7 @@ def manifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/release
 def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
 def signingProps = new Properties()
 def signingReady = false
+def generatedOfflineGlyphAssetsDir = layout.buildDirectory.dir('generated/rockmapOfflineGlyphAssets').get().asFile
 
 if (signingDirPath) {
     def signingPropsFile = file("${signingDirPath}/signing.properties")
@@ -38,6 +39,12 @@ android {
 
     buildFeatures {
         buildConfig true
+    }
+
+    sourceSets {
+        main {
+            assets.srcDir generatedOfflineGlyphAssetsDir
+        }
     }
 
     signingConfigs {
@@ -85,3 +92,17 @@ dependencies {
 
     testImplementation 'junit:junit:4.13.2'
 }
+
+tasks.register('prepareOfflineGlyphs', Exec) {
+    description = 'Fetch and verify pinned offline glyph PBFs for Alpha 3 labels.'
+    group = 'build setup'
+    inputs.file(rootProject.file('scripts/prepare_offline_glyphs.py'))
+    outputs.dir(generatedOfflineGlyphAssetsDir)
+    commandLine 'python3', rootProject.file('scripts/prepare_offline_glyphs.py').absolutePath,
+            '--output', generatedOfflineGlyphAssetsDir.absolutePath
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('prepareOfflineGlyphs')
+}
+

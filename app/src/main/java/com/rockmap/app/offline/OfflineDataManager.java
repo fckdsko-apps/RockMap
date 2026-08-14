@@ -27,6 +27,7 @@ public final class OfflineDataManager {
     private static final String BASE_PLACEHOLDER = "${ROCKMAP_BASE_URI}";
     private static final String LAND_PLACEHOLDER = "${ROCKMAP_LAND_URI}";
     private static final String CLAIMS_PLACEHOLDER = "${ROCKMAP_CLAIMS_URI}";
+    private static final String BASEMAP_LABEL_STYLE_ASSET = "rockmap_basemap_label_style_alpha3.json";
 
     private final Context context;
     private final File mapsDir;
@@ -113,13 +114,26 @@ public final class OfflineDataManager {
             throw new IOException("Active map snapshot is incomplete.");
         }
 
-        File styleFile = getActiveFile("style");
         File baseFile = getActiveFile("base");
-        if (styleFile == null || baseFile == null) {
-            throw new IOException("Active map snapshot is missing its style or basemap.");
+        if (baseFile == null) {
+            throw new IOException("Active map snapshot is missing its basemap.");
         }
 
-        String template = readUtf8(styleFile, 8_000_000);
+        // Alpha 3 deliberately reuses the already-verified Alpha 2 PMTiles bytes while
+        // supplying the label style and glyph resources from the APK itself. This avoids
+        // a second ~246 MB map download merely to add cartographic labels. Published
+        // snapshots continue to use their downloaded style as part of the full data contract.
+        String template;
+        if (manifest.isBasemapTest()) {
+            template = readAssetUtf8(BASEMAP_LABEL_STYLE_ASSET, 8_000_000);
+        } else {
+            File styleFile = getActiveFile("style");
+            if (styleFile == null) {
+                throw new IOException("Published map snapshot is missing its style.");
+            }
+            template = readUtf8(styleFile, 8_000_000);
+        }
+
         requirePlaceholder(template, BASE_PLACEHOLDER);
         String rendered = template.replace(BASE_PLACEHOLDER, pmtilesUri(baseFile));
 
@@ -181,10 +195,10 @@ public final class OfflineDataManager {
         }
 
         if (active.isBasemapTest()) {
-            return "OFFLINE BASEMAP: TEST PACK — NOT VERIFIED FOR NAVIGATION"
+            return "OFFLINE BASEMAP + LABELS: TEST — NOT VERIFIED FOR NAVIGATION"
                     + "\nLand status: unavailable"
                     + "\nMining claims: unavailable"
-                    + "\nLabels: not included yet"
+                    + "\nLabels: included offline (Alpha 3 test)"
                     + "\nPack: " + active.pack
                     + "\nVersion: " + active.version
                     + "\nPublished: " + active.publishedAt
@@ -222,6 +236,21 @@ public final class OfflineDataManager {
             throw new IllegalArgumentException("Unsafe map filename");
         }
         return new File(mapsDir, safeFileName);
+    }
+
+    private String readAssetUtf8(String assetName, int maxBytes) throws IOException {
+        try (InputStream input = context.getAssets().open(assetName);
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[16 * 1024];
+            int read;
+            int total = 0;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > maxBytes) throw new IOException("Bundled map style exceeded size limit.");
+                output.write(buffer, 0, read);
+            }
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
+        }
     }
 
     public static String readUtf8(File file, int maxBytes) throws IOException {

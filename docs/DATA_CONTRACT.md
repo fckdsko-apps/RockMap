@@ -2,17 +2,19 @@
 
 RockMap deliberately separates downloadable map data from user waypoints. The Android app never consumes BLM or Protomaps field names directly. The GitHub data-building workflow will normalize upstream GIS data to this stable contract.
 
-## Field-safety status for alpha2
+## Field-safety status for alpha3
 
-`0.1.0-alpha2` adds support for a real Colorado **basemap test pack** while deliberately keeping the map in the red/unverified state. A manifest with `status: basemap_test` may contain only `style` + `base`; land status, mining claims, and labels are treated as unavailable and the UI must say so. The test style is fully local after download and may not contain runtime HTTP/HTTPS dependencies.
+`0.1.0-alpha3` reuses the real Colorado **basemap test pack** that passed Alpha 2 device testing while deliberately keeping the map in the red/unverified state. The existing manifest remains `status: basemap_test` and continues to describe the downloadable `style` + `base` snapshot. For Alpha 3, the APK deliberately overrides the test-pack style at runtime with a bundled label style and bundled glyph PBFs while reusing the same SHA-256-verified local `base` file. Land status and mining claims remain unavailable and the UI must say so.
 
-A `basemap_test` pack is for validating Colorado coverage, PMTiles rendering, roads, paths, water, GPS/waypoint alignment, and airplane-mode behavior. It is **not field-safe navigation data** and must never turn the safety banner green.
+A `basemap_test` pack is for validating Colorado coverage, PMTiles rendering, roads, paths, water, labels, GPS/waypoint alignment, and airplane-mode behavior. It is **not field-safe navigation data** and must never turn the safety banner green.
 
-Do not publish a manifest with `status: published` until the complete Colorado style/data passes the airplane-mode/device tests, including land status, claims, and offline labels/glyphs. MapLibre Native Android does not permit us to assume system-font fallback for ordinary style glyphs, so offline glyph handling must be proven on the phone before the map is called field-safe.
+Alpha 3's runtime basemap-test style and glyph URL are APK-local (`asset://`) and may not contain runtime HTTP/HTTPS dependencies. The downloaded Alpha 2 style remains part of the immutable data snapshot for compatibility/rollback but is not the active Alpha 3 basemap-test rendering style.
+
+Do not publish a manifest with `status: published` until the complete Colorado style/data passes the airplane-mode/device tests, including land status, claims, and offline labels/glyphs. Offline glyph handling must be proven on the phone before the map is called field-safe.
 
 ### Basemap-test manifest
 
-A `basemap_test` manifest uses the same schema and verification rules as a published snapshot but requires only `style` and `base`. The style template must contain `${ROCKMAP_BASE_URI}` and must not contain `${ROCKMAP_LAND_URI}` or `${ROCKMAP_CLAIMS_URI}`. RockMap renders it with a persistent red warning and disables land/claim controls.
+A `basemap_test` manifest uses the same schema and verification rules as a published snapshot but requires only `style` and `base`. The downloaded style template must contain `${ROCKMAP_BASE_URI}` and must not contain `${ROCKMAP_LAND_URI}` or `${ROCKMAP_CLAIMS_URI}`. Alpha 3 may replace that test rendering template with a versioned APK-bundled style, but the bundled style must use the same `${ROCKMAP_BASE_URI}` contract, use only local resources, and remain explicitly unverified. RockMap renders it with a persistent red warning and disables land/claim controls.
 
 ## Published manifest
 
@@ -93,6 +95,17 @@ The downloaded style file is a **template**, not a device-specific style. A `bas
 At runtime RockMap substitutes those placeholders in memory with the verified local Android file paths, for example `pmtiles://file:///data/user/0/com.rockmap.app/files/maps/...`. Absolute Android paths must never be generated on GitHub.
 
 A field-safe published style must not contain any `http://` or `https://` runtime resource dependency. The app rejects such a style. Fonts/glyphs, sprites if any, and all required rendering resources must therefore be available offline.
+
+### Alpha 3 local-label contract
+
+The Alpha 3 basemap-test style is bundled at `app/src/main/assets/rockmap_basemap_label_style_alpha3.json`. It uses:
+
+- `${ROCKMAP_BASE_URI}` for the already-installed PMTiles file;
+- `asset://rockmap-glyphs/{fontstack}/{range}.pbf` for glyph PBFs;
+- the `RockMapSans` font-stack identifier;
+- no sprite URL and no HTTP/HTTPS runtime dependency.
+
+The label test requires stable Alpha 3 layer IDs `rockmap-label-locality`, `rockmap-label-road-major`, `rockmap-label-water`, and `rockmap-label-peak` in addition to the `rockmap-base` source. Missing required label layers cause the basemap test style to fail closed rather than silently appearing successful.
 
 ## Required stable source IDs
 

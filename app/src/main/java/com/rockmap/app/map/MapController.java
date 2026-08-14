@@ -51,6 +51,10 @@ public final class MapController {
     public static final String CURRENT_LAYER = "rockmap-current-location-layer";
     public static final String WAYPOINT_SOURCE = "rockmap-waypoint-source";
     public static final String WAYPOINT_LAYER = "rockmap-waypoint-layer";
+    public static final String LABEL_LOCALITY = "rockmap-label-locality";
+    public static final String LABEL_ROAD_MAJOR = "rockmap-label-road-major";
+    public static final String LABEL_WATER = "rockmap-label-water";
+    public static final String LABEL_PEAK = "rockmap-label-peak";
 
     private final MapView mapView;
     private final OfflineDataManager dataManager;
@@ -121,7 +125,7 @@ public final class MapController {
                 if (!contractValid) {
                     failOfflineStyle(expectedVerified
                             ? "Published files loaded, but the map style is missing required RockMap sources/layers."
-                            : "Basemap test files loaded, but the style is missing the RockMap basemap source.");
+                            : "Alpha 3 basemap files loaded, but required offline label sources/layers are missing.");
                     return;
                 }
                 attemptingOfflineStyle = false;
@@ -139,7 +143,11 @@ public final class MapController {
     }
 
     private boolean verifyBasemapTestContract(Style loaded) {
-        return loaded.getSource(BASE_SOURCE) != null;
+        return loaded.getSource(BASE_SOURCE) != null
+                && loaded.getLayer(LABEL_LOCALITY) != null
+                && loaded.getLayer(LABEL_ROAD_MAJOR) != null
+                && loaded.getLayer(LABEL_WATER) != null
+                && loaded.getLayer(LABEL_PEAK) != null;
     }
 
     private boolean verifyRequiredDataContract(Style loaded) {
