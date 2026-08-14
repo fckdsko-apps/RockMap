@@ -72,6 +72,8 @@ public final class MapController {
     private boolean claimsVisible = true;
     private boolean waypointsVisible = true;
     private boolean verifiedStyleActive;
+    private boolean landStatusAvailable;
+    private boolean claimsAvailable;
     private boolean offlineStyleActive;
     private boolean attemptingOfflineStyle;
     private boolean fallbackLoading;
@@ -122,26 +124,36 @@ public final class MapController {
         }
 
         final boolean expectedVerified = dataManager.hasVerifiedActivePack();
+        final boolean expectedLandTest = dataManager.hasLandStatusTestPack();
         try {
             String styleJson = dataManager.buildActiveStyleJson();
             attemptingOfflineStyle = true;
             offlineStyleActive = false;
             verifiedStyleActive = false;
+            landStatusAvailable = false;
+            claimsAvailable = false;
             fallbackLoading = false;
             map.setStyle(new Style.Builder().fromJson(styleJson), loaded -> {
                 style = loaded;
                 boolean contractValid = expectedVerified
                         ? verifyRequiredDataContract(loaded)
-                        : verifyBasemapTestContract(loaded);
+                        : expectedLandTest
+                            ? verifyLandStatusTestContract(loaded)
+                            : verifyBasemapTestContract(loaded);
                 if (!contractValid) {
                     failOfflineStyle(expectedVerified
                             ? "Published files loaded, but the map style is missing required RockMap sources/layers."
-                            : "Alpha 3.1 basemap files loaded, but required offline label sources/layers are missing.");
+                            : expectedLandTest
+                                ? "Alpha 4 land-status test loaded, but required base/label/land sources or layers are missing."
+                                : "Alpha 3.1 basemap files loaded, but required offline label sources/layers are missing.");
                     return;
                 }
                 attemptingOfflineStyle = false;
                 offlineStyleActive = true;
                 verifiedStyleActive = expectedVerified;
+                landStatusAvailable = expectedVerified || expectedLandTest;
+                claimsAvailable = expectedVerified;
+                if (!claimsAvailable) claimsVisible = false;
                 installLocalOverlayLayers();
                 renderCurrentLocation();
                 renderWaypoints();
@@ -164,6 +176,13 @@ public final class MapController {
                 && loaded.getLayer(LABEL_ROAD_ANY) != null;
     }
 
+    private boolean verifyLandStatusTestContract(Style loaded) {
+        return verifyBasemapTestContract(loaded)
+                && loaded.getSource(LAND_SOURCE) != null
+                && loaded.getLayer(LAND_FILL) != null
+                && loaded.getLayer(LAND_OUTLINE) != null;
+    }
+
     private boolean verifyRequiredDataContract(Style loaded) {
         return loaded.getSource(BASE_SOURCE) != null
                 && loaded.getSource(LAND_SOURCE) != null
@@ -179,6 +198,8 @@ public final class MapController {
         attemptingOfflineStyle = false;
         offlineStyleActive = false;
         verifiedStyleActive = false;
+        landStatusAvailable = false;
+        claimsAvailable = false;
         style = null;
 
         if (!rollbackAttempted && dataManager.revertToPreviousManifest(reason)) {
@@ -196,6 +217,8 @@ public final class MapController {
         attemptingOfflineStyle = false;
         offlineStyleActive = false;
         verifiedStyleActive = false;
+        landStatusAvailable = false;
+        claimsAvailable = false;
         map.setStyle(new Style.Builder().fromUri("asset://rockmap_safe_style.json"), loaded -> {
             style = loaded;
             fallbackLoading = false;
@@ -254,6 +277,45 @@ public final class MapController {
                 + glyphFallbackRequests + "/" + glyphFallbackLoads + "/" + glyphFallbackErrors;
     }
 
+    public String describeLandDiagnostics() {
+        if (!landStatusAvailable || !offlineStyleActive || style == null || map == null) {
+            return "Land diagnostics: land-status test is not active.";
+        }
+
+        int sourceFeatures = 0;
+        int namedFeatures = 0;
+        VectorSource land = null;
+        try {
+            land = style.getSourceAs(LAND_SOURCE);
+        } catch (RuntimeException ignored) {
+        }
+        if (land != null) {
+            try {
+                List<Feature> features = land.querySourceFeatures(new String[]{"land"}, null);
+                sourceFeatures = features.size();
+                for (Feature feature : features) {
+                    if (feature != null && (feature.hasProperty("manager_code") || feature.hasProperty("manager_name"))) {
+                        namedFeatures++;
+                    }
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+
+        int renderedFeatures = 0;
+        if (mapView.getWidth() > 0 && mapView.getHeight() > 0) {
+            try {
+                RectF viewport = new RectF(0f, 0f, mapView.getWidth(), mapView.getHeight());
+                renderedFeatures = map.queryRenderedFeatures(viewport, new String[]{LAND_FILL}).size();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return "Land diagnostics (current viewport):"
+                + "\nLand source features loaded: " + sourceFeatures
+                + "\nFeatures with normalized manager fields: " + namedFeatures
+                + "\nRendered land features: " + renderedFeatures;
+    }
+
     public void updateCurrentLocation(Location location) {
         currentLocation = location;
         renderCurrentLocation();
@@ -277,12 +339,12 @@ public final class MapController {
     }
 
     public void setLandVisible(boolean visible) {
-        landVisible = visible;
+        landVisible = landStatusAvailable && visible;
         applyVisibility();
     }
 
     public void setClaimsVisible(boolean visible) {
-        claimsVisible = visible;
+        claimsVisible = claimsAvailable && visible;
         applyVisibility();
     }
 
@@ -291,11 +353,13 @@ public final class MapController {
         applyVisibility();
     }
 
-    public boolean isLandVisible() { return landVisible; }
-    public boolean isClaimsVisible() { return claimsVisible; }
+    public boolean isLandVisible() { return landStatusAvailable && landVisible; }
+    public boolean isClaimsVisible() { return claimsAvailable && claimsVisible; }
     public boolean isWaypointsVisible() { return waypointsVisible; }
     public boolean isVerifiedStyleActive() { return verifiedStyleActive; }
-    public boolean hasLandClaimsAvailable() { return verifiedStyleActive; }
+    public boolean hasLandStatusAvailable() { return landStatusAvailable; }
+    public boolean hasClaimsAvailable() { return claimsAvailable; }
+    public boolean hasLandClaimsAvailable() { return landStatusAvailable && claimsAvailable; }
 
     private void installLocalOverlayLayers() {
         if (style == null) return;
@@ -383,12 +447,14 @@ public final class MapController {
     }
 
     private boolean handleTap(LatLng coordinate) {
-        if (map == null || style == null || !verifiedStyleActive) return false;
+        if (map == null || style == null || (!landStatusAvailable && !claimsAvailable)) return false;
         PointF point = map.getProjection().toScreenLocation(coordinate);
-        List<Feature> land = landVisible ? dedupe(query(point, LAND_FILL), "manager_code", "manager_name") : new ArrayList<>();
-        List<Feature> claims = claimsVisible ? dedupe(query(point, CLAIM_FILL), "serial", "name") : new ArrayList<>();
-        // Always show the verified-map location panel. An empty result must be explained as
-        // "no rendered feature here", never silently interpreted as public/unclaimed land.
+        List<Feature> land = (landStatusAvailable && landVisible)
+                ? dedupe(query(point, LAND_FILL), "manager_name", "manager_code") : new ArrayList<>();
+        List<Feature> claims = (claimsAvailable && claimsVisible)
+                ? dedupe(query(point, CLAIM_FILL), "serial", "name") : new ArrayList<>();
+        // Empty rendered results are never interpreted as public/unclaimed land. Alpha 4
+        // permits this panel for land-status testing while mining claims remain unavailable.
         listener.onMapFeaturesTapped(coordinate, land, claims);
         return true;
     }

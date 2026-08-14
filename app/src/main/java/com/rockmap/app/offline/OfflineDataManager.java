@@ -9,7 +9,9 @@ import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
+import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -85,6 +87,14 @@ public final class OfflineDataManager {
         return active != null && active.isBasemapTest() && hasCompleteSnapshotBySize(active);
     }
 
+    /** Alpha 4 keeps status=basemap_test so the red safety state cannot be bypassed. */
+    public boolean hasLandStatusTestPack() {
+        DataManifest active = getActiveManifest();
+        if (active == null || !active.isBasemapTest() || !hasCompleteSnapshotBySize(active)) return false;
+        DataFileSpec land = active.find("land");
+        return land != null && land.required && getActiveFile("land") != null;
+    }
+
     public boolean hasCompleteSnapshotBySize(DataManifest manifest) {
         if (manifest == null) return false;
         for (DataFileSpec spec : manifest.files) {
@@ -119,13 +129,20 @@ public final class OfflineDataManager {
             throw new IOException("Active map snapshot is missing its basemap.");
         }
 
-        // Alpha 3.1 deliberately reuses the already-verified Alpha 2 PMTiles bytes while
-        // supplying the label style and glyph resources from the APK itself. This avoids
-        // a second ~246 MB map download merely to add cartographic labels. Published
-        // snapshots continue to use their downloaded style as part of the full data contract.
+        // Alpha 4 still reuses the exact Alpha 2 basemap bytes and the proven Alpha 3.1
+        // local-label style. A basemap_test manifest may now add a required "land" PMTiles
+        // component. We inject that source/layers into the known-good local style in memory,
+        // leaving the immutable Alpha 2 style file and statewide basemap untouched.
         String template;
         if (manifest.isBasemapTest()) {
             template = readAssetUtf8(BASEMAP_LABEL_STYLE_ASSET, 8_000_000);
+            if (manifest.find("land") != null) {
+                File landFile = getActiveFile("land");
+                if (landFile == null) throw new IOException("Land-status test snapshot is missing its land PMTiles file.");
+                template = addLandStatusTestLayers(template);
+                requirePlaceholder(template, LAND_PLACEHOLDER);
+                template = template.replace(LAND_PLACEHOLDER, pmtilesUri(landFile));
+            }
         } else {
             File styleFile = getActiveFile("style");
             if (styleFile == null) {
@@ -159,6 +176,109 @@ public final class OfflineDataManager {
             throw new IOException("Installed offline style contains a runtime network dependency.");
         }
         return rendered;
+    }
+
+
+    private String addLandStatusTestLayers(String template) throws IOException {
+        try {
+            JSONObject root = new JSONObject(template);
+            JSONObject sources = root.getJSONObject("sources");
+            if (sources.has("rockmap-land")) throw new IOException("Alpha 4 style already contains rockmap-land unexpectedly.");
+
+            JSONObject landSource = new JSONObject();
+            landSource.put("type", "vector");
+            landSource.put("url", LAND_PLACEHOLDER);
+            landSource.put("attribution", "Bureau of Land Management, Colorado");
+            landSource.put("maxzoom", 14);
+            sources.put("rockmap-land", landSource);
+
+            JSONArray layers = root.getJSONArray("layers");
+            for (int i = 0; i < layers.length(); i++) {
+                JSONObject layer = layers.optJSONObject(i);
+                if (layer == null) continue;
+                String id = layer.optString("id", "");
+                if ("rockmap-land-fill".equals(id) || "rockmap-land-outline".equals(id)) {
+                    throw new IOException("Alpha 4 style already contains land-status layers unexpectedly.");
+                }
+            }
+
+            JSONArray fillColor = new JSONArray();
+            fillColor.put("match");
+            fillColor.put(new JSONArray().put("get").put("manager_code"));
+            fillColor.put("BLM"); fillColor.put("#f2cf63");
+            fillColor.put("BOR"); fillColor.put("#eadf91");
+            fillColor.put("BIA"); fillColor.put("#e79a62");
+            fillColor.put("DOD"); fillColor.put("#d99bb6");
+            fillColor.put("USFS_NG"); fillColor.put("#c8df84");
+            fillColor.put("NPS"); fillColor.put("#aa98c8");
+            fillColor.put("USFW"); fillColor.put("#78b995");
+            fillColor.put("USFS"); fillColor.put("#91c686");
+            fillColor.put("STA"); fillColor.put("#82bdcd");
+            fillColor.put("LOCAL"); fillColor.put("#78a3aa");
+            fillColor.put("BLM_LU"); fillColor.put("#e7adb4");
+            fillColor.put("USFS_LU"); fillColor.put("#e7adb4");
+            fillColor.put("OTHER"); fillColor.put("#bea283");
+            // Private land is intentionally visible rather than white in the source renderer.
+            fillColor.put("PRI"); fillColor.put("#d39282");
+            fillColor.put("#b8b8b8");
+
+            JSONObject fill = new JSONObject();
+            fill.put("id", "rockmap-land-fill");
+            fill.put("type", "fill");
+            fill.put("source", "rockmap-land");
+            fill.put("source-layer", "land");
+            fill.put("minzoom", 5);
+            JSONObject fillPaint = new JSONObject();
+            fillPaint.put("fill-color", fillColor);
+            fillPaint.put("fill-opacity", 0.32);
+            fill.put("paint", fillPaint);
+
+            JSONObject outline = new JSONObject();
+            outline.put("id", "rockmap-land-outline");
+            outline.put("type", "line");
+            outline.put("source", "rockmap-land");
+            outline.put("source-layer", "land");
+            outline.put("minzoom", 7);
+            JSONObject outlinePaint = new JSONObject();
+            outlinePaint.put("line-color", "#5b5650");
+            outlinePaint.put("line-opacity", 0.72);
+            outlinePaint.put("line-width", new JSONArray()
+                    .put("interpolate")
+                    .put(new JSONArray().put("linear"))
+                    .put(new JSONArray().put("zoom"))
+                    .put(7).put(0.35)
+                    .put(12).put(0.8)
+                    .put(16).put(1.4));
+            outline.put("paint", outlinePaint);
+
+            // Put land polygons above the basemap geometry but below every text label.
+            JSONArray rebuilt = new JSONArray();
+            boolean inserted = false;
+            for (int i = 0; i < layers.length(); i++) {
+                JSONObject layer = layers.getJSONObject(i);
+                if (!inserted && "symbol".equals(layer.optString("type"))) {
+                    rebuilt.put(fill);
+                    rebuilt.put(outline);
+                    inserted = true;
+                }
+                rebuilt.put(layer);
+            }
+            if (!inserted) {
+                rebuilt.put(fill);
+                rebuilt.put(outline);
+            }
+            root.put("layers", rebuilt);
+            JSONObject metadata = root.optJSONObject("metadata");
+            if (metadata == null) {
+                metadata = new JSONObject();
+                root.put("metadata", metadata);
+            }
+            metadata.put("rockmap:land-status", "alpha4-blm-colorado-sma-test");
+            metadata.put("rockmap:warning", "NOT VERIFIED FOR NAVIGATION. BLM Colorado SMA is management/status mapping, not a parcel survey; mining claims are not included.");
+            return root.toString();
+        } catch (JSONException ex) {
+            throw new IOException("Could not construct Alpha 4 land-status style: " + ex.getMessage(), ex);
+        }
     }
 
     private void requirePlaceholder(String template, String placeholder) throws IOException {
@@ -195,6 +315,18 @@ public final class OfflineDataManager {
         }
 
         if (active.isBasemapTest()) {
+            if (active.find("land") != null && getActiveFile("land") != null) {
+                return "OFFLINE BASEMAP + LABELS + LAND STATUS: TEST — NOT VERIFIED FOR NAVIGATION"
+                        + "\nLand status: included offline (Alpha 4 BLM Colorado SMA test)"
+                        + "\nMining claims: unavailable"
+                        + "\nLabels: included offline (Alpha 3.1 dual-font path retained)"
+                        + "\nPack: " + active.pack
+                        + "\nVersion: " + active.version
+                        + "\nPublished: " + active.publishedAt
+                        + "\nMap data: © OpenStreetMap contributors · Protomaps"
+                        + "\nLand data: Bureau of Land Management, Colorado Surface Management Agency"
+                        + "\nBoundary note: management/status mapping only; not a parcel survey or legal boundary.";
+            }
             return "OFFLINE BASEMAP + LABELS: TEST — NOT VERIFIED FOR NAVIGATION"
                     + "\nLand status: unavailable"
                     + "\nMining claims: unavailable"

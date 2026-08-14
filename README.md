@@ -2,38 +2,36 @@
 
 RockMap is an Android-first, offline-first field map project built through GitHub Actions. Android Studio is not required for the normal workflow.
 
-## Current source build: 0.1.0-alpha3.1
+## Current source build: 0.1.0-alpha4
 
-Alpha 3.1 keeps the known-good Android build/signing workflow and the exact Colorado PMTiles pack that passed Alpha 2 device testing. It adds **offline labels from APK-bundled style/glyph resources** without requiring another statewide basemap download.
+Alpha 4 is a deliberately isolated **land-status test**. It keeps the exact Colorado Protomaps/OpenStreetMap PMTiles basemap already installed for Alpha 2 and the Alpha 3.1 offline-label renderer that passed the phone/airplane-mode test. It adds a separate offline PMTiles overlay generated from the official BLM Colorado Surface Management Agency (SMA) polygon service.
 
 Core functionality included:
 
 - MapLibre Native renderer with local PMTiles support.
-- Blank local safety style when no usable offline data exists or an installed style fails its safety checks.
-- Alpha 3.1 `basemap_test` state: renders the tested Colorado basemap plus local labels while keeping the safety banner red.
-- Offline labels for cities/towns, neighborhoods, roads/paths, waterways/lakes, state/region names, and peaks where present in the Protomaps source data.
-- APK-bundled SDF glyph PBFs prepared during the GitHub build from immutable, pinned Protomaps font-resource blobs; the source patch contains no font binary and the runtime label style has no HTTP/HTTPS font dependency.
-- Land-status and mining-claim controls explicitly unavailable during the basemap/label test.
-- Foreground GPS/current-position display.
-- Room-backed saved locations with name, notes, timestamps, coordinates, reported GPS accuracy, and GeoJSON import/export.
-- Stable future land-status and mining-claims source/layer contracts.
-- HTTPS-only manifest/data update plumbing with declared byte counts and SHA-256 verification.
-- Atomic activation plus previous-snapshot rollback plumbing.
-- Downloaded maps excluded from Android backup while waypoint data remains backup-eligible.
-- No background-location or broad-storage permission.
+- Existing Alpha 2 Colorado basemap reused byte-for-byte; Alpha 4 does not rebuild or redownload it when the phone already has the verified file.
+- Existing Alpha 3.1 offline city/town, road, water and terrain labels retained with the local Noto Sans/font-glyph paths.
+- New Alpha 4 offline land-status overlay with normalized `manager_code` and `manager_name` fields only.
+- BLM, US Forest Service, state, private and other SMA categories are rendered distinctly; private land is intentionally visible rather than left visually blank.
+- Land-status layer can be toggled independently. Mining claims remain unavailable in Alpha 4.
+- Tapping the map can report the rendered surface manager while explicitly treating a missing feature as unknown rather than public land.
+- Land diagnostics report source features, normalized manager fields and rendered features for the current viewport.
+- Foreground GPS/current-position display and Room-backed saved locations remain unchanged.
+- HTTPS-only manifest/data update plumbing with exact SHA-256 and byte-count verification, atomic activation and rollback.
+- Blank local safety style remains the fail-closed fallback.
 
 ## Critical safety state
 
-**0.1.0-alpha3.1 is still not a field-verified navigation build.** Alpha 2 established that the Colorado PMTiles base renders statewide, aligns with GPS, and works after a cold reopen in airplane mode. Alpha 3.1 repairs the label renderer and adds dual local font paths, but it still does not include BLM land-status data or mining-claim data.
+**0.1.0-alpha4 remains a red `NOT VERIFIED FOR NAVIGATION` test build.** Alpha 4 must not turn the safety banner green.
 
-While the test pack is active, RockMap must continue to report `NOT VERIFIED FOR NAVIGATION` in red. Alpha 3.1 exists to prove that useful labels and their glyphs are also fully local and reliable before land/claim overlays are added.
+The BLM Colorado SMA source is surface-management/status mapping assembled from multiple source materials and updated over time. RockMap treats it as a useful management overlay, not as a parcel survey, surveyed property boundary, title record, or determination that collecting is legal. Mining-claim data is not present in this phase.
 
-RockMap never infers that collecting is legal merely because a point appears on public land or because no claim is rendered.
+A point displaying BLM or other public management does not by itself establish that rockhounding or access is lawful. A blank land-status result is reported as unknown, not as public land.
 
-## Build setup
+## Build/data setup
 
-The existing successful APK workflow remains unchanged. Alpha 3.1 is a normal source-only update. **Do not rebuild or rerun the Colorado basemap workflow for Alpha 3.1.** Install Alpha 3.1 over Alpha 3/Alpha 2 so the already-downloaded PMTiles file and saved waypoints remain in app storage.
+The normal signed APK workflow stays unchanged. Alpha 4 adds a separate manual GitHub Actions workflow that builds and publishes only the Colorado land-status data component. Do not rerun or replace the Alpha 2 basemap release.
 
-See `docs/BASEMAP_ALPHA3.md` for the device test and `docs/DATA_CONTRACT.md` for the stable map-data contract.
+The Alpha 4 manifest copies the exact immutable `style` and `base` entries from the Alpha 2 baseline manifest and adds one required `land` file. The Android updater therefore skips the already-valid local basemap/style files and downloads only the new land PMTiles file when those baseline bytes are already present.
 
-Alpha 3.1 uses MapLibre Native Android 13.4.1 local `font-faces` backed by a build-generated Noto Sans TTF, with the existing APK-bundled SDF glyph PBFs retained as fallback. Neither runtime path uses HTTP.
+See `docs/LAND_STATUS_ALPHA4.md` for the exact build/install/device test and `docs/DATA_CONTRACT.md` for the stable offline data contract.

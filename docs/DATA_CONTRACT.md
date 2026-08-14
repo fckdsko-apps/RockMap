@@ -2,19 +2,23 @@
 
 RockMap deliberately separates downloadable map data from user waypoints. The Android app never consumes BLM or Protomaps field names directly. The GitHub data-building workflow will normalize upstream GIS data to this stable contract.
 
-## Field-safety status for alpha3
+## Field-safety status for alpha4
 
-`0.1.0-alpha3.1` reuses the real Colorado **basemap test pack** that passed Alpha 2 device testing while deliberately keeping the map in the red/unverified state. The existing manifest remains `status: basemap_test` and continues to describe the downloadable `style` + `base` snapshot. For Alpha 3.1, the APK deliberately overrides the test-pack style at runtime with a bundled label style and bundled glyph PBFs while reusing the same SHA-256-verified local `base` file. Land status and mining claims remain unavailable and the UI must say so.
+`0.1.0-alpha4` remains a `status: basemap_test` build so adding the first land-status overlay cannot accidentally make the app field-verified. It reuses the exact Alpha 2 `style` + `base` manifest entries and the Alpha 3.1 APK-local label renderer, then adds one required `land` PMTiles component. Mining claims remain unavailable.
 
-A `basemap_test` pack is for validating Colorado coverage, PMTiles rendering, roads, paths, water, labels, GPS/waypoint alignment, and airplane-mode behavior. It is **not field-safe navigation data** and must never turn the safety banner green.
+The Alpha 4 land source is the official **BLM Colorado Surface Management Agency (SMA)** polygon feature service. The GitHub build fetches the current source, requires complete OBJECTID coverage, fails closed if the coded manager schema changes unexpectedly, and normalizes every polygon to RockMap's two stable fields: `manager_code` and `manager_name`. Raw BLM fields are not shipped in the PMTiles file.
 
-Alpha 3's runtime basemap-test style and glyph URL are APK-local (`asset://`) and may not contain runtime HTTP/HTTPS dependencies. The downloaded Alpha 2 style remains part of the immutable data snapshot for compatibility/rollback but is not the active Alpha 3 basemap-test rendering style.
+A `basemap_test` snapshot may contain only `style` + `base` (Alpha 2/3.1 behavior), or `style` + `base` + required `land` for the Alpha 4 land test. In both cases the safety banner remains red and the snapshot is not field-safe. The Alpha 4 manifest must copy the baseline `style` and `base` entries exactly so phones with the existing Colorado pack reuse those local files rather than download the statewide basemap again.
 
-Do not publish a manifest with `status: published` until the complete Colorado style/data passes the airplane-mode/device tests, including land status, claims, and offline labels/glyphs. Offline glyph handling must be proven on the phone before the map is called field-safe.
+Alpha 4 builds the land data separately from the basemap. The app injects `rockmap-land`, `rockmap-land-fill`, and `rockmap-land-outline` into the proven Alpha 3.1 local style at runtime and substitutes `${ROCKMAP_LAND_URI}` with the verified local PMTiles path. Labels remain above the land overlay. No runtime HTTP/HTTPS dependency is permitted.
+
+The SMA layer is surface-management/status mapping. It is not a parcel survey, surveyed legal property boundary, title record, or legal determination that collecting/access is permitted. A tap with no rendered land feature is explicitly treated as **unknown**, never as public land.
+
+Do not publish a manifest with `status: published` until the complete Colorado style/data passes the device/airplane-mode tests with land status, mining claims, offline labels and all safety wording.
 
 ### Basemap-test manifest
 
-A `basemap_test` manifest uses the same schema and verification rules as a published snapshot but requires only `style` and `base`. The downloaded style template must contain `${ROCKMAP_BASE_URI}` and must not contain `${ROCKMAP_LAND_URI}` or `${ROCKMAP_CLAIMS_URI}`. Alpha 3 may replace that test rendering template with a versioned APK-bundled style, but the bundled style must use the same `${ROCKMAP_BASE_URI}` contract, use only local resources, and remain explicitly unverified. RockMap renders it with a persistent red warning and disables land/claim controls.
+A `basemap_test` manifest uses the same file-integrity rules as a published snapshot. The immutable Alpha 2 release template still contains `${ROCKMAP_BASE_URI}` only. Alpha 3.1/4 may replace that rendering template in-app with the APK-bundled local label style. For the Alpha 4 land test, the manifest additionally contains a required `land` PMTiles entry; the app inserts `${ROCKMAP_LAND_URI}` into the in-memory style and resolves it to the verified local file. `${ROCKMAP_CLAIMS_URI}` must remain absent because claims are not included.
 
 ## Published manifest
 
@@ -86,7 +90,7 @@ A filename that is referenced by the active or rollback snapshot may not be reus
 
 ## Style template
 
-The downloaded style file is a **template**, not a device-specific style. A `basemap_test` style requires `${ROCKMAP_BASE_URI}` only. A `published` style must contain all three placeholders:
+The downloaded style file is a **template**, not a device-specific style. The immutable downloaded `basemap_test` style requires `${ROCKMAP_BASE_URI}` only. Alpha 4's in-memory test style may additionally contain `${ROCKMAP_LAND_URI}` after the app injects the land source/layers. A `published` style must contain all three placeholders:
 
 - `${ROCKMAP_BASE_URI}`
 - `${ROCKMAP_LAND_URI}`
@@ -106,6 +110,23 @@ The Alpha 3 basemap-test style is bundled at `app/src/main/assets/rockmap_basema
 - no sprite URL and no HTTP/HTTPS runtime dependency.
 
 The label test requires stable Alpha 3 layer IDs `rockmap-label-locality`, `rockmap-label-road-major`, `rockmap-label-water`, and `rockmap-label-peak` in addition to the `rockmap-base` source. Missing required label layers cause the basemap test style to fail closed rather than silently appearing successful.
+
+### Alpha 4 land-status contract
+
+The land-data builder reads the official BLM Colorado SMA feature layer and emits a vector layer named `land`. It retains only:
+
+- `manager_code`
+- `manager_name`
+
+The build must verify that the PMTiles metadata contains the `land` layer and no unexpected raw attributes, and must reject an implausibly small source set or missing expected BLM/private/state/USFS categories. The land release is immutable once published.
+
+Alpha 4 requires the runtime source/layers:
+
+- `rockmap-land`
+- `rockmap-land-fill`
+- `rockmap-land-outline`
+
+Land controls may be enabled while claim controls remain disabled. This is intentionally different from the future `published` state, where both land and claim contracts are required.
 
 ## Required stable source IDs
 
@@ -131,7 +152,7 @@ After MapLibre loads a newly activated snapshot, RockMap checks all required sou
 - `manager_name`
 - `manager_code`
 
-The layer is surface-management/status information. It is not a parcel survey or a legal property-boundary system.
+The layer is surface-management/status information. It is not a parcel survey, surveyed legal property boundary, title record, or legal access/collecting determination. RockMap must preserve that distinction in the UI.
 
 ## Normalized claim properties
 

@@ -37,9 +37,13 @@ required_files = [
     "docs/DATA_CONTRACT.md",
     "docs/BASEMAP_ALPHA2.md",
     "docs/BASEMAP_ALPHA3.md",
+    "docs/LAND_STATUS_ALPHA4.md",
     "scripts/create_basemap_test_manifest.py",
+    "scripts/create_land_test_manifest.py",
+    "scripts/fetch_blm_land_status.py",
     "scripts/prepare_offline_glyphs.py",
     "scripts/validate_basemap_metadata.py",
+    "scripts/validate_land_metadata.py",
     "signing-certificate.sha256",
     "app/src/test/java/com/rockmap/app/offline/DataValidatorsTest.java",
 ]
@@ -274,8 +278,60 @@ try:
 except Exception as exc:
     err(f"Glyph license/notice validation failed: {exc}")
 
-# The repository placeholder manifest remains unpublished. Alpha 3 still fetches its
-# basemap-test manifest from the existing fixed Alpha 2 GitHub Release tag.
+# Alpha 4 land builder: exact official BLM source, fail-closed manager normalization,
+# and a manifest that copies the immutable Alpha 2 style/base entries before adding land.
+try:
+    fetch_module = runpy.run_path(str(ROOT / "scripts/fetch_blm_land_status.py"))
+    expected_blm = (
+        "https://gis.blm.gov/coarcgis/rest/services/lands/"
+        "BLM_Colorado_Surface_Management_Agency/FeatureServer/1"
+    )
+    if fetch_module.get("DEFAULT_URL") != expected_blm:
+        err("Alpha 4 BLM source URL unexpectedly changed.")
+    expected_codes = {
+        "BLM", "BOR", "BIA", "DOD", "USFS_NG", "NPS", "OTHER", "PRI",
+        "STA", "LOCAL", "BLM_LU", "USFS_LU", "USFW", "USFS",
+    }
+    if set(fetch_module.get("MANAGER_NAMES", {})) != expected_codes:
+        err("Alpha 4 BLM manager-code whitelist unexpectedly changed.")
+    if fetch_module.get("REQUIRED_CODES") != {"BLM", "PRI", "STA", "USFS"}:
+        err("Alpha 4 land category sanity gate unexpectedly changed.")
+    if not (1 <= int(fetch_module.get("BATCH_SIZE", 0)) <= 500):
+        err("Alpha 4 BLM query batch size is outside the conservative range.")
+except Exception as exc:
+    err(f"Alpha 4 BLM fetch script validation failed: {exc}")
+
+land_fetch_text = read("scripts/fetch_blm_land_status.py")
+for required_land_fetch in (
+    "returnIdsOnly",
+    "objectIds",
+    '"outSR": "4326"',
+    '"manager_code"',
+    '"manager_name"',
+    "feature completeness check failed",
+    "schema drift",
+):
+    if required_land_fetch not in land_fetch_text:
+        err(f"Alpha 4 BLM builder is missing fail-closed behavior: {required_land_fetch}")
+
+land_manifest_text = read("scripts/create_land_test_manifest.py")
+for required_manifest_text in (
+    'baseline.get("status") != "basemap_test"',
+    'set(baseline_files) != {"style", "base"}',
+    '"id": "land"',
+    '"status": "basemap_test"',
+    'files = [baseline_files["style"], baseline_files["base"]]',
+):
+    if required_manifest_text not in land_manifest_text:
+        err(f"Alpha 4 manifest builder is missing immutable-baseline behavior: {required_manifest_text}")
+
+land_validator_text = read("scripts/validate_land_metadata.py")
+for required_validator_text in ("manager_code", "manager_name", 'x.get("id") == "land"', "unexpected raw fields"):
+    if required_validator_text not in land_validator_text:
+        err(f"Alpha 4 land metadata validator is missing: {required_validator_text}")
+
+# The repository placeholder manifest remains unpublished. Alpha 4 points the APK updater
+# at a separate land-test release whose manifest reuses the immutable Alpha 2 base/style.
 try:
     data_manifest = json.loads(read("data/manifest.json"))
     if data_manifest.get("manifestVersion") != 1:
@@ -305,10 +361,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
-if "rockmap-basemap-alpha2-20260722-z14" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 3.1 must reuse the fixed Alpha 2 data release rather than rebuild the basemap.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha3.1" not in read("gradle.properties"):
-    err("Alpha 3.1 version name is not pinned in gradle.properties.")
+if "rockmap-land-alpha4-20260814-test1" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 4 APK must point only to the immutable Alpha 4 land-test release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha4" not in read("gradle.properties"):
+    err("Alpha 4 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -319,7 +375,7 @@ for required_gradle in (
     "dependsOn tasks.named('prepareOfflineGlyphs')",
 ):
     if required_gradle not in all_gradle:
-        err(f"Alpha 3.1 generated offline text build wiring missing: {required_gradle}")
+        err(f"Alpha 4 must retain the proven Alpha 3.1 generated offline text wiring: {required_gradle}")
 
 # Java/source guardrails.
 java_files = list((ROOT / "app/src/main/java").rglob("*.java"))
@@ -355,19 +411,28 @@ for required_source in (
     "revertToPreviousManifest",
     "STATUS_BASEMAP_TEST",
     "hasRenderableActivePack",
-    "hasLandClaimsAvailable",
-    "No claim feature was rendered",
+    "hasLandStatusTestPack",
+    "hasLandStatusAvailable",
+    "hasClaimsAvailable",
+    "describeLandDiagnostics",
+    "rockmap-land-fill",
+    "rockmap-land-outline",
+    "Mining-claim data is not included in this Alpha 4 land-status test",
     "Treat this as unknown, not as public land",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
 if "labels are not included yet" in java_text:
-    err("Alpha 3.1 source still reports labels as absent.")
+    err("Alpha 4 source still reports the already-proven labels as absent.")
+if "OFFLINE BASEMAP + LABELS + LAND STATUS: TEST" not in java_text:
+    err("Alpha 4 status text does not expose the land-status test state.")
+if "management/status mapping only; not a parcel survey or legal boundary" not in java_text:
+    err("Alpha 4 land-status safety wording is missing from OfflineDataManager.")
 
 # Stable data contract.
 contract = read("docs/DATA_CONTRACT.md")
 for required in (
-    "alpha3",
+    "alpha4",
     "basemap_test",
     "${ROCKMAP_BASE_URI}",
     "${ROCKMAP_LAND_URI}",
@@ -387,6 +452,10 @@ for required in (
     "rockmap-label-peak",
     "rockmap-label-place-any",
     "rockmap-label-road-any",
+    "manager_code",
+    "manager_name",
+    "BLM Colorado Surface Management Agency",
+    "not a parcel survey",
 ):
     if required not in contract:
         err(f"Data contract missing required term: {required}")
@@ -395,6 +464,20 @@ alpha3_doc = read("docs/BASEMAP_ALPHA3.md") if (ROOT / "docs/BASEMAP_ALPHA3.md")
 for required in ("airplane mode", "Do not uninstall", "NOT VERIFIED FOR NAVIGATION", "land status", "mining claims", "font-faces"):
     if required not in alpha3_doc:
         err(f"Alpha 3 acceptance test missing required instruction: {required}")
+
+alpha4_doc = read("docs/LAND_STATUS_ALPHA4.md") if (ROOT / "docs/LAND_STATUS_ALPHA4.md").is_file() else ""
+for required in (
+    "Do not uninstall",
+    "Build Colorado Land Status Test Pack",
+    "Check for update",
+    "Mining claims",
+    "airplane mode",
+    "unknown",
+    "not a parcel survey",
+    "rockmap-land-alpha4-20260814-test1",
+):
+    if required not in alpha4_doc:
+        err(f"Alpha 4 land-status acceptance test missing required instruction: {required}")
 
 # Public signing fingerprint is required; private signing material and original font files are forbidden.
 fingerprint = ROOT / "signing-certificate.sha256"
@@ -446,4 +529,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 3.1 source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 4 land-status source preflight passed ({file_count} files checked).")

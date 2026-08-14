@@ -107,8 +107,13 @@ public final class DataUpdateWorker extends Worker {
             // semantically valid-but-unrenderable new style can be rolled back on the device.
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
-                manager.setLastUpdateStatus("Basemap test pack downloaded and activated: " + manifest.version
-                        + ". NOT VERIFIED FOR NAVIGATION; Alpha 3.1 supplies offline labels from the APK, but land status and mining claims are not included.");
+                if (manifest.find("land") != null) {
+                    manager.setLastUpdateStatus("Alpha 4 land-status test pack downloaded and activated: " + manifest.version
+                            + ". NOT VERIFIED FOR NAVIGATION; BLM Colorado SMA land-status data is included, mining claims are not included.");
+                } else {
+                    manager.setLastUpdateStatus("Basemap test pack downloaded and activated: " + manifest.version
+                            + ". NOT VERIFIED FOR NAVIGATION; Alpha 3.1 supplies offline labels from the APK, but land status and mining claims are not included.");
+                }
             } else {
                 manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
             }

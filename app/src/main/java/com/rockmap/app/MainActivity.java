@@ -224,14 +224,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(4), dp(20), dp(4));
-        boolean landClaimsAvailable = mapController.hasLandClaimsAvailable();
-        CheckBox land = checkbox(landClaimsAvailable ? "Land status" : "Land status — unavailable in basemap test",
-                landClaimsAvailable && mapController.isLandVisible());
-        CheckBox claims = checkbox(landClaimsAvailable ? "Mining claims — not closed" : "Mining claims — unavailable in basemap test",
-                landClaimsAvailable && mapController.isClaimsVisible());
+        boolean landAvailable = mapController.hasLandStatusAvailable();
+        boolean claimsAvailable = mapController.hasClaimsAvailable();
+        CheckBox land = checkbox(landAvailable ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
+                landAvailable && mapController.isLandVisible());
+        CheckBox claims = checkbox(claimsAvailable ? "Mining claims — not closed" : "Mining claims — unavailable in Alpha 4 land test",
+                claimsAvailable && mapController.isClaimsVisible());
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
-        land.setEnabled(landClaimsAvailable);
-        claims.setEnabled(landClaimsAvailable);
+        land.setEnabled(landAvailable);
+        claims.setEnabled(claimsAvailable);
         box.addView(land);
         box.addView(claims);
         box.addView(saved);
@@ -239,8 +240,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setTitle("Layers")
                 .setView(box)
                 .setPositiveButton("Apply", (d, w) -> {
-                    mapController.setLandVisible(landClaimsAvailable && land.isChecked());
-                    mapController.setClaimsVisible(landClaimsAvailable && claims.isChecked());
+                    mapController.setLandVisible(landAvailable && land.isChecked());
+                    mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
                     mapController.setWaypointsVisible(saved.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
@@ -345,7 +346,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         new AlertDialog.Builder(this)
                 .setTitle("Offline data")
                 .setMessage(offlineDataManager.describeStatus()
-                        + (mapController == null ? "" : "\n\n" + mapController.describeLabelDiagnostics()))
+                        + (mapController == null ? ""
+                            : "\n\n" + mapController.describeLabelDiagnostics()
+                            + "\n\n" + mapController.describeLandDiagnostics()))
                 .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
                 .setNegativeButton("Close", null)
                 .show();
@@ -560,18 +563,25 @@ public final class MainActivity extends Activity implements LocationRepository.L
         StringBuilder text = new StringBuilder();
         text.append(String.format(Locale.US, "%.6f, %.6f", coordinate.getLatitude(), coordinate.getLongitude()));
         text.append("\n\nLAND STATUS\n");
-        if (!mapController.isLandVisible()) {
+        if (!mapController.hasLandStatusAvailable()) {
+            text.append("Land-status data is not included in the active map. No land-status conclusion was made.");
+        } else if (!mapController.isLandVisible()) {
             text.append("Land-status layer is turned off. No land-status conclusion was made.");
         } else if (land.isEmpty()) {
             text.append("No land-status feature was rendered at this exact tap. Treat this as unknown, not as public land.");
         } else {
             for (Feature feature : land) {
-                String manager = stringProp(feature, "manager_name", stringProp(feature, "manager_code", "Unknown"));
-                text.append("• ").append(manager).append('\n');
+                String manager = stringProp(feature, "manager_name", "Unknown manager");
+                String code = stringProp(feature, "manager_code", "");
+                text.append("• ").append(manager);
+                if (!code.isEmpty() && !manager.equalsIgnoreCase(code)) text.append(" [").append(code).append(']');
+                text.append('\n');
             }
         }
         text.append("\nMINING CLAIMS — NOT CLOSED\n");
-        if (!mapController.isClaimsVisible()) {
+        if (!mapController.hasClaimsAvailable()) {
+            text.append("Mining-claim data is not included in this Alpha 4 land-status test. No claim conclusion was made.");
+        } else if (!mapController.isClaimsVisible()) {
             text.append("Claims layer is turned off. No claim conclusion was made.");
         } else if (claims.isEmpty()) {
             text.append("No claim feature was rendered at this exact tap and zoom. This is not proof that no mining claim exists.");
@@ -586,7 +596,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 text.append('\n');
             }
         }
-        text.append("\nDisplayed BLM claim geometry can be approximate and is not a surveyed legal boundary. RockMap does not determine whether collecting is legal at a location.");
+        text.append("\nBLM Surface Management Agency data is management/status mapping, not a parcel survey or a surveyed legal boundary. RockMap does not determine whether collecting is legal at a location.");
 
         ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
