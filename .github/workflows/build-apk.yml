@@ -1,0 +1,202 @@
+name: Build RockMap APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rockmap-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test, lint, sign, verify, and package APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.5.0
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          gradle-version: '9.5.0'
+          cache-provider: basic
+
+      - name: Ensure Android SDK 37.0 and Build Tools 36.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+
+          if [ ! -f "$ANDROID_HOME/platforms/android-37.0/android.jar" ]; then
+            "$SDKMANAGER" --install "platforms;android-37.0"
+          fi
+
+          if [ ! -x "$ANDROID_HOME/build-tools/36.0.0/aapt2" ]; then
+            "$SDKMANAGER" --install "build-tools;36.0.0"
+          fi
+
+          test -f "$ANDROID_HOME/platforms/android-37.0/android.jar"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/aapt2"
+          test -x "$ANDROID_HOME/build-tools/36.0.0/apksigner"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          gradle --version
+
+      - name: Validate RockMap source
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Load permanent RockMap signing key
+        shell: bash
+        env:
+          SIGNING_BUNDLE: ${{ secrets.ROCKMAP_SIGNING_BUNDLE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGNING_BUNDLE:-}" ]; then
+            echo "::error::Missing repository secret ROCKMAP_SIGNING_BUNDLE_B64"
+            exit 1
+          fi
+
+          SIGNING_DIR="$RUNNER_TEMP/rockmap-signing"
+          mkdir -p "$SIGNING_DIR"
+          printf '%s' "$SIGNING_BUNDLE" | base64 --decode > "$RUNNER_TEMP/rockmap-signing.zip"
+          unzip -q "$RUNNER_TEMP/rockmap-signing.zip" -d "$SIGNING_DIR"
+
+          test -f "$SIGNING_DIR/rockmap-release.keystore"
+          test -f "$SIGNING_DIR/signing.properties"
+          chmod 600 "$SIGNING_DIR/rockmap-release.keystore" "$SIGNING_DIR/signing.properties"
+          echo "ROCKMAP_SIGNING_DIR=$SIGNING_DIR" >> "$GITHUB_ENV"
+
+      - name: Generate Android version code
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_CODE=$(( $(date -u +%s) - 1700000000 ))
+          if [ "$VERSION_CODE" -le 0 ] || [ "$VERSION_CODE" -ge 2100000000 ]; then
+            echo "::error::Generated Android versionCode is outside the safe range"
+            exit 1
+          fi
+          echo "ROCKMAP_VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "Android versionCode: $VERSION_CODE"
+
+      - name: Run debug unit tests
+        shell: bash
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+
+      - name: Run release lint
+        shell: bash
+        run: gradle --no-daemon --stacktrace :app:lintRelease
+
+      - name: Build signed release APK
+        shell: bash
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
+      - name: Verify final APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          APKANALYZER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer | sort -V | tail -n 1)"
+          test -x "$APKSIGNER"
+          test -x "$APKANALYZER"
+
+          SIGNING_REPORT="$($APKSIGNER verify --verbose --print-certs "$APK")"
+          printf '%s\n' "$SIGNING_REPORT"
+
+          ACTUAL_CERT="$(printf '%s\n' "$SIGNING_REPORT" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          EXPECTED_CERT="$(tr -d '[:space:]' < signing-certificate.sha256 | tr '[:upper:]' '[:lower:]')"
+          test -n "$ACTUAL_CERT"
+
+          if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
+            echo "::error::APK signing certificate does not match RockMap's permanent certificate"
+            exit 1
+          fi
+
+          EXPECTED_VERSION="$(sed -n 's/^ROCKMAP_VERSION_NAME=//p' gradle.properties | head -n 1 | tr -d '\r')"
+          ACTUAL_APP_ID="$($APKANALYZER manifest application-id "$APK")"
+          ACTUAL_VERSION="$($APKANALYZER manifest version-name "$APK")"
+          ACTUAL_CODE="$($APKANALYZER manifest version-code "$APK")"
+          DEBUGGABLE="$($APKANALYZER manifest debuggable "$APK")"
+          MIN_SDK="$($APKANALYZER manifest min-sdk "$APK")"
+          TARGET_SDK="$($APKANALYZER manifest target-sdk "$APK")"
+          PERMISSIONS="$($APKANALYZER manifest permissions "$APK")"
+
+          [ "$ACTUAL_APP_ID" = "com.rockmap.app" ]
+          [ "$ACTUAL_VERSION" = "$EXPECTED_VERSION" ]
+          [ "$ACTUAL_CODE" = "$ROCKMAP_VERSION_CODE" ]
+          [ "$DEBUGGABLE" = "false" ]
+          [ "$MIN_SDK" = "26" ]
+          [ "$TARGET_SDK" = "36" ]
+
+          for forbidden in ACCESS_BACKGROUND_LOCATION MANAGE_EXTERNAL_STORAGE READ_EXTERNAL_STORAGE WRITE_EXTERNAL_STORAGE; do
+            if printf '%s\n' "$PERMISSIONS" | grep -q "$forbidden"; then
+              echo "::error::Forbidden/unneeded permission found in final APK: $forbidden"
+              exit 1
+            fi
+          done
+
+          "$APKANALYZER" apk summary "$APK"
+
+      - name: Name APK from app version and commit
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^ROCKMAP_VERSION_NAME=//p' gradle.properties | head -n 1 | tr -d '\r')"
+
+          if ! printf '%s' "$VERSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            echo "::error::ROCKMAP_VERSION_NAME contains unsafe filename characters"
+            exit 1
+          fi
+
+          SUBJECT="$(git log -1 --pretty=%s)"
+          SAFE_SUBJECT="$(printf '%s' "$SUBJECT" | LC_ALL=C sed -E 's/[^A-Za-z0-9._-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' | cut -c1-48)"
+          [ -n "$SAFE_SUBJECT" ] || SAFE_SUBJECT="commit"
+          SHORT_SHA="$(git rev-parse --short=8 HEAD)"
+
+          APK_NAME="RockMap-v${VERSION}-${SAFE_SUBJECT}-${SHORT_SHA}.apk"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/$APK_NAME"
+          sha256sum "dist/$APK_NAME" > "dist/$APK_NAME.sha256"
+
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "checksum_name=$APK_NAME.sha256" >> "$GITHUB_OUTPUT"
+          echo "Built: $APK_NAME"
+
+      - name: Upload named APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: dist/${{ steps.package.outputs.apk_name }}
+          archive: false
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload APK checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: dist/${{ steps.package.outputs.checksum_name }}
+          archive: false
+          retention-days: 30
+          if-no-files-found: error
