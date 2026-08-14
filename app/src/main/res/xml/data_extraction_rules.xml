@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Downloadable map data is deliberately excluded. User waypoints remain backup-eligible. -->
+        <exclude domain="file" path="maps/" />
+    </cloud-backup>
+    <device-transfer>
+        <!-- Do not waste device-transfer space on data that can be downloaded and re-verified. -->
+        <exclude domain="file" path="maps/" />
+    </device-transfer>
+</data-extraction-rules>

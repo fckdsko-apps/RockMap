@@ -1,0 +1,86 @@
+plugins {
+    id 'com.android.application'
+}
+
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha1')
+def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
+def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
+def manifestUrl = repositorySlug ? "https://raw.githubusercontent.com/${repositorySlug}/main/data/manifest.json" : ''
+def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
+def signingProps = new Properties()
+def signingReady = false
+
+if (signingDirPath) {
+    def signingPropsFile = file("${signingDirPath}/signing.properties")
+    if (signingPropsFile.exists()) {
+        signingPropsFile.withInputStream { signingProps.load(it) }
+        signingReady = true
+    }
+}
+
+android {
+    namespace 'com.rockmap.app'
+    compileSdk 37
+    buildToolsVersion '36.0.0'
+
+    defaultConfig {
+        applicationId 'com.rockmap.app'
+        minSdk 26
+        targetSdk 36
+        versionCode versionCodeValue
+        versionName versionNameValue
+
+        buildConfigField 'String', 'DATA_MANIFEST_URL', '"' + manifestUrl + '"'
+        buildConfigField 'int', 'SUPPORTED_MANIFEST_VERSION', '1'
+        buildConfigField 'int', 'SUPPORTED_STYLE_SCHEMA_VERSION', '1'
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        release {
+            if (signingReady) {
+                storeFile file("${signingDirPath}/${signingProps['storeFile']}")
+                storePassword signingProps['storePassword']
+                keyAlias signingProps['keyAlias']
+                keyPassword signingProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (signingReady) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            shrinkResources false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError true
+        checkReleaseBuilds true
+        warningsAsErrors false
+    }
+}
+
+dependencies {
+    implementation 'org.maplibre.gl:android-sdk:13.4.1'
+
+    def roomVersion = '2.8.4'
+    implementation "androidx.room:room-runtime:${roomVersion}"
+    annotationProcessor "androidx.room:room-compiler:${roomVersion}"
+
+    def workVersion = '2.11.2'
+    implementation "androidx.work:work-runtime:${workVersion}"
+
+    testImplementation 'junit:junit:4.13.2'
+}

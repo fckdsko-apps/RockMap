@@ -1,0 +1,346 @@
+package com.rockmap.app.map;
+
+import android.graphics.Color;
+import android.graphics.PointF;
+import android.location.Location;
+
+import com.rockmap.app.offline.OfflineDataManager;
+import com.rockmap.app.waypoints.WaypointEntity;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.maplibre.android.camera.CameraUpdateFactory;
+import org.maplibre.android.geometry.LatLng;
+import org.maplibre.android.maps.MapLibreMap;
+import org.maplibre.android.maps.MapView;
+import org.maplibre.android.maps.Style;
+import org.maplibre.android.style.layers.CircleLayer;
+import org.maplibre.android.style.layers.Layer;
+import org.maplibre.android.style.sources.GeoJsonSource;
+import org.maplibre.geojson.Feature;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.maplibre.android.style.layers.Property.NONE;
+import static org.maplibre.android.style.layers.Property.VISIBLE;
+import static org.maplibre.android.style.layers.PropertyFactory.circleColor;
+import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
+import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
+import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
+import static org.maplibre.android.style.layers.PropertyFactory.visibility;
+
+public final class MapController {
+    public interface Listener {
+        void onMapSafetyState(boolean verified, String message);
+        void onMapFeaturesTapped(LatLng coordinate, List<Feature> land, List<Feature> claims);
+    }
+
+    public static final String BASE_SOURCE = "rockmap-base";
+    public static final String LAND_SOURCE = "rockmap-land";
+    public static final String CLAIM_SOURCE = "rockmap-claims";
+    public static final String LAND_FILL = "rockmap-land-fill";
+    public static final String LAND_OUTLINE = "rockmap-land-outline";
+    public static final String CLAIM_FILL = "rockmap-claim-fill";
+    public static final String CLAIM_OUTLINE = "rockmap-claim-outline";
+    public static final String CURRENT_SOURCE = "rockmap-current-location-source";
+    public static final String CURRENT_LAYER = "rockmap-current-location-layer";
+    public static final String WAYPOINT_SOURCE = "rockmap-waypoint-source";
+    public static final String WAYPOINT_LAYER = "rockmap-waypoint-layer";
+
+    private final MapView mapView;
+    private final OfflineDataManager dataManager;
+    private final Listener listener;
+    private MapLibreMap map;
+    private Style style;
+    private Location currentLocation;
+    private List<WaypointEntity> waypoints = new ArrayList<>();
+    private boolean landVisible = true;
+    private boolean claimsVisible = true;
+    private boolean waypointsVisible = true;
+    private boolean verifiedStyleActive;
+    private boolean attemptingVerifiedStyle;
+    private boolean fallbackLoading;
+    private boolean rollbackAttempted;
+
+    public MapController(MapView mapView, OfflineDataManager dataManager, Listener listener) {
+        this.mapView = mapView;
+        this.dataManager = dataManager;
+        this.listener = listener;
+    }
+
+    public void initialize() {
+        mapView.addOnDidFailLoadingMapListener(errorMessage -> {
+            if (verifiedStyleActive || attemptingVerifiedStyle) {
+                failVerifiedStyle("MapLibre failed to load the offline map: " + errorMessage);
+            }
+        });
+        mapView.addOnGlyphsErrorListener((fontStack, rangeStart, rangeEnd) -> {
+            if (verifiedStyleActive || attemptingVerifiedStyle) {
+                failVerifiedStyle("Required offline map labels failed to load.");
+            }
+        });
+
+        mapView.getMapAsync(mapLibreMap -> {
+            map = mapLibreMap;
+            map.addOnMapClickListener(this::handleTap);
+            reloadStyle();
+        });
+    }
+
+    public void reloadStyle() {
+        rollbackAttempted = false;
+        loadActiveOrSafe();
+    }
+
+    private void loadActiveOrSafe() {
+        if (map == null) return;
+        if (!dataManager.hasVerifiedActivePack()) {
+            loadSafeStyle("MAP DATA NOT INSTALLED / VERIFIED — DO NOT USE THIS SCREEN FOR NAVIGATION.\n"
+                    + dataManager.describeStatus());
+            return;
+        }
+
+        try {
+            String styleJson = dataManager.buildActiveStyleJson();
+            attemptingVerifiedStyle = true;
+            verifiedStyleActive = false;
+            fallbackLoading = false;
+            map.setStyle(new Style.Builder().fromJson(styleJson), loaded -> {
+                style = loaded;
+                if (!verifyRequiredDataContract(loaded)) {
+                    failVerifiedStyle("Verified files loaded, but the map style is missing required RockMap sources/layers.");
+                    return;
+                }
+                attemptingVerifiedStyle = false;
+                verifiedStyleActive = true;
+                installLocalOverlayLayers();
+                renderCurrentLocation();
+                renderWaypoints();
+                applyVisibility();
+                listener.onMapSafetyState(true, dataManager.describeStatus());
+            });
+        } catch (IOException | RuntimeException ex) {
+            failVerifiedStyle("Offline map snapshot was rejected before rendering: " + ex.getMessage());
+        }
+    }
+
+    private boolean verifyRequiredDataContract(Style loaded) {
+        return loaded.getSource(BASE_SOURCE) != null
+                && loaded.getSource(LAND_SOURCE) != null
+                && loaded.getSource(CLAIM_SOURCE) != null
+                && loaded.getLayer(LAND_FILL) != null
+                && loaded.getLayer(LAND_OUTLINE) != null
+                && loaded.getLayer(CLAIM_FILL) != null
+                && loaded.getLayer(CLAIM_OUTLINE) != null;
+    }
+
+    private void failVerifiedStyle(String reason) {
+        if (fallbackLoading) return;
+        attemptingVerifiedStyle = false;
+        verifiedStyleActive = false;
+        style = null;
+
+        if (!rollbackAttempted && dataManager.revertToPreviousManifest(reason)) {
+            rollbackAttempted = true;
+            loadActiveOrSafe();
+            return;
+        }
+        loadSafeStyle("OFFLINE MAP FAILED SAFETY CHECK — DO NOT USE THIS SCREEN FOR NAVIGATION.\n" + reason
+                + "\n" + dataManager.describeStatus());
+    }
+
+    private void loadSafeStyle(String reason) {
+        if (map == null || fallbackLoading) return;
+        fallbackLoading = true;
+        attemptingVerifiedStyle = false;
+        verifiedStyleActive = false;
+        map.setStyle(new Style.Builder().fromUri("asset://rockmap_safe_style.json"), loaded -> {
+            style = loaded;
+            fallbackLoading = false;
+            installLocalOverlayLayers();
+            renderCurrentLocation();
+            renderWaypoints();
+            applyVisibility();
+            listener.onMapSafetyState(false, reason);
+        });
+    }
+
+    public void updateCurrentLocation(Location location) {
+        currentLocation = location;
+        renderCurrentLocation();
+    }
+
+    public void setWaypoints(List<WaypointEntity> items) {
+        waypoints = items == null ? new ArrayList<>() : new ArrayList<>(items);
+        renderWaypoints();
+    }
+
+    public void centerOn(Location location) {
+        if (map == null || location == null) return;
+        map.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                new LatLng(location.getLatitude(), location.getLongitude()), 16.0));
+    }
+
+    public void centerOn(WaypointEntity waypoint) {
+        if (map == null || waypoint == null) return;
+        map.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                new LatLng(waypoint.latitude, waypoint.longitude), 16.0));
+    }
+
+    public void setLandVisible(boolean visible) {
+        landVisible = visible;
+        applyVisibility();
+    }
+
+    public void setClaimsVisible(boolean visible) {
+        claimsVisible = visible;
+        applyVisibility();
+    }
+
+    public void setWaypointsVisible(boolean visible) {
+        waypointsVisible = visible;
+        applyVisibility();
+    }
+
+    public boolean isLandVisible() { return landVisible; }
+    public boolean isClaimsVisible() { return claimsVisible; }
+    public boolean isWaypointsVisible() { return waypointsVisible; }
+    public boolean isVerifiedStyleActive() { return verifiedStyleActive; }
+
+    private void installLocalOverlayLayers() {
+        if (style == null) return;
+        if (style.getSource(CURRENT_SOURCE) == null) style.addSource(new GeoJsonSource(CURRENT_SOURCE, emptyCollection()));
+        if (style.getLayer(CURRENT_LAYER) == null) {
+            CircleLayer current = new CircleLayer(CURRENT_LAYER, CURRENT_SOURCE);
+            current.setProperties(
+                    circleColor(Color.rgb(20, 90, 230)),
+                    circleRadius(8f),
+                    circleStrokeColor(Color.WHITE),
+                    circleStrokeWidth(3f));
+            style.addLayer(current);
+        }
+        if (style.getSource(WAYPOINT_SOURCE) == null) style.addSource(new GeoJsonSource(WAYPOINT_SOURCE, emptyCollection()));
+        if (style.getLayer(WAYPOINT_LAYER) == null) {
+            CircleLayer saved = new CircleLayer(WAYPOINT_LAYER, WAYPOINT_SOURCE);
+            saved.setProperties(
+                    circleColor(Color.rgb(215, 80, 20)),
+                    circleRadius(7f),
+                    circleStrokeColor(Color.WHITE),
+                    circleStrokeWidth(2f));
+            style.addLayer(saved);
+        }
+    }
+
+    private void renderCurrentLocation() {
+        if (style == null) return;
+        GeoJsonSource source = style.getSourceAs(CURRENT_SOURCE);
+        if (source == null) return;
+        if (currentLocation == null) {
+            source.setGeoJson(emptyCollection());
+            return;
+        }
+        try {
+            JSONObject geometry = new JSONObject();
+            geometry.put("type", "Point");
+            JSONArray coords = new JSONArray();
+            coords.put(currentLocation.getLongitude());
+            coords.put(currentLocation.getLatitude());
+            geometry.put("coordinates", coords);
+            JSONObject feature = new JSONObject();
+            feature.put("type", "Feature");
+            feature.put("geometry", geometry);
+            JSONObject props = new JSONObject();
+            props.put("accuracy_m", currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : JSONObject.NULL);
+            feature.put("properties", props);
+            JSONObject collection = new JSONObject();
+            collection.put("type", "FeatureCollection");
+            collection.put("features", new JSONArray().put(feature));
+            source.setGeoJson(collection.toString());
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void renderWaypoints() {
+        if (style == null) return;
+        GeoJsonSource source = style.getSourceAs(WAYPOINT_SOURCE);
+        if (source == null) return;
+        try {
+            JSONArray features = new JSONArray();
+            for (WaypointEntity waypoint : waypoints) {
+                JSONObject geometry = new JSONObject();
+                geometry.put("type", "Point");
+                geometry.put("coordinates", new JSONArray().put(waypoint.longitude).put(waypoint.latitude));
+                JSONObject props = new JSONObject();
+                props.put("id", waypoint.id);
+                props.put("name", waypoint.name);
+                props.put("accuracy_m", waypoint.accuracyMeters);
+                JSONObject feature = new JSONObject();
+                feature.put("type", "Feature");
+                feature.put("geometry", geometry);
+                feature.put("properties", props);
+                features.put(feature);
+            }
+            JSONObject collection = new JSONObject();
+            collection.put("type", "FeatureCollection");
+            collection.put("features", features);
+            source.setGeoJson(collection.toString());
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private String emptyCollection() {
+        return "{\"type\":\"FeatureCollection\",\"features\":[]}";
+    }
+
+    private boolean handleTap(LatLng coordinate) {
+        if (map == null || style == null || !verifiedStyleActive) return false;
+        PointF point = map.getProjection().toScreenLocation(coordinate);
+        List<Feature> land = landVisible ? dedupe(query(point, LAND_FILL), "manager_code", "manager_name") : new ArrayList<>();
+        List<Feature> claims = claimsVisible ? dedupe(query(point, CLAIM_FILL), "serial", "name") : new ArrayList<>();
+        // Always show the verified-map location panel. An empty result must be explained as
+        // "no rendered feature here", never silently interpreted as public/unclaimed land.
+        listener.onMapFeaturesTapped(coordinate, land, claims);
+        return true;
+    }
+
+    private List<Feature> query(PointF point, String layerId) {
+        if (style == null || style.getLayer(layerId) == null) return new ArrayList<>();
+        return map.queryRenderedFeatures(point, new String[]{layerId});
+    }
+
+    private List<Feature> dedupe(List<Feature> input, String primaryProperty, String fallbackProperty) {
+        Map<String, Feature> unique = new LinkedHashMap<>();
+        int anonymous = 0;
+        for (Feature feature : input) {
+            String key = null;
+            if (feature != null && feature.hasProperty(primaryProperty)) {
+                key = feature.getStringProperty(primaryProperty);
+            }
+            if ((key == null || key.trim().isEmpty()) && feature != null && feature.hasProperty(fallbackProperty)) {
+                key = feature.getStringProperty(fallbackProperty);
+            }
+            if (key == null || key.trim().isEmpty()) key = "__feature_" + (anonymous++);
+            if (!unique.containsKey(key)) unique.put(key, feature);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private void applyVisibility() {
+        if (style == null) return;
+        setLayerVisible(LAND_FILL, landVisible);
+        setLayerVisible(LAND_OUTLINE, landVisible);
+        setLayerVisible(CLAIM_FILL, claimsVisible);
+        setLayerVisible(CLAIM_OUTLINE, claimsVisible);
+        setLayerVisible(WAYPOINT_LAYER, waypointsVisible);
+    }
+
+    private void setLayerVisible(String id, boolean visible) {
+        Layer layer = style.getLayer(id);
+        if (layer != null) layer.setProperties(visibility(visible ? VISIBLE : NONE));
+    }
+}

@@ -1,0 +1,17 @@
+{
+  "version": 8,
+  "name": "RockMap safe no-data style",
+  "metadata": {
+    "rockmap:purpose": "Never substitute an online map when verified offline data is unavailable"
+  },
+  "sources": {},
+  "layers": [
+    {
+      "id": "rockmap-safe-background",
+      "type": "background",
+      "paint": {
+        "background-color": "#e8e5dc"
+      }
+    }
+  ]
+}
