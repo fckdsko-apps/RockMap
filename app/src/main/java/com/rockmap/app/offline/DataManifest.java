@@ -4,6 +4,9 @@ import java.util.Collections;
 import java.util.List;
 
 public final class DataManifest {
+    public static final String STATUS_PUBLISHED = "published";
+    public static final String STATUS_BASEMAP_TEST = "basemap_test";
+
     public final int manifestVersion;
     public final int styleSchemaVersion;
     public final int minimumAppVersionCode;
@@ -26,6 +29,18 @@ public final class DataManifest {
         this.status = status;
         this.message = message;
         this.files = Collections.unmodifiableList(files);
+    }
+
+    public boolean isPublished() {
+        return STATUS_PUBLISHED.equals(status);
+    }
+
+    public boolean isBasemapTest() {
+        return STATUS_BASEMAP_TEST.equals(status);
+    }
+
+    public boolean isRenderable() {
+        return isPublished() || isBasemapTest();
     }
 
     public DataFileSpec find(String id) {

@@ -14,7 +14,6 @@ import org.json.JSONException;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -53,27 +52,36 @@ public final class OfflineDataManager {
     }
 
     public DataManifest getActiveManifest() {
-        return readPublishedManifest(getActiveManifestFile());
+        return readRenderableManifest(getActiveManifestFile());
     }
 
     public DataManifest getPreviousManifest() {
-        return readPublishedManifest(getPreviousManifestFile());
+        return readRenderableManifest(getPreviousManifestFile());
     }
 
-    private DataManifest readPublishedManifest(File manifestFile) {
+    private DataManifest readRenderableManifest(File manifestFile) {
         if (!manifestFile.isFile()) return null;
         try {
             String json = readUtf8(manifestFile, 1_000_000);
             DataManifest parsed = DataManifestParser.parse(json);
-            if (!"published".equals(parsed.status)) return null;
-            return parsed;
+            return parsed.isRenderable() ? parsed : null;
         } catch (IOException | JSONException ex) {
             return null;
         }
     }
 
-    public boolean hasVerifiedActivePack() {
+    public boolean hasRenderableActivePack() {
         return hasCompleteSnapshotBySize(getActiveManifest());
+    }
+
+    public boolean hasVerifiedActivePack() {
+        DataManifest active = getActiveManifest();
+        return active != null && active.isPublished() && hasCompleteSnapshotBySize(active);
+    }
+
+    public boolean hasBasemapTestPack() {
+        DataManifest active = getActiveManifest();
+        return active != null && active.isBasemapTest() && hasCompleteSnapshotBySize(active);
     }
 
     public boolean hasCompleteSnapshotBySize(DataManifest manifest) {
@@ -96,7 +104,7 @@ public final class OfflineDataManager {
     }
 
     /**
-     * Builds the runtime style from a verified, locally stored style template.
+     * Builds the runtime style from a locally stored, size-verified style template.
      * The template must never contain absolute device paths; those are substituted here.
      */
     public String buildActiveStyleJson() throws IOException {
@@ -107,29 +115,34 @@ public final class OfflineDataManager {
 
         File styleFile = getActiveFile("style");
         File baseFile = getActiveFile("base");
-        File landFile = getActiveFile("land");
-        File claimsFile = getActiveFile("claims");
-        if (styleFile == null || baseFile == null || landFile == null || claimsFile == null) {
-            throw new IOException("Active map snapshot is missing a required component.");
+        if (styleFile == null || baseFile == null) {
+            throw new IOException("Active map snapshot is missing its style or basemap.");
         }
 
         String template = readUtf8(styleFile, 8_000_000);
         requirePlaceholder(template, BASE_PLACEHOLDER);
-        requirePlaceholder(template, LAND_PLACEHOLDER);
-        requirePlaceholder(template, CLAIMS_PLACEHOLDER);
+        String rendered = template.replace(BASE_PLACEHOLDER, pmtilesUri(baseFile));
 
-        String rendered = template
-                .replace(BASE_PLACEHOLDER, pmtilesUri(baseFile))
-                .replace(LAND_PLACEHOLDER, pmtilesUri(landFile))
-                .replace(CLAIMS_PLACEHOLDER, pmtilesUri(claimsFile));
+        if (manifest.isPublished()) {
+            File landFile = getActiveFile("land");
+            File claimsFile = getActiveFile("claims");
+            if (landFile == null || claimsFile == null) {
+                throw new IOException("Published map snapshot is missing land or claims data.");
+            }
+            requirePlaceholder(rendered, LAND_PLACEHOLDER);
+            requirePlaceholder(rendered, CLAIMS_PLACEHOLDER);
+            rendered = rendered
+                    .replace(LAND_PLACEHOLDER, pmtilesUri(landFile))
+                    .replace(CLAIMS_PLACEHOLDER, pmtilesUri(claimsFile));
+        }
 
         if (rendered.contains("${ROCKMAP_")) {
             throw new IOException("Map style contains an unresolved RockMap placeholder.");
         }
-        // Field-safe published styles must not depend on the network at render time.
+        // Any installed RockMap pack must be able to render without a network fallback.
         String lower = rendered.toLowerCase(java.util.Locale.US);
         if (lower.contains("http://") || lower.contains("https://")) {
-            throw new IOException("Published field-safe style contains a runtime network dependency.");
+            throw new IOException("Installed offline style contains a runtime network dependency.");
         }
         return rendered;
     }
@@ -150,7 +163,7 @@ public final class OfflineDataManager {
         try {
             byte[] bytes = readBytes(getPreviousManifestFile(), 1_000_000);
             DataUpdateWorker.replaceFileAtomically(getActiveManifestFile(), bytes);
-            setLastUpdateStatus("A newly activated map failed to render safely. RockMap restored the previous verified snapshot. "
+            setLastUpdateStatus("A newly activated map failed to render safely. RockMap restored the previous offline snapshot. "
                     + safeMessage(reason));
             return true;
         } catch (IOException ex) {
@@ -163,12 +176,26 @@ public final class OfflineDataManager {
         DataManifest active = getActiveManifest();
         if (active == null || !hasCompleteSnapshotBySize(active)) {
             String last = getLastUpdateStatus();
-            if (last == null || last.trim().isEmpty()) last = "No verified offline map pack is installed.";
+            if (last == null || last.trim().isEmpty()) last = "No offline map pack is installed.";
             return "OFFLINE MAP: NOT VERIFIED\n" + last;
         }
-        return "OFFLINE MAP: VERIFIED\nPack: " + active.pack
+
+        if (active.isBasemapTest()) {
+            return "OFFLINE BASEMAP: TEST PACK — NOT VERIFIED FOR NAVIGATION"
+                    + "\nLand status: unavailable"
+                    + "\nMining claims: unavailable"
+                    + "\nLabels: not included yet"
+                    + "\nPack: " + active.pack
+                    + "\nVersion: " + active.version
+                    + "\nPublished: " + active.publishedAt
+                    + "\nMap data: © OpenStreetMap contributors · Protomaps";
+        }
+
+        return "OFFLINE MAP: VERIFIED"
+                + "\nPack: " + active.pack
                 + "\nVersion: " + active.version
-                + "\nPublished: " + active.publishedAt;
+                + "\nPublished: " + active.publishedAt
+                + "\nMap data: © OpenStreetMap contributors · Protomaps";
     }
 
     public OneTimeWorkRequest queueUpdate() {

@@ -2,11 +2,17 @@
 
 RockMap deliberately separates downloadable map data from user waypoints. The Android app never consumes BLM or Protomaps field names directly. The GitHub data-building workflow will normalize upstream GIS data to this stable contract.
 
-## Field-safety status for alpha1
+## Field-safety status for alpha2
 
-`0.1.0-alpha1` contains the offline renderer, downloader, checksum validation, rollback logic, GPS, saved-location database, and import/export plumbing. **No Colorado map pack is published in this source drop.** The bundled safe style is intentionally blank and carries an on-screen warning rather than silently substituting an online or unverified map.
+`0.1.0-alpha2` adds support for a real Colorado **basemap test pack** while deliberately keeping the map in the red/unverified state. A manifest with `status: basemap_test` may contain only `style` + `base`; land status, mining claims, and labels are treated as unavailable and the UI must say so. The test style is fully local after download and may not contain runtime HTTP/HTTPS dependencies.
 
-Do not publish a manifest with `status: published` until the generated Colorado style/data passes the airplane-mode/device tests, including offline labels/glyphs. MapLibre Native Android does not permit us to assume system-font fallback for ordinary style glyphs, so offline glyph handling must be proven on the phone before the map is called field-safe.
+A `basemap_test` pack is for validating Colorado coverage, PMTiles rendering, roads, paths, water, GPS/waypoint alignment, and airplane-mode behavior. It is **not field-safe navigation data** and must never turn the safety banner green.
+
+Do not publish a manifest with `status: published` until the complete Colorado style/data passes the airplane-mode/device tests, including land status, claims, and offline labels/glyphs. MapLibre Native Android does not permit us to assume system-font fallback for ordinary style glyphs, so offline glyph handling must be proven on the phone before the map is called field-safe.
+
+### Basemap-test manifest
+
+A `basemap_test` manifest uses the same schema and verification rules as a published snapshot but requires only `style` and `base`. The style template must contain `${ROCKMAP_BASE_URI}` and must not contain `${ROCKMAP_LAND_URI}` or `${ROCKMAP_CLAIMS_URI}`. RockMap renders it with a persistent red warning and disables land/claim controls.
 
 ## Published manifest
 
@@ -78,7 +84,7 @@ A filename that is referenced by the active or rollback snapshot may not be reus
 
 ## Style template
 
-The downloaded style file is a **template**, not a device-specific style. It must contain all three placeholders:
+The downloaded style file is a **template**, not a device-specific style. A `basemap_test` style requires `${ROCKMAP_BASE_URI}` only. A `published` style must contain all three placeholders:
 
 - `${ROCKMAP_BASE_URI}`
 - `${ROCKMAP_LAND_URI}`

@@ -63,7 +63,8 @@ public final class MapController {
     private boolean claimsVisible = true;
     private boolean waypointsVisible = true;
     private boolean verifiedStyleActive;
-    private boolean attemptingVerifiedStyle;
+    private boolean offlineStyleActive;
+    private boolean attemptingOfflineStyle;
     private boolean fallbackLoading;
     private boolean rollbackAttempted;
 
@@ -75,13 +76,13 @@ public final class MapController {
 
     public void initialize() {
         mapView.addOnDidFailLoadingMapListener(errorMessage -> {
-            if (verifiedStyleActive || attemptingVerifiedStyle) {
-                failVerifiedStyle("MapLibre failed to load the offline map: " + errorMessage);
+            if (offlineStyleActive || attemptingOfflineStyle) {
+                failOfflineStyle("MapLibre failed to load the offline map: " + errorMessage);
             }
         });
         mapView.addOnGlyphsErrorListener((fontStack, rangeStart, rangeEnd) -> {
-            if (verifiedStyleActive || attemptingVerifiedStyle) {
-                failVerifiedStyle("Required offline map labels failed to load.");
+            if (offlineStyleActive || attemptingOfflineStyle) {
+                failOfflineStyle("Required offline map labels failed to load.");
             }
         });
 
@@ -99,34 +100,46 @@ public final class MapController {
 
     private void loadActiveOrSafe() {
         if (map == null) return;
-        if (!dataManager.hasVerifiedActivePack()) {
+        if (!dataManager.hasRenderableActivePack()) {
             loadSafeStyle("MAP DATA NOT INSTALLED / VERIFIED — DO NOT USE THIS SCREEN FOR NAVIGATION.\n"
                     + dataManager.describeStatus());
             return;
         }
 
+        final boolean expectedVerified = dataManager.hasVerifiedActivePack();
         try {
             String styleJson = dataManager.buildActiveStyleJson();
-            attemptingVerifiedStyle = true;
+            attemptingOfflineStyle = true;
+            offlineStyleActive = false;
             verifiedStyleActive = false;
             fallbackLoading = false;
             map.setStyle(new Style.Builder().fromJson(styleJson), loaded -> {
                 style = loaded;
-                if (!verifyRequiredDataContract(loaded)) {
-                    failVerifiedStyle("Verified files loaded, but the map style is missing required RockMap sources/layers.");
+                boolean contractValid = expectedVerified
+                        ? verifyRequiredDataContract(loaded)
+                        : verifyBasemapTestContract(loaded);
+                if (!contractValid) {
+                    failOfflineStyle(expectedVerified
+                            ? "Published files loaded, but the map style is missing required RockMap sources/layers."
+                            : "Basemap test files loaded, but the style is missing the RockMap basemap source.");
                     return;
                 }
-                attemptingVerifiedStyle = false;
-                verifiedStyleActive = true;
+                attemptingOfflineStyle = false;
+                offlineStyleActive = true;
+                verifiedStyleActive = expectedVerified;
                 installLocalOverlayLayers();
                 renderCurrentLocation();
                 renderWaypoints();
                 applyVisibility();
-                listener.onMapSafetyState(true, dataManager.describeStatus());
+                listener.onMapSafetyState(expectedVerified, dataManager.describeStatus());
             });
         } catch (IOException | RuntimeException ex) {
-            failVerifiedStyle("Offline map snapshot was rejected before rendering: " + ex.getMessage());
+            failOfflineStyle("Offline map snapshot was rejected before rendering: " + ex.getMessage());
         }
+    }
+
+    private boolean verifyBasemapTestContract(Style loaded) {
+        return loaded.getSource(BASE_SOURCE) != null;
     }
 
     private boolean verifyRequiredDataContract(Style loaded) {
@@ -139,9 +152,10 @@ public final class MapController {
                 && loaded.getLayer(CLAIM_OUTLINE) != null;
     }
 
-    private void failVerifiedStyle(String reason) {
+    private void failOfflineStyle(String reason) {
         if (fallbackLoading) return;
-        attemptingVerifiedStyle = false;
+        attemptingOfflineStyle = false;
+        offlineStyleActive = false;
         verifiedStyleActive = false;
         style = null;
 
@@ -157,7 +171,8 @@ public final class MapController {
     private void loadSafeStyle(String reason) {
         if (map == null || fallbackLoading) return;
         fallbackLoading = true;
-        attemptingVerifiedStyle = false;
+        attemptingOfflineStyle = false;
+        offlineStyleActive = false;
         verifiedStyleActive = false;
         map.setStyle(new Style.Builder().fromUri("asset://rockmap_safe_style.json"), loaded -> {
             style = loaded;
@@ -211,6 +226,7 @@ public final class MapController {
     public boolean isClaimsVisible() { return claimsVisible; }
     public boolean isWaypointsVisible() { return waypointsVisible; }
     public boolean isVerifiedStyleActive() { return verifiedStyleActive; }
+    public boolean hasLandClaimsAvailable() { return verifiedStyleActive; }
 
     private void installLocalOverlayLayers() {
         if (style == null) return;

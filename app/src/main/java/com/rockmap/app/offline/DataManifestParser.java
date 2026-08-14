@@ -31,7 +31,9 @@ public final class DataManifestParser {
             throw new JSONException("Unsupported manifest version: " + manifestVersion);
         }
 
-        if (!"published".equals(status)) {
+        boolean published = DataManifest.STATUS_PUBLISHED.equals(status);
+        boolean basemapTest = DataManifest.STATUS_BASEMAP_TEST.equals(status);
+        if (!published && !basemapTest) {
             return new DataManifest(manifestVersion, 0, 0, pack, "", "", status,
                     message, new ArrayList<>());
         }
@@ -48,8 +50,8 @@ public final class DataManifestParser {
         if (minimumAppVersionCode > BuildConfig.VERSION_CODE) {
             throw new JSONException("Data pack requires a newer RockMap build");
         }
-        if (version.trim().isEmpty() || publishedAt.trim().isEmpty()) {
-            throw new JSONException("Published manifest is missing version/date");
+        if (pack.trim().isEmpty() || version.trim().isEmpty() || publishedAt.trim().isEmpty()) {
+            throw new JSONException("Renderable manifest is missing pack/version/date");
         }
         if (fileArray.length() == 0 || fileArray.length() > 32) {
             throw new JSONException("Invalid number of files in manifest");
@@ -93,19 +95,22 @@ public final class DataManifestParser {
             files.add(new DataFileSpec(id, kind, fileName, url, sha256, bytes, schemaVersion, required));
         }
 
-        require(files, "style", "style");
-        require(files, "base", "pmtiles");
-        require(files, "land", "pmtiles");
-        require(files, "claims", "pmtiles");
+        require(files, "style", "style", status);
+        require(files, "base", "pmtiles", status);
+        if (published) {
+            require(files, "land", "pmtiles", status);
+            require(files, "claims", "pmtiles", status);
+        }
 
         return new DataManifest(manifestVersion, styleSchemaVersion, minimumAppVersionCode,
                 pack, version, publishedAt, status, message, files);
     }
 
-    private static void require(List<DataFileSpec> files, String id, String kind) throws JSONException {
+    private static void require(List<DataFileSpec> files, String id, String kind, String status)
+            throws JSONException {
         for (DataFileSpec file : files) {
             if (id.equals(file.id) && kind.equals(file.kind) && file.required) return;
         }
-        throw new JSONException("Published manifest is missing required component: " + id);
+        throw new JSONException(status + " manifest is missing required component: " + id);
     }
 }

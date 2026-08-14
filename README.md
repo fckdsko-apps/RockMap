@@ -2,39 +2,34 @@
 
 RockMap is an Android-first, offline-first field map project built through GitHub Actions. Android Studio is not required for the normal workflow.
 
-## Current source build: 0.1.0-alpha1
+## Current source build: 0.1.0-alpha2
 
-This source package contains the Android application only. It deliberately contains **no `.github` directory and no workflow file** so the project can be uploaded to a brand-new repository before any Action is capable of running.
+Alpha 2 keeps the known-good Android build/signing workflow from Alpha 1 and adds support for a real Colorado **basemap test pack** distributed as immutable GitHub Release assets.
 
-Core alpha functionality included:
+Core functionality included:
 
-- MapLibre Native renderer and local PMTiles style contract.
-- Blank local safety style whenever verified map data is unavailable or fails to render.
+- MapLibre Native renderer with local PMTiles support.
+- Blank local safety style when no usable offline data exists or an installed style fails its safety checks.
+- Alpha 2 `basemap_test` state: renders a real local Colorado basemap while keeping the safety banner red.
+- Land-status and mining-claim controls explicitly unavailable during the basemap-only test.
 - Foreground GPS/current-position display.
-- Precise-location requirement for saving field waypoints.
-- Room-backed saved locations with name, notes, timestamps, coordinates, and reported GPS accuracy.
-- Saved-location edit/delete/display and GeoJSON export/import.
-- Stable land-status and mining-claims source/layer contracts.
-- Overlapping-claim tap handling.
-- HTTPS-only manifest/data update plumbing with byte-count and SHA-256 verification.
+- Room-backed saved locations with name, notes, timestamps, coordinates, reported GPS accuracy, and GeoJSON import/export.
+- Stable future land-status and mining-claims source/layer contracts.
+- HTTPS-only manifest/data update plumbing with declared byte counts and SHA-256 verification.
 - Atomic activation plus previous-snapshot rollback plumbing.
 - Downloaded maps excluded from Android backup while waypoint data remains backup-eligible.
 - No background-location or broad-storage permission.
 
 ## Critical safety state
 
-**0.1.0-alpha1 does not contain a field-verified Colorado basemap, surface-management pack, or mining-claims pack.** `data/manifest.json` is intentionally `not_published`.
+**0.1.0-alpha2 is still not a field-verified navigation build.** Its test pack contains a Protomaps/OpenStreetMap basemap only. It intentionally does not include offline labels, BLM land-status data, or mining-claim data.
 
-Until the app itself reports `OFFLINE MAP: VERIFIED`, it must not be used for navigation or to decide whether land is public, unclaimed, or legal to collect on. The app intentionally displays a blank local map and a warning rather than silently substituting an online or incomplete map.
+While the test pack is active, RockMap must continue to report `NOT VERIFIED FOR NAVIGATION` in red. The test exists to validate PMTiles rendering, Colorado coverage, roads/paths/water, GPS/waypoint alignment, and airplane-mode behavior before additional layers are added.
 
-The real Colorado data pack will be published only after device/airplane-mode validation of geographic alignment, offline labels, land and claim geometry, overlap handling, archive integrity, and update/rollback behavior.
+RockMap never infers that collecting is legal merely because a point appears on public land or because no claim is rendered.
 
 ## Build setup
 
-The workflow is created manually in GitHub **after this entire source package has already been committed**. This ordering prevents Actions from ever running against a half-uploaded repository.
+The existing successful APK workflow should remain unchanged. Alpha 2 source files are committed normally. A second, manual-only GitHub workflow is supplied separately to extract the pinned Colorado Protomaps test pack and publish it as a prerelease.
 
-The build workflow is supplied separately as `RockMap_WORKFLOW_COPY_PASTE.yml` and is not part of this source upload package.
-
-## Stable map-data contract
-
-See `docs/DATA_CONTRACT.md`. Android consumes only RockMap's normalized fields and stable source/layer IDs; upstream BLM/Protomaps processing details belong in the later data-build pipeline.
+See `docs/BASEMAP_ALPHA2.md` for the device test and `docs/DATA_CONTRACT.md` for the stable map-data contract.

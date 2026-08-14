@@ -29,7 +29,11 @@ required_files = [
     "app/src/main/res/xml/backup_rules.xml",
     "app/src/main/res/xml/data_extraction_rules.xml",
     "data/manifest.json",
+    "data/basemap-test-style.json",
     "docs/DATA_CONTRACT.md",
+    "docs/BASEMAP_ALPHA2.md",
+    "scripts/create_basemap_test_manifest.py",
+    "scripts/validate_basemap_metadata.py",
     "signing-certificate.sha256",
     "app/src/test/java/com/rockmap/app/offline/DataValidatorsTest.java",
 ]
@@ -100,13 +104,38 @@ try:
 except Exception as exc:
     err(f"Safe style invalid: {exc}")
 
-# The initial repository manifest must explicitly remain unpublished.
+# Alpha 2 basemap-test style: real local vector map, but intentionally no labels/overlays.
+try:
+    basemap_style_text = read("data/basemap-test-style.json")
+    basemap_style = json.loads(basemap_style_text)
+    if basemap_style.get("version") != 8:
+        err("Basemap test style must use MapLibre style version 8.")
+    sources = basemap_style.get("sources", {})
+    base = sources.get("rockmap-base", {})
+    if base.get("type") != "vector" or base.get("url") != "${ROCKMAP_BASE_URI}":
+        err("Basemap test style must expose rockmap-base at ${ROCKMAP_BASE_URI}.")
+    if "${ROCKMAP_LAND_URI}" in basemap_style_text or "${ROCKMAP_CLAIMS_URI}" in basemap_style_text:
+        err("Basemap test style must not pretend land/claims data exist.")
+    lower = basemap_style_text.lower()
+    if "http://" in lower or "https://" in lower:
+        err("Basemap test style must have no runtime network dependency.")
+    if '"glyphs"' in lower or '"sprite"' in lower:
+        err("Alpha 2 basemap test must not depend on glyphs or sprites yet.")
+    layer_ids = {layer.get("id") for layer in basemap_style.get("layers", []) if isinstance(layer, dict)}
+    for layer_id in ("rockmap-water", "rockmap-streams", "rockmap-paths", "rockmap-minor-road", "rockmap-major-road", "rockmap-highway", "rockmap-buildings"):
+        if layer_id not in layer_ids:
+            err(f"Basemap test style missing test layer: {layer_id}")
+except Exception as exc:
+    err(f"Basemap test style invalid: {exc}")
+
+# The repository placeholder manifest remains unpublished. Alpha 2 fetches its test
+# manifest from the dedicated GitHub Release tag, not from this source-tree file.
 try:
     data_manifest = json.loads(read("data/manifest.json"))
     if data_manifest.get("manifestVersion") != 1:
         err("Repository data manifest must be schema version 1.")
     if data_manifest.get("status") != "not_published":
-        err("Alpha 1 must not claim a field-safe Colorado map pack is published.")
+        err("The repository placeholder manifest must not claim a field-safe Colorado pack is published.")
     if "field-safe" not in data_manifest.get("message", ""):
         err("Unpublished manifest must carry the field-safety warning.")
 except Exception as exc:
@@ -130,6 +159,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
+if "rockmap-basemap-alpha2" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 2 must fetch its manifest from the fixed GitHub Release tag.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha2" not in read("gradle.properties"):
+    err("Alpha 2 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 
@@ -145,12 +178,20 @@ for forbidden_source in (
 ):
     if forbidden_source in java_text:
         err(f"Forbidden/risky source pattern present: {forbidden_source}")
+if "@Override protected void onLowMemory()" in java_text:
+    err("Activity.onLowMemory() must remain public on current Android APIs.")
+if "@Override public void onLowMemory()" not in java_text:
+    err("MainActivity must forward public onLowMemory() to MapView.")
+
 for required_source in (
     "pmtiles://",
     "${ROCKMAP_BASE_URI}",
     "${ROCKMAP_LAND_URI}",
     "${ROCKMAP_CLAIMS_URI}",
     "revertToPreviousManifest",
+    "STATUS_BASEMAP_TEST",
+    "hasRenderableActivePack",
+    "hasLandClaimsAvailable",
     "No claim feature was rendered",
     "Treat this as unknown, not as public land",
 ):
@@ -160,6 +201,7 @@ for required_source in (
 # Stable data contract.
 contract = read("docs/DATA_CONTRACT.md")
 for required in (
+    "basemap_test",
     "${ROCKMAP_BASE_URI}",
     "${ROCKMAP_LAND_URI}",
     "${ROCKMAP_CLAIMS_URI}",

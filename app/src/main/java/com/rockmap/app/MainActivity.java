@@ -224,9 +224,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(4), dp(20), dp(4));
-        CheckBox land = checkbox("Land status", mapController.isLandVisible());
-        CheckBox claims = checkbox("Mining claims — not closed", mapController.isClaimsVisible());
+        boolean landClaimsAvailable = mapController.hasLandClaimsAvailable();
+        CheckBox land = checkbox(landClaimsAvailable ? "Land status" : "Land status — unavailable in basemap test",
+                landClaimsAvailable && mapController.isLandVisible());
+        CheckBox claims = checkbox(landClaimsAvailable ? "Mining claims — not closed" : "Mining claims — unavailable in basemap test",
+                landClaimsAvailable && mapController.isClaimsVisible());
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
+        land.setEnabled(landClaimsAvailable);
+        claims.setEnabled(landClaimsAvailable);
         box.addView(land);
         box.addView(claims);
         box.addView(saved);
@@ -234,8 +239,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setTitle("Layers")
                 .setView(box)
                 .setPositiveButton("Apply", (d, w) -> {
-                    mapController.setLandVisible(land.isChecked());
-                    mapController.setClaimsVisible(claims.isChecked());
+                    mapController.setLandVisible(landClaimsAvailable && land.isChecked());
+                    mapController.setClaimsVisible(landClaimsAvailable && claims.isChecked());
                     mapController.setWaypointsVisible(saved.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
@@ -351,7 +356,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
         androidx.work.OneTimeWorkRequest request = offlineDataManager.queueUpdate();
-        Toast.makeText(this, "Checking verified map data…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Checking RockMap offline data…", Toast.LENGTH_SHORT).show();
         clearUpdateObserver();
         updateLiveData = androidx.work.WorkManager.getInstance(this)
                 .getWorkInfoByIdLiveData(request.getId());
@@ -362,7 +367,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 clearUpdateObserver();
                 if (info.getState() == WorkInfo.State.SUCCEEDED) {
                     mapController.reloadStyle();
-                    showMessage("Verified offline data downloaded. RockMap is validating it on the map now.");
+                    showMessage("Offline data downloaded. RockMap is validating the installed map now.");
                 } else {
                     showMessage(offlineDataManager.getLastUpdateStatus());
                 }

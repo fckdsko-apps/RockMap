@@ -1,0 +1,456 @@
+{
+  "version": 8,
+  "name": "RockMap Colorado Basemap Test Alpha 2",
+  "metadata": {
+    "rockmap:status": "basemap_test",
+    "rockmap:warning": "NOT VERIFIED FOR NAVIGATION. Land status, mining claims, and labels are not included."
+  },
+  "sources": {
+    "rockmap-base": {
+      "type": "vector",
+      "url": "${ROCKMAP_BASE_URI}",
+      "attribution": "Protomaps © OpenStreetMap contributors",
+      "maxzoom": 14
+    }
+  },
+  "layers": [
+    {
+      "id": "rockmap-background",
+      "type": "background",
+      "paint": {
+        "background-color": "#f1eee4"
+      }
+    },
+    {
+      "id": "rockmap-earth",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "earth",
+      "filter": [
+        "==",
+        "$type",
+        "Polygon"
+      ],
+      "paint": {
+        "fill-color": "#ece8dc"
+      }
+    },
+    {
+      "id": "rockmap-landcover",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "landcover",
+      "paint": {
+        "fill-color": [
+          "match",
+          [
+            "get",
+            "kind"
+          ],
+          "forest",
+          "#d5dfc8",
+          "grassland",
+          "#dfe6ca",
+          "farmland",
+          "#e6e0c3",
+          "scrub",
+          "#d9dfc9",
+          "barren",
+          "#e5ddce",
+          "glacier",
+          "#e8f2f2",
+          "urban_area",
+          "#e5e1dc",
+          "#e1dfd3"
+        ],
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.75,
+          9,
+          0.25
+        ]
+      }
+    },
+    {
+      "id": "rockmap-landuse-green",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "landuse",
+      "filter": [
+        "in",
+        "kind",
+        "national_park",
+        "park",
+        "protected_area",
+        "nature_reserve",
+        "forest",
+        "wood",
+        "scrub",
+        "grassland",
+        "grass"
+      ],
+      "paint": {
+        "fill-color": "#d4e2c5",
+        "fill-opacity": 0.72
+      }
+    },
+    {
+      "id": "rockmap-landuse-developed",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "landuse",
+      "filter": [
+        "in",
+        "kind",
+        "industrial",
+        "school",
+        "university",
+        "college",
+        "hospital",
+        "aerodrome",
+        "military",
+        "naval_base",
+        "airfield"
+      ],
+      "paint": {
+        "fill-color": "#e4ddda",
+        "fill-opacity": 0.65
+      }
+    },
+    {
+      "id": "rockmap-water",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "water",
+      "filter": [
+        "==",
+        "$type",
+        "Polygon"
+      ],
+      "paint": {
+        "fill-color": "#a9cedb"
+      }
+    },
+    {
+      "id": "rockmap-rivers",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "water",
+      "minzoom": 9,
+      "filter": [
+        "==",
+        "kind",
+        "river"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#75abc0",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          9,
+          0.7,
+          14,
+          2.0,
+          18,
+          5.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-streams",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "water",
+      "minzoom": 14,
+      "filter": [
+        "==",
+        "kind",
+        "stream"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#75abc0",
+        "line-width": 0.8
+      }
+    },
+    {
+      "id": "rockmap-paths",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 14,
+      "filter": [
+        "in",
+        "kind",
+        "path",
+        "other"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#8f755d",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          14,
+          0.7,
+          18,
+          2.3
+        ],
+        "line-dasharray": [
+          3,
+          2
+        ]
+      }
+    },
+    {
+      "id": "rockmap-minor-road-casing",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 11,
+      "filter": [
+        "==",
+        "kind",
+        "minor_road"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#b8aea0",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          0.8,
+          14,
+          3.0,
+          18,
+          8.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-minor-road",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 11,
+      "filter": [
+        "==",
+        "kind",
+        "minor_road"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#faf8f2",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          11,
+          0.4,
+          14,
+          2.0,
+          18,
+          6.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-major-road-casing",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 7,
+      "filter": [
+        "in",
+        "kind",
+        "major_road",
+        "medium_road"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#b8ab96",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          7,
+          0.8,
+          12,
+          3.0,
+          18,
+          11.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-major-road",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 7,
+      "filter": [
+        "in",
+        "kind",
+        "major_road",
+        "medium_road"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#f5eddd",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          7,
+          0.4,
+          12,
+          2.0,
+          18,
+          8.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-highway-casing",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 5,
+      "filter": [
+        "==",
+        "kind",
+        "highway"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#b79f86",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          1.0,
+          10,
+          3.5,
+          18,
+          13.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-highway",
+      "type": "line",
+      "source": "rockmap-base",
+      "source-layer": "roads",
+      "minzoom": 5,
+      "filter": [
+        "==",
+        "kind",
+        "highway"
+      ],
+      "layout": {
+        "line-cap": "round",
+        "line-join": "round"
+      },
+      "paint": {
+        "line-color": "#e8c9a3",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.6,
+          10,
+          2.4,
+          18,
+          10.0
+        ]
+      }
+    },
+    {
+      "id": "rockmap-buildings",
+      "type": "fill",
+      "source": "rockmap-base",
+      "source-layer": "buildings",
+      "minzoom": 14,
+      "paint": {
+        "fill-color": "#cfc8be",
+        "fill-outline-color": "#b8b0a5",
+        "fill-opacity": 0.82
+      }
+    }
+  ],
+  "center": [
+    -105.5,
+    39.0
+  ],
+  "zoom": 5.5
+}

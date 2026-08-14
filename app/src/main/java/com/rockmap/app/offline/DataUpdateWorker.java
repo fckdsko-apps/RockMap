@@ -59,9 +59,9 @@ public final class DataUpdateWorker extends Worker {
         try {
             String rawManifest = downloadSmallText(BuildConfig.DATA_MANIFEST_URL, MAX_MANIFEST_BYTES);
             DataManifest manifest = DataManifestParser.parse(rawManifest);
-            if (!"published".equals(manifest.status)) {
+            if (!manifest.isRenderable()) {
                 String message = manifest.message == null || manifest.message.trim().isEmpty()
-                        ? "No verified map pack has been published yet." : manifest.message;
+                        ? "No RockMap offline data pack has been published yet." : manifest.message;
                 return fail(manager, message);
             }
 
@@ -106,14 +106,19 @@ public final class DataUpdateWorker extends Worker {
             // Keep everything referenced by the active and previous snapshots. This ensures a
             // semantically valid-but-unrenderable new style can be rolled back on the device.
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
-            manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
+            if (manifest.isBasemapTest()) {
+                manager.setLastUpdateStatus("Basemap test pack downloaded and activated: " + manifest.version
+                        + ". NOT VERIFIED FOR NAVIGATION; land status, mining claims, and labels are not included yet.");
+            } else {
+                manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
+            }
             return Result.success();
         } catch (ArithmeticException ex) {
             return fail(manager, "Map update rejected because declared file sizes overflowed safely.");
         } catch (JSONException ex) {
             return fail(manager, "Map manifest rejected: " + ex.getMessage());
         } catch (IOException | NoSuchAlgorithmException ex) {
-            return fail(manager, "Map update failed; previous verified data was kept: " + ex.getMessage());
+            return fail(manager, "Map update failed; previous offline data was kept: " + ex.getMessage());
         } catch (RuntimeException ex) {
             return fail(manager, "Map update aborted safely: " + ex.getMessage());
         }
