@@ -1,0 +1,169 @@
+name: Build Colorado Basemap Test Pack
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rockmap-basemap-alpha2
+  cancel-in-progress: false
+
+jobs:
+  build-basemap:
+    name: Build and publish Alpha 2 Colorado basemap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PMTILES_VERSION: '1.31.2'
+      PMTILES_ARCHIVE_SHA256: '3ed7dbf4ec2e6dfe5e25b6f70d1ffc932729f93c86db353bf514dd71010a312f'
+      SOURCE_DATE: '20260722'
+      SOURCE_URL: 'https://build.protomaps.com/20260722.pmtiles'
+      COLORADO_BBOX: '-109.10,36.95,-102.00,41.05'
+      MAXZOOM: '14'
+      RELEASE_TAG: 'rockmap-basemap-alpha2-20260722-z14'
+      BASE_NAME: 'colorado-base-protomaps-20260722-z14.pmtiles'
+      STYLE_NAME: 'rockmap-basemap-test-style-alpha2.json'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Install pinned PMTiles CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rockmap-pmtiles"
+          ARCHIVE="$RUNNER_TEMP/rockmap-pmtiles/pmtiles.tar.gz"
+          URL="https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz"
+
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 300 \
+            --output "$ARCHIVE" "$URL"
+          printf '%s  %s\n' "$PMTILES_ARCHIVE_SHA256" "$ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/rockmap-pmtiles"
+
+          PMTILES_BIN="$(find "$RUNNER_TEMP/rockmap-pmtiles" -type f -name pmtiles | head -n 1)"
+          test -n "$PMTILES_BIN"
+          chmod +x "$PMTILES_BIN"
+          "$PMTILES_BIN" --help >/dev/null
+          echo "PMTILES_BIN=$PMTILES_BIN" >> "$GITHUB_ENV"
+
+      - name: Verify pinned Protomaps source is readable
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$PMTILES_BIN" show "$SOURCE_URL"
+
+      - name: Extract Colorado through zoom 14
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          BASE="dist/$BASE_NAME"
+          "$PMTILES_BIN" extract "$SOURCE_URL" "$BASE" \
+            --bbox="$COLORADO_BBOX" \
+            --maxzoom="$MAXZOOM"
+          test -s "$BASE"
+
+          BYTES="$(stat -c '%s' "$BASE")"
+          if [ "$BYTES" -gt 1800000000 ]; then
+            echo "::error::Alpha 2 basemap is unexpectedly larger than 1.8 GB ($BYTES bytes). Refusing to publish it."
+            exit 1
+          fi
+          echo "Colorado basemap bytes: $BYTES"
+
+      - name: Verify PMTiles archive and schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="dist/$BASE_NAME"
+          "$PMTILES_BIN" verify "$BASE"
+          "$PMTILES_BIN" show "$BASE" --metadata > dist/basemap-metadata.json
+          python3 scripts/validate_basemap_metadata.py dist/basemap-metadata.json
+
+      - name: Prepare local-only style and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp data/basemap-test-style.json "dist/$STYLE_NAME"
+          python3 -m json.tool "dist/$STYLE_NAME" >/dev/null
+
+          python3 scripts/create_basemap_test_manifest.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --source-date "$SOURCE_DATE" \
+            --maxzoom "$MAXZOOM" \
+            --bbox "$COLORADO_BBOX" \
+            --base "dist/$BASE_NAME" \
+            --style "dist/$STYLE_NAME" \
+            --output dist/manifest.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("dist/manifest.json").read_text(encoding="utf-8"))
+          assert manifest["manifestVersion"] == 1
+          assert manifest["styleSchemaVersion"] == 1
+          assert manifest["status"] == "basemap_test"
+          files = {item["id"]: item for item in manifest["files"]}
+          assert set(files) == {"style", "base"}
+          assert files["style"]["required"] is True
+          assert files["base"]["required"] is True
+          assert len(files["style"]["sha256"]) == 64
+          assert len(files["base"]["sha256"]) == 64
+          print("RockMap Alpha 2 manifest check passed")
+          PY
+
+          sha256sum "dist/$BASE_NAME" "dist/$STYLE_NAME" dist/manifest.json > dist/SHA256SUMS.txt
+
+      - name: Verify repository can host public map assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility')"
+          if [ "$VISIBILITY" != "public" ]; then
+            echo "::error::RockMap data releases must be public because the Android downloader does not embed GitHub credentials. Repository visibility is: $VISIBILITY"
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing Alpha 2 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Alpha 2 data is immutable; do not overwrite it."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Refusing to move an existing data tag."
+            exit 1
+          fi
+
+      - name: Publish immutable Alpha 2 data prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist/$BASE_NAME" \
+            "dist/$STYLE_NAME" \
+            dist/manifest.json \
+            dist/basemap-metadata.json \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "RockMap Alpha 2 Colorado basemap test" \
+            --notes "UNVERIFIED TEST DATA — not for navigation. Colorado Protomaps/OpenStreetMap basemap extracted from the ${SOURCE_DATE} daily build through zoom ${MAXZOOM}. No offline labels, BLM land-status data, or mining-claim data are included." \
+            --prerelease \
+            --latest=false
+
+          gh release view "$RELEASE_TAG"
