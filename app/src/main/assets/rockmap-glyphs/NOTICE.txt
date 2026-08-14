@@ -1,11 +1,11 @@
-RockMap offline glyph resources
+RockMap offline text resources
 
-Alpha 3 uses MapLibre glyph PBF resources derived from Noto Sans Regular.
-The source patch does not include a TTF/OTF font file or glyph PBF binaries.
-During the Android build, scripts/prepare_offline_glyphs.py fetches a small,
-pinned set of glyph PBF ranges from the Protomaps basemaps-assets repository,
-verifies the immutable Git blob identities, rewrites only the font-stack label
-to RockMapSans, and places the results in Gradle's generated-assets directory.
+Alpha 3.1 prepares two local MapLibre Native text paths from Noto Sans Regular:
+SDF glyph PBF ranges and a local TTF font face. The source patch itself does not
+include a TTF/OTF font file or glyph PBF binaries. During the Android build,
+scripts/prepare_offline_glyphs.py fetches pinned upstream resources from immutable
+commits, verifies their Git blob identities, aliases the PBF stack to RockMapSans,
+and writes the PBF and TTF outputs only to Gradle's generated-assets directory.
 
 Upstream font copyright: Copyright 2022 The Noto Project Authors.
 License: SIL Open Font License 1.1. See OFL.txt in this directory.

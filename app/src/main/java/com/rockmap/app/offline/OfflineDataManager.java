@@ -119,7 +119,7 @@ public final class OfflineDataManager {
             throw new IOException("Active map snapshot is missing its basemap.");
         }
 
-        // Alpha 3 deliberately reuses the already-verified Alpha 2 PMTiles bytes while
+        // Alpha 3.1 deliberately reuses the already-verified Alpha 2 PMTiles bytes while
         // supplying the label style and glyph resources from the APK itself. This avoids
         // a second ~246 MB map download merely to add cartographic labels. Published
         // snapshots continue to use their downloaded style as part of the full data contract.
@@ -198,7 +198,7 @@ public final class OfflineDataManager {
             return "OFFLINE BASEMAP + LABELS: TEST — NOT VERIFIED FOR NAVIGATION"
                     + "\nLand status: unavailable"
                     + "\nMining claims: unavailable"
-                    + "\nLabels: included offline (Alpha 3 test)"
+                    + "\nLabels: included offline (Alpha 3.1 dual-font test)"
                     + "\nPack: " + active.pack
                     + "\nVersion: " + active.version
                     + "\nPublished: " + active.publishedAt

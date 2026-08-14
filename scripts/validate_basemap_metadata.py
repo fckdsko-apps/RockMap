@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-REQUIRED_VECTOR_LAYERS = {"earth", "landcover", "landuse", "water", "roads", "buildings"}
+REQUIRED_VECTOR_LAYERS = {"earth", "landcover", "landuse", "water", "roads", "buildings", "places", "pois"}
 
 
 def main() -> None:

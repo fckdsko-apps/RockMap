@@ -108,7 +108,7 @@ public final class DataUpdateWorker extends Worker {
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
                 manager.setLastUpdateStatus("Basemap test pack downloaded and activated: " + manifest.version
-                        + ". NOT VERIFIED FOR NAVIGATION; Alpha 3 supplies offline labels from the APK, but land status and mining claims are not included.");
+                        + ". NOT VERIFIED FOR NAVIGATION; Alpha 3.1 supplies offline labels from the APK, but land status and mining claims are not included.");
             } else {
                 manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
             }

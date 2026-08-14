@@ -1,12 +1,12 @@
-# RockMap Alpha 3 — offline label acceptance test
+# RockMap Alpha 3.1 — offline label acceptance test
 
-Alpha 3 adds local labels to the same Colorado PMTiles base that passed the Alpha 2 device test. It deliberately does **not** rebuild or redownload the statewide basemap.
+Alpha 3.1 fixes the Alpha 3 zero-label renderer and adds local labels to the same Colorado PMTiles base that passed the Alpha 2 device test. It deliberately does **not** rebuild or redownload the statewide basemap.
 
 ## Installation order
 
 1. Confirm the existing Alpha 2 installation still has the Colorado basemap installed.
-2. Build `0.1.0-alpha3` with the existing known-good APK workflow.
-3. Install the Alpha 3 APK **over** Alpha 2. Do not uninstall RockMap first; uninstalling would remove the app-internal map files and saved locations.
+2. Build `0.1.0-alpha3.1` with the existing known-good APK workflow.
+3. Install the Alpha 3.1 APK **over** Alpha 2. Do not uninstall RockMap first; uninstalling would remove the app-internal map files and saved locations.
 4. Open RockMap. No new 246 MB basemap download should be required.
 
 ## Expected safety state
@@ -17,7 +17,7 @@ The Data status should state:
 
 - land status unavailable;
 - mining claims unavailable;
-- labels included offline for the Alpha 3 test.
+- labels included offline for the Alpha 3.1 test.
 
 Land-status and mining-claim checkboxes remain unavailable.
 
@@ -45,9 +45,9 @@ Labels should remain legible over the Alpha 2 geometry and should not cause the 
 5. Pan to a part of Colorado not inspected during the online portion.
 6. Zoom through statewide, town, road, and close trail/stream levels.
 
-Both the map geometry **and labels** must appear without a network connection. A missing-glyph error, blank map, or silent online dependency fails Alpha 3.
+Both the map geometry **and labels** must appear without a network connection. A missing-glyph error, blank map, or silent online dependency fails Alpha 3.1.
 
-## Alpha 3 pass criteria
+## Alpha 3.1 pass criteria
 
 - Existing Alpha 2 PMTiles data survives the APK update.
 - GPS/current location still aligns with mapped surroundings.
@@ -62,3 +62,7 @@ Both the map geometry **and labels** must appear without a network connection. A
 - Mining claims remain unavailable.
 
 After these checks pass, the next data milestone is the Colorado land/surface-management overlay. The map must still remain unverified until the land and mining-claim stages are complete and jointly tested.
+
+## Alpha 3.1 text-path check
+
+Alpha 3.1 packages both a local MapLibre `font-faces` TTF path and local SDF glyph PBF fallback. Both are build-generated from pinned upstream resources and both must work without HTTP/HTTPS at runtime.

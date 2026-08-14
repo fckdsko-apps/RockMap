@@ -4,7 +4,7 @@ RockMap deliberately separates downloadable map data from user waypoints. The An
 
 ## Field-safety status for alpha3
 
-`0.1.0-alpha3` reuses the real Colorado **basemap test pack** that passed Alpha 2 device testing while deliberately keeping the map in the red/unverified state. The existing manifest remains `status: basemap_test` and continues to describe the downloadable `style` + `base` snapshot. For Alpha 3, the APK deliberately overrides the test-pack style at runtime with a bundled label style and bundled glyph PBFs while reusing the same SHA-256-verified local `base` file. Land status and mining claims remain unavailable and the UI must say so.
+`0.1.0-alpha3.1` reuses the real Colorado **basemap test pack** that passed Alpha 2 device testing while deliberately keeping the map in the red/unverified state. The existing manifest remains `status: basemap_test` and continues to describe the downloadable `style` + `base` snapshot. For Alpha 3.1, the APK deliberately overrides the test-pack style at runtime with a bundled label style and bundled glyph PBFs while reusing the same SHA-256-verified local `base` file. Land status and mining claims remain unavailable and the UI must say so.
 
 A `basemap_test` pack is for validating Colorado coverage, PMTiles rendering, roads, paths, water, labels, GPS/waypoint alignment, and airplane-mode behavior. It is **not field-safe navigation data** and must never turn the safety banner green.
 
@@ -161,3 +161,9 @@ The normal claim overlay must exclude geometries whose BLM mapping quality is to
 - RockMap distinguishes unavailable/disabled layers from “no feature shown.”
 - The claims overlay represents BLM MLRS **not closed** records selected by the data pipeline. It is not labeled as surveyed active-claim boundaries.
 - RockMap never infers that collecting is legal merely because a point is on public land or because no claim feature is rendered.
+
+## Alpha 3.1 offline text
+
+The `basemap_test` runtime style uses `asset://rockmap-fonts/NotoSans-Regular.ttf` through MapLibre Native `font-faces` and retains `asset://rockmap-glyphs/{fontstack}/{range}.pbf` as a local fallback. These assets are generated at build time from pinned upstream blobs; font binaries are not stored in the source patch.
+
+Alpha 3.1 also includes schema-tolerant fallback symbol layers `rockmap-label-place-any`, `rockmap-label-water-any`, and `rockmap-label-road-any` so named features remain visible if a Protomaps kind classification differs from the primary styling rules.

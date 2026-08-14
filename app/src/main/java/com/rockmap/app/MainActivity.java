@@ -344,7 +344,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void showData() {
         new AlertDialog.Builder(this)
                 .setTitle("Offline data")
-                .setMessage(offlineDataManager.describeStatus())
+                .setMessage(offlineDataManager.describeStatus()
+                        + (mapController == null ? "" : "\n\n" + mapController.describeLabelDiagnostics()))
                 .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
                 .setNegativeButton("Close", null)
                 .show();

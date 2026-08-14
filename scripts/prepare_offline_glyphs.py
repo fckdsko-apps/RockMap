@@ -2,9 +2,9 @@
 """Prepare RockMap's offline MapLibre glyph assets during the Android build.
 
 The source repository intentionally does not track font binaries or glyph PBFs.
-This script fetches only the Unicode ranges RockMap needs for Colorado labels from
-an immutable Protomaps basemaps-assets commit, verifies each raw Git blob SHA-1,
-and rewrites the embedded font-stack name to the app-local alias RockMapSans.
+This script prepares two independent local text paths for MapLibre Native Android:
+verified SDF glyph PBF ranges and a verified Noto Sans TTF font face. Both are
+fetched from immutable upstream commits and written only to Gradle generated assets.
 """
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ UPSTREAM_COMMIT = "028c18f713baecad011301ff7a69acc39bcc2ae7"
 UPSTREAM_FONT_DIR = "Noto Sans Regular"
 OUTPUT_FONTSTACK = "RockMapSans"
 MAX_FILE_BYTES = 500_000
+
+NOTO_COMMIT = "445abfe2d405cb658a9d825ab056e2004fb60627"
+NOTO_TTF_PATH = "fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf"
+NOTO_TTF_BLOB = "f27f4ff59562d58480f1cb94194393484b8da9e9"
+NOTO_TTF_OUTPUT = "rockmap-fonts/NotoSans-Regular.ttf"
+MAX_TTF_BYTES = 2_000_000
 
 # Git blob SHA-1 values are content identities from the pinned upstream commit.
 GLYPH_BLOBS = {
@@ -123,7 +129,7 @@ def upstream_url(glyph_range: str) -> str:
 
 def download(glyph_range: str, expected_blob: str) -> bytes:
     url = upstream_url(glyph_range)
-    request = Request(url, headers={"User-Agent": "RockMap-GitHub-Actions/alpha3"})
+    request = Request(url, headers={"User-Agent": "RockMap-GitHub-Actions/alpha3.1"})
     with urlopen(request, timeout=30) as response:
         final_url = response.geturl()
         if not final_url.startswith("https://raw.githubusercontent.com/"):
@@ -138,6 +144,31 @@ def download(glyph_range: str, expected_blob: str) -> bytes:
     if actual_blob != expected_blob:
         raise RuntimeError(
             f"glyph Git blob mismatch for {glyph_range}: expected {expected_blob}, got {actual_blob}"
+        )
+    return data
+
+
+
+def download_noto_ttf() -> bytes:
+    url = (
+        "https://raw.githubusercontent.com/notofonts/notofonts.github.io/"
+        f"{NOTO_COMMIT}/{NOTO_TTF_PATH}"
+    )
+    request = Request(url, headers={"User-Agent": "RockMap-GitHub-Actions/alpha3.1"})
+    with urlopen(request, timeout=30) as response:
+        final_url = response.geturl()
+        if not final_url.startswith("https://raw.githubusercontent.com/"):
+            raise RuntimeError(f"unexpected font download redirect: {final_url}")
+        declared = response.headers.get("Content-Length")
+        if declared is not None and int(declared) > MAX_TTF_BYTES:
+            raise RuntimeError("Noto Sans font response is unexpectedly large")
+        data = response.read(MAX_TTF_BYTES + 1)
+    if not data or len(data) > MAX_TTF_BYTES:
+        raise RuntimeError("Noto Sans font payload size is invalid")
+    actual_blob = git_blob_sha1(data)
+    if actual_blob != NOTO_TTF_BLOB:
+        raise RuntimeError(
+            f"Noto Sans Git blob mismatch: expected {NOTO_TTF_BLOB}, got {actual_blob}"
         )
     return data
 
@@ -165,6 +196,14 @@ def main() -> None:
             out.write_bytes(rewritten)
             print(f"Prepared {out.name}: {len(rewritten)} bytes")
 
+        # Alpha 3.1 adds MapLibre Native's font-faces path as an independent
+        # renderer fallback. The source repository still contains no font binary.
+        font_out = staging_root / NOTO_TTF_OUTPUT
+        font_out.parent.mkdir(parents=True, exist_ok=True)
+        font_bytes = download_noto_ttf()
+        font_out.write_bytes(font_bytes)
+        print(f"Prepared {font_out.name}: {len(font_bytes)} bytes")
+
         # Replace the generated asset set at directory granularity. The staging child is
         # moved out; TemporaryDirectory itself remains in place for clean context cleanup.
         if final_root.exists():
@@ -173,7 +212,10 @@ def main() -> None:
 
     if not final_stack.is_dir():
         raise SystemExit("offline glyph generation failed")
-    print(f"Offline glyph assets ready: {final_stack}")
+    final_font = final_root / NOTO_TTF_OUTPUT
+    if not final_font.is_file():
+        raise SystemExit("offline font-face generation failed")
+    print(f"Offline text assets ready: {final_stack}; {final_font}")
 
 
 if __name__ == "__main__":

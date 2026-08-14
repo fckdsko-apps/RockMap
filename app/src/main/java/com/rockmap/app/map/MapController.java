@@ -2,6 +2,7 @@ package com.rockmap.app.map;
 
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.RectF;
 import android.location.Location;
 
 import com.rockmap.app.offline.OfflineDataManager;
@@ -18,6 +19,7 @@ import org.maplibre.android.maps.Style;
 import org.maplibre.android.style.layers.CircleLayer;
 import org.maplibre.android.style.layers.Layer;
 import org.maplibre.android.style.sources.GeoJsonSource;
+import org.maplibre.android.style.sources.VectorSource;
 import org.maplibre.geojson.Feature;
 
 import java.io.IOException;
@@ -55,6 +57,9 @@ public final class MapController {
     public static final String LABEL_ROAD_MAJOR = "rockmap-label-road-major";
     public static final String LABEL_WATER = "rockmap-label-water";
     public static final String LABEL_PEAK = "rockmap-label-peak";
+    public static final String LABEL_PLACE_ANY = "rockmap-label-place-any";
+    public static final String LABEL_WATER_ANY = "rockmap-label-water-any";
+    public static final String LABEL_ROAD_ANY = "rockmap-label-road-any";
 
     private final MapView mapView;
     private final OfflineDataManager dataManager;
@@ -71,6 +76,9 @@ public final class MapController {
     private boolean attemptingOfflineStyle;
     private boolean fallbackLoading;
     private boolean rollbackAttempted;
+    private int glyphFallbackRequests;
+    private int glyphFallbackLoads;
+    private int glyphFallbackErrors;
 
     public MapController(MapView mapView, OfflineDataManager dataManager, Listener listener) {
         this.mapView = mapView;
@@ -84,7 +92,10 @@ public final class MapController {
                 failOfflineStyle("MapLibre failed to load the offline map: " + errorMessage);
             }
         });
+        mapView.addOnGlyphsRequestedListener((fontStack, rangeStart, rangeEnd) -> glyphFallbackRequests++);
+        mapView.addOnGlyphsLoadedListener((fontStack, rangeStart, rangeEnd) -> glyphFallbackLoads++);
         mapView.addOnGlyphsErrorListener((fontStack, rangeStart, rangeEnd) -> {
+            glyphFallbackErrors++;
             if (offlineStyleActive || attemptingOfflineStyle) {
                 failOfflineStyle("Required offline map labels failed to load.");
             }
@@ -125,7 +136,7 @@ public final class MapController {
                 if (!contractValid) {
                     failOfflineStyle(expectedVerified
                             ? "Published files loaded, but the map style is missing required RockMap sources/layers."
-                            : "Alpha 3 basemap files loaded, but required offline label sources/layers are missing.");
+                            : "Alpha 3.1 basemap files loaded, but required offline label sources/layers are missing.");
                     return;
                 }
                 attemptingOfflineStyle = false;
@@ -147,7 +158,10 @@ public final class MapController {
                 && loaded.getLayer(LABEL_LOCALITY) != null
                 && loaded.getLayer(LABEL_ROAD_MAJOR) != null
                 && loaded.getLayer(LABEL_WATER) != null
-                && loaded.getLayer(LABEL_PEAK) != null;
+                && loaded.getLayer(LABEL_PEAK) != null
+                && loaded.getLayer(LABEL_PLACE_ANY) != null
+                && loaded.getLayer(LABEL_WATER_ANY) != null
+                && loaded.getLayer(LABEL_ROAD_ANY) != null;
     }
 
     private boolean verifyRequiredDataContract(Style loaded) {
@@ -191,6 +205,53 @@ public final class MapController {
             applyVisibility();
             listener.onMapSafetyState(false, reason);
         });
+    }
+
+    public String describeLabelDiagnostics() {
+        if (!offlineStyleActive || style == null || map == null) {
+            return "Label diagnostics: offline style is not active.";
+        }
+
+        int namedSourceFeatures = 0;
+        VectorSource base = null;
+        try {
+            base = style.getSourceAs(BASE_SOURCE);
+        } catch (RuntimeException ignored) {
+            // Diagnostics must never destabilize the field map.
+        }
+        if (base != null) {
+            for (String sourceLayer : new String[]{"places", "roads", "water", "pois"}) {
+                try {
+                    List<Feature> features = base.querySourceFeatures(new String[]{sourceLayer}, null);
+                    for (Feature feature : features) {
+                        if (feature != null && (feature.hasProperty("name") || feature.hasProperty("name:en"))) {
+                            namedSourceFeatures++;
+                        }
+                    }
+                } catch (RuntimeException ignored) {
+                    // Diagnostics must never destabilize the field map.
+                }
+            }
+        }
+
+        int renderedLabels = 0;
+        if (mapView.getWidth() > 0 && mapView.getHeight() > 0) {
+            try {
+                RectF viewport = new RectF(0f, 0f, mapView.getWidth(), mapView.getHeight());
+                renderedLabels = map.queryRenderedFeatures(viewport, new String[]{
+                        LABEL_LOCALITY, LABEL_ROAD_MAJOR, LABEL_WATER, LABEL_PEAK,
+                        LABEL_PLACE_ANY, LABEL_WATER_ANY, LABEL_ROAD_ANY
+                }).size();
+            } catch (RuntimeException ignored) {
+                // Report zero rather than allowing a diagnostics query to crash the app.
+            }
+        }
+
+        return "Label diagnostics (current viewport):"
+                + "\nNamed source features loaded: " + namedSourceFeatures
+                + "\nRendered label features: " + renderedLabels
+                + "\nPBF fallback requested/loaded/errors: "
+                + glyphFallbackRequests + "/" + glyphFallbackLoads + "/" + glyphFallbackErrors;
     }
 
     public void updateCurrentLocation(Location location) {

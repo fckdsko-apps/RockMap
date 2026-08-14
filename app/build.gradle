@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
 }
 
-def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha3')
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha3.1')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
 def dataReleaseTag = 'rockmap-basemap-alpha2-20260722-z14'
