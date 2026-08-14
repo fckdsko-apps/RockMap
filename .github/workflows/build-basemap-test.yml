@@ -97,7 +97,7 @@ jobs:
             --tag "$RELEASE_TAG" \
             --source-date "$SOURCE_DATE" \
             --maxzoom "$MAXZOOM" \
-            --bbox "$COLORADO_BBOX" \
+            --bbox="$COLORADO_BBOX" \
             --base "dist/$BASE_NAME" \
             --style "dist/$STYLE_NAME" \
             --output dist/manifest.json
