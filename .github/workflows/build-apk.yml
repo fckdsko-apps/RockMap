@@ -125,9 +125,13 @@ jobs:
           SIGNING_REPORT="$($APKSIGNER verify --verbose --print-certs "$APK")"
           printf '%s\n' "$SIGNING_REPORT"
 
-          ACTUAL_CERT="$(printf '%s\n' "$SIGNING_REPORT" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          ACTUAL_CERT="$(printf '%s\n' "$SIGNING_REPORT" | sed -n -E 's/^.*certificate SHA-256 digest: ([0-9A-Fa-f]{64})$/\\1/p' | head -n 1 | tr '[:upper:]' '[:lower:]')"
           EXPECTED_CERT="$(tr -d '[:space:]' < signing-certificate.sha256 | tr '[:upper:]' '[:lower:]')"
-          test -n "$ACTUAL_CERT"
+
+          if ! printf '%s' "$ACTUAL_CERT" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "::error::Could not parse APK signing certificate SHA-256 digest from apksigner output"
+            exit 1
+          fi
 
           if [ "$ACTUAL_CERT" != "$EXPECTED_CERT" ]; then
             echo "::error::APK signing certificate does not match RockMap's permanent certificate"
@@ -165,7 +169,6 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/^ROCKMAP_VERSION_NAME=//p' gradle.properties | head -n 1 | tr -d '\r')"
-
           if ! printf '%s' "$VERSION" | grep -Eq '^[A-Za-z0-9._-]+$'; then
             echo "::error::ROCKMAP_VERSION_NAME contains unsafe filename characters"
             exit 1
