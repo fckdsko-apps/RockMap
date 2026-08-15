@@ -37,6 +37,8 @@ import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.MapController;
 import com.rockmap.app.map.LandStatusCatalog;
 import com.rockmap.app.map.MiningClaimCatalog;
+import com.rockmap.app.mines.HistoricMineCatalog;
+import com.rockmap.app.mines.HistoricMineOverlayController;
 import com.rockmap.app.minerals.MineralIndexRepository;
 import com.rockmap.app.minerals.MineralOverlayController;
 import com.rockmap.app.minerals.MineralRecord;
@@ -73,7 +75,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
     private static final float MANUAL_COORDINATE_ACCURACY = -2f;
     private static final float MINERAL_SOURCE_ACCURACY = -3f;
+    private static final float HISTORIC_MINE_SOURCE_ACCURACY = -4f;
     private static final int MINERAL_LIST_PAGE = 100;
+    private static final double HISTORIC_MINE_NEARBY_METERS = 100.0;
+    private static final int HISTORIC_MINE_NEARBY_LIMIT = 8;
 
     private MapView mapView;
     private MapController mapController;
@@ -82,9 +87,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private OfflineDataManager offlineDataManager;
     private MineralIndexRepository mineralIndexRepository;
     private MineralOverlayController mineralOverlayController;
+    private HistoricMineOverlayController historicMineOverlayController;
     private MineralSearchEngine.SearchResult activeMineralSearchResult;
-    private List<Feature> pendingMineralTapLand = new ArrayList<>();
+    private List<Feature> pendingOverlayTapLand = new ArrayList<>();
     private String activeMineralScopeLabel = "All Colorado";
+    private boolean historicMinesRequestedVisible;
+    private boolean historicMinesLoading;
     private TextView safetyBanner;
     private LiveData<WorkInfo> updateLiveData;
     private Observer<WorkInfo> updateObserver;
@@ -105,6 +113,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView = new MapView(this);
         mineralIndexRepository = new MineralIndexRepository(this, offlineDataManager);
         mineralOverlayController = new MineralOverlayController(mapView, this::onMineralTapped);
+        historicMineOverlayController = new HistoricMineOverlayController(mapView, this::onHistoricMinesTapped);
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -153,6 +162,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         mapView.onCreate(savedInstanceState);
         mineralOverlayController.initialize();
+        historicMineOverlayController.initialize();
         mapController = new MapController(mapView, offlineDataManager, this);
         mapController.initialize();
         refreshWaypoints();
@@ -495,9 +505,260 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void onMineralTapped(MineralSearchEngine.Hit hit) {
         if (hit == null) return;
-        List<Feature> land = pendingMineralTapLand == null
-                ? new ArrayList<>() : new ArrayList<>(pendingMineralTapLand);
+        List<Feature> land = pendingOverlayTapLand == null
+                ? new ArrayList<>() : new ArrayList<>(pendingOverlayTapLand);
         showMineralDetail(hit, activeMineralSearchResult, false, land);
+    }
+
+    private void setHistoricMinesVisible(boolean visible) {
+        historicMinesRequestedVisible = visible;
+        if (!visible) {
+            historicMineOverlayController.setVisible(false);
+            return;
+        }
+        if (!mineralIndexRepository.hasExpandedEvidence()) {
+            historicMinesRequestedVisible = false;
+            showMessage("Historic mine overlay requires the installed Alpha 6.2.1 evidence index.");
+            return;
+        }
+        if (historicMineOverlayController.isLoaded()) {
+            historicMineOverlayController.setVisible(true);
+            return;
+        }
+        if (historicMinesLoading) return;
+
+        historicMinesLoading = true;
+        showMessage("Loading historic mine / working overlay…");
+        mineralIndexRepository.loadHistoricMines(new MineralIndexRepository.RecordListCallback() {
+            @Override
+            public void onResult(List<MineralRecord> records) {
+                historicMinesLoading = false;
+                historicMineOverlayController.load(records);
+                if (records.isEmpty()) {
+                    historicMinesRequestedVisible = false;
+                    showMessage("No historic mine records were found in the installed evidence index.");
+                    return;
+                }
+                historicMineOverlayController.setVisible(historicMinesRequestedVisible);
+                if (historicMinesRequestedVisible) {
+                    showMessage("Historic mine overlay loaded: " + records.size() + " mapped records.");
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                historicMinesLoading = false;
+                historicMinesRequestedVisible = false;
+                historicMineOverlayController.setVisible(false);
+                showMessage(message == null ? "Historic mine overlay failed to load." : message);
+            }
+        });
+    }
+
+    private void onHistoricMinesTapped(List<MineralRecord> records) {
+        if (records == null || records.isEmpty()) return;
+        List<Feature> land = pendingOverlayTapLand == null
+                ? new ArrayList<>() : new ArrayList<>(pendingOverlayTapLand);
+        if (records.size() == 1) {
+            showHistoricMineDetail(records.get(0), land);
+            return;
+        }
+        showHistoricMineSelector(records, land);
+    }
+
+    private void showHistoricMineSelector(List<MineralRecord> records, List<Feature> land) {
+        int shown = Math.min(50, records.size());
+        String[] labels = new String[shown];
+        for (int i = 0; i < shown; i++) {
+            MineralRecord record = records.get(i);
+            labels[i] = HistoricMineCatalog.displayName(record)
+                    + "\n" + HistoricMineCatalog.typeLabel(record)
+                    + "\n" + (record.sourceTitle.isEmpty() ? record.sourceCode : record.sourceTitle)
+                    + "\n" + String.format(Locale.US, "%.6f, %.6f",
+                            record.latitude, record.longitude);
+        }
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(records.size() + " mine records at this tap")
+                .setItems(labels, (dialog, which) -> showHistoricMineDetail(records.get(which), land))
+                .setNegativeButton("Close", null);
+        if (records.size() > shown) {
+            builder.setMessage("Showing the first " + shown
+                    + " overlapping/nearby rendered records. Zoom in to separate additional points.");
+        } else {
+            builder.setMessage("More than one source record overlaps this tap. Choose the one you want to inspect.");
+        }
+        builder.show();
+    }
+
+    private void showHistoricMineDetail(MineralRecord record, List<Feature> landAtMine) {
+        if (record == null) return;
+        mineralIndexRepository.findNearbyHistoricMineEvidence(
+                record, HISTORIC_MINE_NEARBY_METERS, HISTORIC_MINE_NEARBY_LIMIT,
+                new MineralIndexRepository.NearbyEvidenceCallback() {
+                    @Override
+                    public void onResult(List<HistoricMineCatalog.NearbyEvidence> evidence) {
+                        renderHistoricMineDetail(record, landAtMine, evidence);
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        renderHistoricMineDetail(record, landAtMine, new ArrayList<>());
+                    }
+                });
+    }
+
+    private void renderHistoricMineDetail(MineralRecord record,
+                                          List<Feature> landAtMine,
+                                          List<HistoricMineCatalog.NearbyEvidence> nearby) {
+        StringBuilder text = new StringBuilder();
+        appendHistoricMineRecord(text, record, landAtMine);
+        appendNearbyHistoricMineEvidence(text, nearby);
+        text.append("\n\nResearch lead only. Mine locations and conditions may have changed. ")
+                .append("Do not enter abandoned openings or workings. RockMap does not determine access, ")
+                .append("ownership, claim validity, or collecting permission.");
+
+        ScrollView scroll = new ScrollView(this);
+        TextView body = new TextView(this);
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        scroll.addView(body);
+
+        new AlertDialog.Builder(this)
+                .setTitle(HistoricMineCatalog.displayName(record))
+                .setView(scroll)
+                .setPositiveButton("Save / note",
+                        (d, w) -> showHistoricMineSaveDialog(record, landAtMine, nearby))
+                .setNeutralButton("Center",
+                        (d, w) -> historicMineOverlayController.center(record))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void appendHistoricMineRecord(StringBuilder text,
+                                          MineralRecord record,
+                                          List<Feature> landAtMine) {
+        text.append("Mapped coordinates (source record): ")
+                .append(String.format(Locale.US, "%.6f, %.6f",
+                        record.latitude, record.longitude));
+        text.append("\nType: ").append(HistoricMineCatalog.typeLabel(record));
+
+        if (landAtMine != null) {
+            text.append('\n').append(formatMineralLand(landAtMine));
+            appendMineralLandSource(text);
+        }
+
+        if (record.materials.isEmpty()) {
+            text.append("\n\nDocumented minerals/materials: None in this source.");
+        } else {
+            text.append("\n\nDocumented minerals/materials: ")
+                    .append(String.join(", ", record.materials));
+        }
+        if (!record.commodities.isEmpty()) {
+            text.append("\nCommodities/products: ")
+                    .append(String.join(", ", record.commodities));
+        }
+        if (!record.districts.isEmpty()) {
+            text.append("\nDistrict: ").append(String.join(", ", record.districts));
+        }
+        if (!record.models.isEmpty()) {
+            text.append("\nDeposit model: ").append(String.join(", ", record.models));
+        }
+        if (!record.rocks.isEmpty()) {
+            text.append("\nRock context: ").append(String.join(", ", record.rocks));
+        }
+        if (!record.status.isEmpty()) {
+            text.append("\nSource status: ").append(record.status);
+        }
+        if (!record.locationPrecision.isEmpty()) {
+            text.append("\nPrecision: ").append(record.locationPrecision);
+        }
+        text.append("\nSource record ID: ").append(record.id);
+        appendMineralSource(text, record);
+    }
+
+    private void appendNearbyHistoricMineEvidence(
+            StringBuilder text, List<HistoricMineCatalog.NearbyEvidence> nearby) {
+        text.append("\n\nNearby documented mineral evidence (≤100 m; not necessarily same working):");
+        if (nearby == null || nearby.isEmpty()) {
+            text.append("\nNone found in MRDS, B-40, or the official-locality supplement within 100 m.");
+            return;
+        }
+
+        int index = 0;
+        for (HistoricMineCatalog.NearbyEvidence item : nearby) {
+            MineralRecord record = item.record;
+            text.append("\n\n• ").append(HistoricMineCatalog.displayName(record))
+                    .append(" — ")
+                    .append(Math.round(item.distanceMeters)).append(" m");
+            if (!record.materials.isEmpty()) {
+                text.append("\n  Minerals/materials: ").append(String.join(", ", record.materials));
+            }
+            if (!record.commodities.isEmpty()) {
+                text.append("\n  Commodities: ").append(String.join(", ", record.commodities));
+            }
+            text.append("\n  Source: ")
+                    .append(record.sourceTitle.isEmpty() ? record.sourceCode : record.sourceTitle);
+            if (!record.sourceReliability.isEmpty()) {
+                text.append("\n  Reliability: ").append(record.sourceReliability);
+            }
+            if (++index >= HISTORIC_MINE_NEARBY_LIMIT) break;
+        }
+    }
+
+    private void showHistoricMineSaveDialog(MineralRecord record,
+                                            List<Feature> landAtMine,
+                                            List<HistoricMineCatalog.NearbyEvidence> nearby) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView coordinate = new TextView(this);
+        coordinate.setText("Mapped coordinates: " + String.format(Locale.US, "%.6f, %.6f",
+                record.latitude, record.longitude));
+        coordinate.setTextSize(13f);
+        coordinate.setPadding(0, 0, 0, dp(6));
+        box.addView(coordinate);
+
+        EditText name = new EditText(this);
+        name.setHint("Marker name");
+        name.setText(HistoricMineCatalog.displayName(record));
+        box.addView(name);
+
+        EditText observations = new EditText(this);
+        observations.setHint("Field observations (optional)");
+        observations.setMinLines(4);
+        box.addView(observations);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Save mine / add field note")
+                .setView(box)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    long now = System.currentTimeMillis();
+                    String label = boundedText(name.getText().toString().trim(), 500);
+                    if (label.isEmpty()) label = HistoricMineCatalog.displayName(record);
+
+                    StringBuilder note = new StringBuilder("Historic mine / working record\n");
+                    appendHistoricMineRecord(note, record, landAtMine);
+                    appendNearbyHistoricMineEvidence(note, nearby);
+                    String observationText = observations.getText().toString().trim();
+                    if (!observationText.isEmpty()) {
+                        note.append("\n\nField observations:\n")
+                                .append(boundedText(observationText, 8_000));
+                    }
+                    note.append("\n\nResearch lead only; source coordinates may be approximate. ")
+                            .append("Do not enter abandoned openings or workings. Access and collecting legality are not determined.");
+
+                    WaypointEntity waypoint = new WaypointEntity(
+                            record.latitude, record.longitude, HISTORIC_MINE_SOURCE_ACCURACY, now,
+                            label, boundedText(note.toString(), 20_000), now, now);
+                    waypointRepository.insert(waypoint, () -> {
+                        refreshWaypoints();
+                        showMessage("Historic mine marker and field note saved.");
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void clearMinerals() {
@@ -711,10 +972,21 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), dp(12));
         boolean landAvailable = mapController.hasLandStatusAvailable();
         boolean claimsAvailable = mapController.hasClaimsAvailable();
+        boolean historicMinesAvailable = mineralIndexRepository.hasExpandedEvidence();
+
         CheckBox land = checkbox(landAvailable ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
                 landAvailable && mapController.isLandVisible());
         CheckBox claims = checkbox(claimsAvailable ? "Mining claims — BLM MLRS not closed" : "Mining claims — unavailable in current test",
                 claimsAvailable && mapController.isClaimsVisible());
+
+        String historicMineLabel = historicMinesAvailable
+                ? "Historic mines / workings — USGS / CGS"
+                    + (historicMineOverlayController.isLoaded()
+                        ? " — " + historicMineOverlayController.getRecordCount() : "")
+                : "Historic mines / workings — unavailable";
+        CheckBox historicMines = checkbox(historicMineLabel,
+                historicMinesAvailable && historicMinesRequestedVisible);
+
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
         boolean mineralsAvailable = mineralOverlayController.hasResults();
         CheckBox minerals = checkbox(
@@ -722,13 +994,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         ? "Mineral results — " + mineralOverlayController.getResultCount()
                         : "Mineral results — none loaded",
                 mineralsAvailable && mineralOverlayController.isVisible());
+
         land.setEnabled(landAvailable);
         claims.setEnabled(claimsAvailable);
+        historicMines.setEnabled(historicMinesAvailable);
         minerals.setEnabled(mineralsAvailable);
+
         box.addView(land);
         box.addView(claims);
+        box.addView(historicMines);
         box.addView(saved);
         box.addView(minerals);
+
         if (mineralsAvailable) {
             Button clearMineralsButton = smallActionButton("Clear minerals");
             clearMineralsButton.setOnClickListener(v -> {
@@ -742,6 +1019,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
         if (landAvailable) addLandStatusLegend(box);
         if (claimsAvailable) addMiningClaimsLegend(box);
+        if (historicMinesAvailable) addHistoricMinesLegend(box);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);
@@ -753,6 +1031,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
                     mapController.setWaypointsVisible(saved.isChecked());
                     mineralOverlayController.setVisible(mineralOverlayController.hasResults() && minerals.isChecked());
+                    setHistoricMinesVisible(historicMinesAvailable && historicMines.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -831,6 +1110,54 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(note);
     }
 
+    private void addHistoricMinesLegend(LinearLayout box) {
+        TextView title = new TextView(this);
+        title.setText("Historic mines / workings");
+        title.setTextSize(16f);
+        title.setTextColor(Color.rgb(35, 35, 35));
+        title.setPadding(0, dp(14), 0, dp(2));
+        box.addView(title);
+
+        LinearLayout propertyRow = new LinearLayout(this);
+        propertyRow.setOrientation(LinearLayout.HORIZONTAL);
+        propertyRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView propertySwatch = new TextView(this);
+        propertySwatch.setText("●");
+        propertySwatch.setTextSize(22f);
+        propertySwatch.setTextColor(Color.rgb(139, 92, 47));
+        propertyRow.addView(propertySwatch,
+                new LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView propertyLabel = new TextView(this);
+        propertyLabel.setText("Mine / mineral property — USGS MAS/MILS or CGS MS-17");
+        propertyLabel.setTextSize(12.5f);
+        propertyRow.addView(propertyLabel,
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(propertyRow);
+
+        LinearLayout openingRow = new LinearLayout(this);
+        openingRow.setOrientation(LinearLayout.HORIZONTAL);
+        openingRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView openingSwatch = new TextView(this);
+        openingSwatch.setText("●");
+        openingSwatch.setTextSize(22f);
+        openingSwatch.setTextColor(Color.rgb(70, 70, 70));
+        openingRow.addView(openingSwatch,
+                new LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView openingLabel = new TextView(this);
+        openingLabel.setText("Abandoned-mine opening — CGS/USFS AML inventory");
+        openingLabel.setTextSize(12.5f);
+        openingRow.addView(openingLabel,
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(openingRow);
+
+        TextView note = new TextView(this);
+        note.setText("Mine points are source-record locations, not surveyed portals. A source with no documented mineral field is shown as unknown, not mineral-free. Tap a point for mapped coordinates, source/reliability, land status, nearby direct mineral evidence, and Save / note. Do not enter abandoned mine openings or workings.");
+        note.setTextSize(12f);
+        note.setTextColor(Color.rgb(75, 75, 75));
+        note.setPadding(0, dp(2), 0, dp(6));
+        box.addView(note);
+    }
+
     private CheckBox checkbox(String label, boolean checked) {
         CheckBox box = new CheckBox(this);
         box.setText(label);
@@ -878,14 +1205,17 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void showWaypoint(WaypointEntity waypoint) {
         boolean manualCoordinate = waypoint.accuracyMeters == MANUAL_COORDINATE_ACCURACY;
         boolean mineralSource = waypoint.accuracyMeters == MINERAL_SOURCE_ACCURACY;
+        boolean historicMineSource = waypoint.accuracyMeters == HISTORIC_MINE_SOURCE_ACCURACY;
         String sourceLine = manualCoordinate
                 ? "Source: manually entered coordinates"
                 : mineralSource
                     ? "Source: saved mineral-search point"
-                    : waypoint.accuracyMeters >= 0
-                        ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
-                        : "GPS accuracy: not reported";
-        String timeLabel = (manualCoordinate || mineralSource) ? "Saved" : "Captured";
+                    : historicMineSource
+                        ? "Source: saved historic-mine point"
+                        : waypoint.accuracyMeters >= 0
+                            ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
+                            : "GPS accuracy: not reported";
+        String timeLabel = (manualCoordinate || mineralSource || historicMineSource) ? "Saved" : "Captured";
         String bodyText = String.format(Locale.US,
                 "%.6f, %.6f\n%s\n%s: %s%s",
                 waypoint.latitude, waypoint.longitude, sourceLine, timeLabel,
@@ -952,6 +1282,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                                     ? "installed offline (USGS MRDS + official CGS/USGS locality supplement)"
                                     : "installed offline (USGS MRDS; supplements not active)")
                             : "not installed")
+                        + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
+                            ? (historicMineOverlayController.isLoaded()
+                                ? historicMineOverlayController.getRecordCount() + " mapped records loaded"
+                                : "available offline; enable in Layers")
+                            : "unavailable — expanded evidence index not active")
                         + (mapController == null ? ""
                             : "\n\n" + mapController.describeLabelDiagnostics()
                             + "\n\n" + mapController.describeLandDiagnostics()
@@ -978,6 +1313,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 clearUpdateObserver();
                 if (info.getState() == WorkInfo.State.SUCCEEDED) {
                     mineralIndexRepository.clearCache();
+                    historicMineOverlayController.clear();
+                    historicMinesRequestedVisible = false;
+                    historicMinesLoading = false;
                     mapController.reloadStyle();
                     showMessage("Offline data downloaded. RockMap is validating the installed map now.");
                 } else {
@@ -1081,7 +1419,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 if (!Float.isFinite(accuracy)
                         || (accuracy < 0f
                             && accuracy != MANUAL_COORDINATE_ACCURACY
-                            && accuracy != MINERAL_SOURCE_ACCURACY)) accuracy = -1f;
+                            && accuracy != MINERAL_SOURCE_ACCURACY
+                            && accuracy != HISTORIC_MINE_SOURCE_ACCURACY)) accuracy = -1f;
                 long capturedAt = props == null ? now : props.optLong("capturedAt", now);
                 long createdAt = props == null ? now : props.optLong("createdAt", now);
                 long updatedAt = props == null ? now : props.optLong("updatedAt", now);
@@ -1172,6 +1511,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 : "TEST DATA — NOT VERIFIED FOR NAVIGATION");
         safetyBanner.setBackgroundColor(verified ? Color.rgb(30, 100, 55) : Color.rgb(150, 35, 25));
         safetyBanner.setVisibility(View.VISIBLE);
+        if (historicMinesRequestedVisible
+                && historicMineOverlayController != null
+                && historicMineOverlayController.isLoaded()) {
+            historicMineOverlayController.refreshStyle();
+        }
     }
 
     @Override
@@ -1183,12 +1527,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override
     public boolean onMapOverlayTapped(LatLng coordinate, List<Feature> landAtCoordinate) {
-        pendingMineralTapLand = landAtCoordinate == null
+        pendingOverlayTapLand = landAtCoordinate == null
                 ? new ArrayList<>() : new ArrayList<>(landAtCoordinate);
         try {
-            return mineralOverlayController != null && mineralOverlayController.handleTap(coordinate);
+            if (mineralOverlayController != null && mineralOverlayController.handleTap(coordinate)) {
+                return true;
+            }
+            return historicMineOverlayController != null
+                    && historicMineOverlayController.handleTap(coordinate);
         } finally {
-            pendingMineralTapLand = new ArrayList<>();
+            pendingOverlayTapLand = new ArrayList<>();
         }
     }
 

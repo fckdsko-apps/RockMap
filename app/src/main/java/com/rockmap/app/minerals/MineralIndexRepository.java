@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.rockmap.app.mines.HistoricMineCatalog;
 import com.rockmap.app.offline.OfflineDataManager;
 
 import org.json.JSONArray;
@@ -30,6 +31,16 @@ public final class MineralIndexRepository {
 
     public interface Callback {
         void onResult(MineralSearchEngine.SearchResult result);
+        void onError(String message);
+    }
+
+    public interface RecordListCallback {
+        void onResult(List<MineralRecord> records);
+        void onError(String message);
+    }
+
+    public interface NearbyEvidenceCallback {
+        void onResult(List<HistoricMineCatalog.NearbyEvidence> evidence);
         void onError(String message);
     }
 
@@ -94,6 +105,38 @@ public final class MineralIndexRepository {
                 mainHandler.post(() -> callback.onError("Mineral search failed safely."));
             }
         }, "rockmap-mineral-search").start();
+    }
+
+    public void loadHistoricMines(RecordListCallback callback) {
+        new Thread(() -> {
+            try {
+                List<MineralRecord> records = loadRecords();
+                ArrayList<MineralRecord> mines = new ArrayList<>();
+                for (MineralRecord record : records) {
+                    if (HistoricMineCatalog.isMineRecord(record)) mines.add(record);
+                }
+                mainHandler.post(() -> callback.onResult(mines));
+            } catch (IOException | JSONException ex) {
+                mainHandler.post(() -> callback.onError(ex.getMessage()));
+            } catch (RuntimeException ex) {
+                mainHandler.post(() -> callback.onError("Historic mine overlay failed safely."));
+            }
+        }, "rockmap-historic-mine-load").start();
+    }
+
+    public void findNearbyHistoricMineEvidence(MineralRecord origin, double maxMeters, int maxResults,
+                                               NearbyEvidenceCallback callback) {
+        new Thread(() -> {
+            try {
+                List<HistoricMineCatalog.NearbyEvidence> evidence =
+                        HistoricMineCatalog.nearbyEvidence(loadRecords(), origin, maxMeters, maxResults);
+                mainHandler.post(() -> callback.onResult(evidence));
+            } catch (IOException | JSONException ex) {
+                mainHandler.post(() -> callback.onError(ex.getMessage()));
+            } catch (RuntimeException ex) {
+                mainHandler.post(() -> callback.onError("Nearby mineral evidence lookup failed safely."));
+            }
+        }, "rockmap-historic-mine-nearby").start();
     }
 
     private synchronized List<MineralRecord> loadRecords() throws IOException, JSONException {

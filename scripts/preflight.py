@@ -68,6 +68,10 @@ required_files = [
         "scripts/test_mineral_evidence_builder.py",
     "scripts/create_mineral_evidence_test_manifest.py",
     "docs/ALPHA6_2_1_MINERAL_EVIDENCE.md",
+    "app/src/main/java/com/rockmap/app/mines/HistoricMineCatalog.java",
+    "app/src/main/java/com/rockmap/app/mines/HistoricMineOverlayController.java",
+    "app/src/test/java/com/rockmap/app/mines/HistoricMineCatalogTest.java",
+    "docs/ALPHA6_3_HISTORIC_MINES.md",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -456,9 +460,9 @@ if "targetSdk 36" not in all_gradle:
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-minerals-alpha6-2-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 6.2.1 APK must point only to the immutable Alpha 6.2.1 cumulative mineral-evidence release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.2.1" not in read("gradle.properties"):
-    err("Alpha 6.2.1 version name is not pinned in gradle.properties.")
+    err("Alpha 6.3 APK must reuse only the immutable Alpha 6.2.1 cumulative mineral-evidence release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.3" not in read("gradle.properties"):
+    err("Alpha 6.3 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -494,6 +498,12 @@ if "listener.onMapOverlayTapped(coordinate, overlayLand)" not in java_text or "l
     err("Alpha 6.2 mineral map taps must route rich mineral details with land context before generic location info.")
 if "listener.onWaypointTapped(waypoint)" not in java_text or "findRenderedWaypoint" not in java_text:
     err("Alpha 6.2.1 saved red markers must be hit-tested and reopen saved rich details before generic map info.")
+if "SOURCE_USGS_MAS" not in java_text or "SOURCE_CGS_MS17" not in java_text or "SOURCE_CGS_USFS_AML" not in java_text:
+    err("Alpha 6.3 historic-mine overlay must use the installed MAS/MILS, MS-17, and USFS AML evidence sources.")
+if "withCluster(true)" not in java_text or "onHistoricMinesTapped" not in java_text:
+    err("Alpha 6.3 historic-mine overlay must retain clustered map display and multi-record tap handling.")
+if "Do not enter abandoned openings or workings" not in java_text:
+    err("Alpha 6.3 historic-mine popup must retain the abandoned-opening safety warning.")
 
 for required_source in (
     "pmtiles://",
@@ -574,6 +584,18 @@ for required_source in (
     "USGS publication 70021621",
     "onWaypointTapped",
     "findRenderedWaypoint",
+    "HistoricMineCatalog",
+    "HistoricMineOverlayController",
+    "rockmap-historic-mine-cluster-layer",
+    "Historic mines / workings — USGS / CGS",
+    "Mapped coordinates (source record):",
+    "Documented minerals/materials: None in this source.",
+    "Nearby documented mineral evidence (≤100 m; not necessarily same working):",
+    "Source: saved historic-mine point",
+    "HISTORIC_MINE_SOURCE_ACCURACY",
+    "Field observations",
+    "findNearbyHistoricMineEvidence",
+    "onHistoricMinesTapped",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -723,6 +745,21 @@ for required in (
     if required not in alpha621_doc:
         err(f"Alpha 6.2.1 documentation missing required source/safety term: {required}")
 
+alpha63_doc = read("docs/ALPHA6_3_HISTORIC_MINES.md")
+for required in (
+    "Historic mines / workings — USGS / CGS",
+    "Mapped coordinates (source record)",
+    "USGS MAS/MILS",
+    "CGS/USFS",
+    "CGS MS-17",
+    "Nearby documented mineral evidence",
+    "Do not enter abandoned openings or workings",
+    "Do not uninstall",
+    "6.4",
+):
+    if required not in alpha63_doc:
+        err(f"Alpha 6.3 historic-mine documentation missing required term: {required}")
+
 if "labels are not included yet" in java_text:
     err("Alpha 5 source still reports the already-proven labels as absent.")
 if "OFFLINE BASEMAP + LABELS + LAND STATUS + MINING CLAIMS: TEST" not in java_text:
@@ -851,4 +888,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.2.1 expanded mineral-evidence source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.3 historic-mine overlay source preflight passed ({file_count} files checked).")
