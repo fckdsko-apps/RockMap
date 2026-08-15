@@ -1,0 +1,178 @@
+name: Build Colorado Mineral Localities Test Pack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'gradle.properties'
+      - 'data/official-mineral-localities-alpha6-2.json'
+      - 'scripts/build_official_mineral_localities.py'
+      - 'scripts/create_mineral_coverage_test_manifest.py'
+      - 'scripts/preflight.py'
+      - 'docs/ALPHA6_1_MINERAL_FINDER.md'
+      - 'docs/ALPHA6_2_MINERAL_COVERAGE.md'
+      - '.github/workflows/build-mineral-localities-test.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rockmap-minerals-alpha6-2-test1
+  cancel-in-progress: false
+
+jobs:
+  build-localities:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Add Alpha 6.2 mineral coverage'
+    name: Build and publish Alpha 6.2 Colorado mineral-locality supplement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BASELINE_TAG: 'rockmap-minerals-alpha6-1-20260815-test1'
+      RELEASE_TAG: 'rockmap-minerals-alpha6-2-20260815-test1'
+      LOCALITIES_NAME: 'colorado-mineral-localities-cgs-usgs-20260815-alpha6-2-test1.json.gz'
+      MAX_LOCALITY_BYTES: '1000000'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source before data build
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Build reviewed official-source Colorado locality supplement
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 scripts/build_official_mineral_localities.py \
+            --source data/official-mineral-localities-alpha6-2.json \
+            --output "dist/$LOCALITIES_NAME" \
+            --metadata dist/mineral-localities-source-metadata.json
+          test -s "dist/$LOCALITIES_NAME"
+          test -s dist/mineral-localities-source-metadata.json
+
+          BYTES="$(stat -c '%s' "dist/$LOCALITIES_NAME")"
+          if [ "$BYTES" -gt "$MAX_LOCALITY_BYTES" ]; then
+            echo "::error::Alpha 6.2 official locality supplement exceeds the 1 MB safety budget ($BYTES bytes)."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path('dist/mineral-localities-source-metadata.json').read_text(encoding='utf-8'))
+          assert meta['record_count'] == 3
+          assert set(meta['record_ids']) == {
+              'cgs-mt-antero-aquamarine',
+              'cgs-mt-white-aquamarine',
+              'usgs-crystal-peak-amazonite',
+          }
+          assert 0 < meta['compressed_index_bytes'] <= 1_000_000
+          assert meta['coverage_record_counts']['amazonite'] >= 1
+          assert meta['coverage_record_counts']['aquamarine'] >= 2
+          print('Alpha 6.2 reviewed locality budget/coverage checks passed')
+          print(json.dumps(meta['coverage_record_counts'], indent=2, sort_keys=True))
+          PY
+
+      - name: Download immutable Alpha 6.1 baseline manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$BASELINE_TAG/manifest.json"
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            --output dist/baseline-manifest.json "$BASELINE_URL"
+          python3 -m json.tool dist/baseline-manifest.json >/dev/null
+
+      - name: Create Alpha 6.2 cumulative mineral-coverage manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/create_mineral_coverage_test_manifest.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --baseline-manifest dist/baseline-manifest.json \
+            --localities "dist/$LOCALITIES_NAME" \
+            --source-metadata dist/mineral-localities-source-metadata.json \
+            --output dist/manifest.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          baseline = json.loads(Path('dist/baseline-manifest.json').read_text(encoding='utf-8'))
+          manifest = json.loads(Path('dist/manifest.json').read_text(encoding='utf-8'))
+          assert manifest['manifestVersion'] == 1
+          assert manifest['styleSchemaVersion'] == 1
+          assert manifest['status'] == 'basemap_test'
+          files = {item['id']: item for item in manifest['files']}
+          base_files = {item['id']: item for item in baseline['files']}
+          assert set(base_files) == {'style', 'base', 'land', 'claims', 'minerals'}
+          assert set(files) == {'style', 'base', 'land', 'claims', 'minerals', 'mineral_localities'}
+          for item_id in ('style', 'base', 'land', 'claims', 'minerals'):
+              assert files[item_id] == base_files[item_id]
+          localities = files['mineral_localities']
+          assert localities['kind'] == 'index'
+          assert localities['required'] is True
+          assert localities['fileName'].endswith('.json.gz')
+          assert 0 < localities['bytes'] <= 1_000_000
+          assert len(localities['sha256']) == 64
+          print('Alpha 6.2 manifest reuses exact Alpha 6.1 files and adds only mineral_localities')
+          PY
+
+          sha256sum \
+            "dist/$LOCALITIES_NAME" \
+            dist/manifest.json \
+            dist/mineral-localities-source-metadata.json \
+            > dist/SHA256SUMS.txt
+
+      - name: Verify repository can host public map assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility')"
+          if [ "$VISIBILITY" != "public" ]; then
+            echo "::error::RockMap data releases must be public because the Android downloader does not embed GitHub credentials. Repository visibility is: $VISIBILITY"
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing Alpha 6.2 locality release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Alpha 6.2 test data is immutable; do not overwrite it."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Refusing to move an existing data tag."
+            exit 1
+          fi
+
+      - name: Publish immutable Alpha 6.2 mineral-locality prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist/$LOCALITIES_NAME" \
+            dist/manifest.json \
+            dist/mineral-localities-source-metadata.json \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "RockMap Alpha 6.2 Colorado mineral-coverage test" \
+            --notes "UNVERIFIED TEST DATA — research aid only. Reuses the exact Alpha 6.1 basemap, land-status, mining-claims, and USGS MRDS mineral-index assets. Adds only a tiny reviewed official-source locality supplement for high-value MRDS gemstone gaps: Mount Antero and Mount White aquamarine references from Colorado Geological Survey, plus the Crystal Peak–Lake George amazonite/smoky-quartz locality documented by USGS. Locality points are named-area reference points, not specimen pockets, legal boundaries, ownership, access, claim status, or permission to collect." \
+            --prerelease \
+            --latest=false
+
+          gh release view "$RELEASE_TAG"
