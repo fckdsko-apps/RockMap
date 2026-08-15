@@ -42,6 +42,7 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 public final class MapController {
     public interface Listener {
         void onMapSafetyState(boolean verified, String message);
+        boolean onWaypointTapped(WaypointEntity waypoint);
         boolean onMapOverlayTapped(LatLng coordinate, List<Feature> landAtCoordinate);
         void onMapFeaturesTapped(LatLng coordinate, List<Feature> land, List<Feature> claims);
     }
@@ -524,6 +525,15 @@ public final class MapController {
     private boolean handleTap(LatLng coordinate) {
         if (map == null || style == null) return false;
         PointF point = map.getProjection().toScreenLocation(coordinate);
+
+        // Saved red markers are persistent user objects and take precedence over temporary
+        // mineral-search dots beneath them. Resolve the rendered waypoint back to its Room row
+        // so mineral-sourced waypoints can reopen the complete saved provenance/detail text.
+        if (waypointsVisible) {
+            WaypointEntity waypoint = findRenderedWaypoint(point);
+            if (waypoint != null && listener.onWaypointTapped(waypoint)) return true;
+        }
+
         List<Feature> overlayLand = landStatusAvailable
                 ? dedupe(query(point, LAND_QUERY_LAYER), "manager_name", "manager_code") : new ArrayList<>();
         if (listener.onMapOverlayTapped(coordinate, overlayLand)) return true;
@@ -536,6 +546,24 @@ public final class MapController {
         // adds claims for testing while the entire snapshot remains explicitly unverified.
         listener.onMapFeaturesTapped(coordinate, land, claims);
         return true;
+    }
+
+    private WaypointEntity findRenderedWaypoint(PointF point) {
+        List<Feature> features = query(point, WAYPOINT_LAYER);
+        for (Feature feature : features) {
+            if (feature == null || !feature.hasProperty("id")) continue;
+            try {
+                Number number = feature.getNumberProperty("id");
+                if (number == null) continue;
+                long id = number.longValue();
+                for (WaypointEntity waypoint : waypoints) {
+                    if (waypoint != null && waypoint.id == id) return waypoint;
+                }
+            } catch (RuntimeException ignored) {
+                // A malformed overlay feature must never destabilize map taps.
+            }
+        }
+        return null;
     }
 
     private List<Feature> query(PointF point, String layerId) {

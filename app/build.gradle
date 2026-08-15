@@ -2,10 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
-def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.2')
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.2.1')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
-def dataReleaseTag = 'rockmap-minerals-alpha6-2-20260815-test1'
+def dataReleaseTag = 'rockmap-minerals-alpha6-2-1-20260815-test1'
 def manifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/releases/download/${dataReleaseTag}/manifest.json" : ''
 def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
 def signingProps = new Properties()
@@ -94,7 +94,7 @@ dependencies {
 }
 
 tasks.register('prepareOfflineGlyphs', Exec) {
-    description = 'Fetch and verify pinned offline glyph/font assets retained for Alpha 6.2.'
+    description = 'Fetch and verify pinned offline glyph/font assets retained for Alpha 6.2.1.'
     group = 'build setup'
     inputs.file(rootProject.file('scripts/prepare_offline_glyphs.py'))
     outputs.dir(generatedOfflineGlyphAssetsDir)

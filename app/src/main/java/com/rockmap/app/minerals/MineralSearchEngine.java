@@ -97,7 +97,7 @@ public final class MineralSearchEngine {
             effective = GEM_ALIASES.get(requested);
             exact = searchInternal(scopedRecords, effective);
             if (!exact.isEmpty()) {
-                note = "No exact MRDS record matched “" + rawQuery.trim() + "” in the selected area. Showing parent-mineral matches for “"
+                note = "No exact indexed evidence matched “" + rawQuery.trim() + "” in the selected area. Showing parent-mineral matches for “"
                         + effective + "”. These are geological leads, not proof that the gemstone variety occurs at every result.";
             }
         }
@@ -133,17 +133,32 @@ public final class MineralSearchEngine {
     }
 
     private static Hit bestHit(MineralRecord record, String query, String singular) {
-        Hit hit = matchList(record, record.materials, "mineral/material", query, singular, 100, 92);
+        int evidence = evidenceAdjustment(record);
+        Hit hit = matchList(record, record.materials, "mineral/material", query, singular, 100 + evidence, 92 + evidence);
         if (hit != null) return hit;
-        hit = matchList(record, record.commodities, "commodity", query, singular, 88, 82);
+        hit = matchList(record, record.commodities, "commodity", query, singular, 88 + evidence, 82 + evidence);
         if (hit != null) return hit;
-        hit = matchText(record, record.name, "site", query, singular, 76, 72);
+        hit = matchText(record, record.name, "site", query, singular, 76 + evidence, 72 + evidence);
         if (hit != null) return hit;
-        hit = matchList(record, record.districts, "district", query, singular, 66, 62);
+        hit = matchList(record, record.districts, "district", query, singular, 66 + evidence, 62 + evidence);
         if (hit != null) return hit;
-        hit = matchList(record, record.models, "deposit model", query, singular, 56, 52);
+        hit = matchList(record, record.models, "deposit model", query, singular, 56 + evidence, 52 + evidence);
         if (hit != null) return hit;
-        return matchList(record, record.rocks, "rock/geologic context", query, singular, 46, 42);
+        return matchList(record, record.rocks, "rock/geologic context", query, singular, 46 + evidence, 42 + evidence);
+    }
+
+    // Internal ordering only; RockMap does not expose a probabilistic or "chance" score.
+    // Direct occurrence/locality evidence should appear ahead of broad district or AML leads.
+    private static int evidenceAdjustment(MineralRecord record) {
+        if (record == null) return 0;
+        String code = record.sourceCode == null ? "" : record.sourceCode.toUpperCase(Locale.US);
+        if (MineralRecord.SOURCE_MRDS.equals(code) || "CGS_B40".equals(code)) return 18;
+        if (code.startsWith("CGS_LOCALITY") || code.startsWith("USGS_LOCALITY")) return 16;
+        if ("CGS_MS17".equals(code)) return 6;
+        if ("USGS_MAS".equals(code)) return 2;
+        if ("CGS_DISTRICTS".equals(code)) return -18;
+        if ("CGS_USFS_AML".equals(code)) return -24;
+        return 0;
     }
 
     private static Hit matchList(MineralRecord record, List<String> values, String label,

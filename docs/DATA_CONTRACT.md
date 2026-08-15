@@ -206,3 +206,32 @@ Alpha 6.2 manifests must contain the cumulative required chain `style`, `base`, 
 Locality records carry source/evidence/precision metadata and are area reference points, not specimen pockets. Mineral-search results do not establish ownership, access, claim status, or collecting legality.
 
 The runtime land hit-test layer `rockmap-land-hit-test` is an informational query layer over `rockmap-land`. It remains queryable when the colored land-status display is hidden so a tapped mineral point can report mapped manager code (for example `PRI`, `BLM`, `USFS`, or `NPS`). It does not change the legal meaning or precision of the BLM SMA land dataset.
+
+## Alpha 6.2.1 expanded mineral-evidence index
+
+Alpha 6.2.1 adds one required compact index id `mineral_evidence`. The cumulative `basemap_test` manifest chain becomes `style`, `base`, `land`, `claims`, `minerals`, `mineral_localities`, `mineral_evidence`. The first six entries are copied exactly from the immutable Alpha 6.2 baseline so existing phones reuse the already-verified basemap, land, claims, MRDS, and official-locality files. Only `mineral_evidence` is newly downloaded.
+
+The expanded evidence index normalizes separate official-source evidence classes instead of pretending every point means the same thing:
+
+- `USGS_MAS` — USGS MAS/MILS OFR 03-090 historic mine/mineral properties.
+- `CGS_B40` — CGS ON-B-40D / B-40 documented radioactive-mineral occurrences.
+- `CGS_MS17` — CGS MS-17 (2022 update of IS-62) industrial/nonmetallic mineral mine inventory.
+- `CGS_USFS_AML` — CGS/USFS ON-008-04D abandoned-mine inventory features.
+- `CGS_DISTRICTS` — CGS ON-007-08D Historic Metal Mining Districts broad-area mineral evidence.
+
+Every normalized record must carry its own `source_code`, `source_title`, `source_reliability`, `evidence_type`, and `location_precision`. RockMap displays the publication/database identifier and a short source-specific reliability statement with the record. Source provenance is never inferred from the mineral name.
+
+The data builder may retain source-specific identifiers and concise source notes needed to audit a result. It must not merge unlike sources into a single stronger-looking observation unless every contributing source remains separately cited. Duplicate coordinates from different source families therefore remain independently attributable evidence.
+
+USFS abandoned-mine features are not automatically treated as mineral occurrences. They become searchable by mineral/commodity only when an explicit source field provides that association; otherwise they remain mine-feature/site-name evidence. Historic-district results are explicitly broad-area evidence. A representative district point is for display/search navigation only and is not a specimen location.
+
+Mindat is not bundled in Alpha 6.2.1. Its current API requires approved access and carries license restrictions that are not assumed compatible with RockMap distribution. No Mindat scraping, repackaging, or derived locality dump is permitted without a separately reviewed authorization/license path.
+
+The compressed `mineral_evidence` file is capped at 15,000,000 bytes for this alpha. The build fails closed on implausibly small source counts, insufficient searchable records, missing source metadata, schema drift, or oversized output. The release also records SHA-256 hashes of the downloaded upstream source packages so the exact source inputs are auditable.
+
+### Saved mineral waypoint provenance
+
+Mineral-search waypoints continue using the existing waypoint database and the mineral-source sentinel; no destructive migration is required. Newly saved mineral waypoints persist the rich result text, including searched term, match reason, recorded minerals/materials, commodities, district/model/rock context when present, evidence class, source record ID, source citation, compact reliability statement, precision statement, and the land-management snapshot shown when saved.
+
+The red saved-waypoint layer must be hit-tested before temporary mineral results and generic map features. Tapping a saved mineral red dot reopens the saved rich mineral information rather than falling through to the generic coordinate/land/claims popup. Older saved mineral waypoints remain readable with whatever provenance text was stored when they were originally saved.
+

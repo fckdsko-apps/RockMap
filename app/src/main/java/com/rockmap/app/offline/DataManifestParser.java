@@ -103,7 +103,13 @@ public final class DataManifestParser {
         } else if (basemapTest) {
             // Test snapshots are staged and cumulative. New research indexes may only activate
             // on top of the exact earlier land/claims/mineral chain they were built against.
-            if (hasId(files, "mineral_localities")) {
+            if (hasId(files, "mineral_evidence")) {
+                require(files, "land", "pmtiles", status);
+                require(files, "claims", "pmtiles", status);
+                require(files, "minerals", "index", status);
+                require(files, "mineral_localities", "index", status);
+                require(files, "mineral_evidence", "index", status);
+            } else if (hasId(files, "mineral_localities")) {
                 require(files, "land", "pmtiles", status);
                 require(files, "claims", "pmtiles", status);
                 require(files, "minerals", "index", status);

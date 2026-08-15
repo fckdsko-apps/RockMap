@@ -92,6 +92,41 @@ public class MineralSearchEngineTest {
         assertEquals("official-amazonite", result.hits.get(0).record.id);
     }
 
+    @Test public void directOccurrenceRanksAheadOfBroadDistrictEvidence() {
+        MineralRecord district = new MineralRecord(
+                "district-1", "Test District", 39.0, -106.0, "", "",
+                Collections.singletonList("Fluorite"), Collections.emptyList(),
+                Collections.singletonList("Test District"), Collections.emptyList(), Collections.emptyList(),
+                "CGS_DISTRICTS", "District mineralogy (broad-area evidence)",
+                "Display point represents an entire approximate district polygon.",
+                "CGS ON-007-08D Historic Districts",
+                "District evidence; boundaries are subjective, approximate 1:150,000 areas.", "");
+        MineralRecord occurrence = record("mrds-1", "Fluorite Prospect",
+                Collections.singletonList("Fluorite"), Collections.emptyList(), Collections.emptyList());
+        MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
+                Arrays.asList(district, occurrence), "fluorite", 0);
+        assertEquals("mrds-1", result.hits.get(0).record.id);
+        assertEquals("district-1", result.hits.get(1).record.id);
+    }
+
+    @Test public void expandedEvidenceKeepsSourceReliabilityAndGenericAliasWording() {
+        MineralRecord evidence = new MineralRecord(
+                "mas-1", "Historic Beryl Property", 39.1, -106.1, "PAST PRODUCER", "",
+                Collections.singletonList("Beryl"), Collections.singletonList("Beryllium"),
+                Collections.emptyList(), Collections.emptyList(), Collections.emptyList(),
+                "USGS_MAS", "Historic mine/mineral property",
+                "Historic point; precision varies", "USGS MAS/MILS OFR 03-090",
+                "Historic site data; location and status may be approximate or outdated.",
+                "Primary commodity/site record; not mineral-species proof.");
+        MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
+                Collections.singletonList(evidence), "aquamarine", 0);
+        assertEquals("beryl", result.effectiveQuery);
+        assertTrue(result.aliasNote.contains("indexed evidence"));
+        assertTrue(!result.aliasNote.contains("MRDS"));
+        assertEquals("USGS MAS/MILS OFR 03-090", result.hits.get(0).record.sourceTitle);
+        assertTrue(result.hits.get(0).record.sourceReliability.contains("approximate or outdated"));
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void rejectsOneCharacterSearches() {
         MineralSearchEngine.search(Collections.emptyList(), "q", 100);

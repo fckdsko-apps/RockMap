@@ -22,6 +22,7 @@ public final class MineralRecord {
     public final String evidenceType;
     public final String locationPrecision;
     public final String sourceTitle;
+    public final String sourceReliability;
     public final String sourceNote;
 
     public MineralRecord(String id, String name, double latitude, double longitude,
@@ -34,6 +35,7 @@ public final class MineralRecord {
                 "Documented mineral occurrence",
                 "MRDS record point; precision varies by record",
                 "USGS Mineral Resources Data System (MRDS)",
+                "Documented geology; location precision and historical status may vary.",
                 "");
     }
 
@@ -43,6 +45,18 @@ public final class MineralRecord {
                          List<String> districts, List<String> models, List<String> rocks,
                          String sourceCode, String evidenceType, String locationPrecision,
                          String sourceTitle, String sourceNote) {
+        this(id, name, latitude, longitude, status, grade,
+                materials, commodities, districts, models, rocks,
+                sourceCode, evidenceType, locationPrecision, sourceTitle,
+                defaultReliability(sourceCode), sourceNote);
+    }
+
+    public MineralRecord(String id, String name, double latitude, double longitude,
+                         String status, String grade,
+                         List<String> materials, List<String> commodities,
+                         List<String> districts, List<String> models, List<String> rocks,
+                         String sourceCode, String evidenceType, String locationPrecision,
+                         String sourceTitle, String sourceReliability, String sourceNote) {
         this.id = safe(id);
         this.name = safe(name).isEmpty() ? "Unnamed mineral occurrence" : safe(name);
         this.latitude = latitude;
@@ -58,11 +72,27 @@ public final class MineralRecord {
         this.evidenceType = safe(evidenceType);
         this.locationPrecision = safe(locationPrecision);
         this.sourceTitle = safe(sourceTitle);
+        this.sourceReliability = safe(sourceReliability).isEmpty()
+                ? defaultReliability(this.sourceCode) : safe(sourceReliability);
         this.sourceNote = safe(sourceNote);
     }
 
     public boolean isMrds() {
         return SOURCE_MRDS.equalsIgnoreCase(sourceCode);
+    }
+
+    private static String defaultReliability(String sourceCode) {
+        String code = safe(sourceCode).toUpperCase(java.util.Locale.US);
+        if (SOURCE_MRDS.equals(code)) {
+            return "Documented geology; location precision and historical status may vary.";
+        }
+        if (code.equals("CGS_GEMSTONES") || code.equals("CGS_TEACHERS") || code.startsWith("CGS_LOCALITY")) {
+            return "Official CGS locality; point may represent a broader mineral-bearing area.";
+        }
+        if (code.startsWith("USGS_PUB_") || code.startsWith("USGS_LOCALITY")) {
+            return "Published USGS locality; point may represent a broader study area.";
+        }
+        return "Source accuracy and location precision vary by record.";
     }
 
     private static List<String> immutable(List<String> input) {

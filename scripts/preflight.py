@@ -64,6 +64,10 @@ required_files = [
     "scripts/build_official_mineral_localities.py",
     "scripts/create_mineral_coverage_test_manifest.py",
     "docs/ALPHA6_2_MINERAL_COVERAGE.md",
+    "scripts/build_mineral_evidence.py",
+        "scripts/test_mineral_evidence_builder.py",
+    "scripts/create_mineral_evidence_test_manifest.py",
+    "docs/ALPHA6_2_1_MINERAL_EVIDENCE.md",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -408,6 +412,8 @@ for required_claim_validator in (
 
 manifest_parser_text = read("app/src/main/java/com/rockmap/app/offline/DataManifestParser.java")
 for required_parser_guard in (
+    'if (hasId(files, "mineral_evidence"))',
+    'require(files, "mineral_evidence", "index", status);',
     'if (hasId(files, "mineral_localities"))',
     'else if (hasId(files, "minerals"))',
     'require(files, "land", "pmtiles", status);',
@@ -416,7 +422,7 @@ for required_parser_guard in (
     'require(files, "mineral_localities", "index", status);',
 ):
     if required_parser_guard not in manifest_parser_text:
-        err(f"Alpha 6.2 manifest parser is missing cumulative dependency guard: {required_parser_guard}")
+        err(f"Alpha 6.2.1 manifest parser is missing cumulative dependency guard: {required_parser_guard}")
 
 # The repository placeholder manifest remains unpublished. Alpha 5 points the APK updater
 # at a separate land-test release whose manifest reuses the immutable Alpha 2 base/style.
@@ -449,10 +455,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
-if "rockmap-minerals-alpha6-2-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 6.2 APK must point only to the immutable Alpha 6.2 cumulative mineral-coverage release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.2" not in read("gradle.properties"):
-    err("Alpha 6.2 version name is not pinned in gradle.properties.")
+if "rockmap-minerals-alpha6-2-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 6.2.1 APK must point only to the immutable Alpha 6.2.1 cumulative mineral-evidence release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.2.1" not in read("gradle.properties"):
+    err("Alpha 6.2.1 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -486,6 +492,8 @@ if java_text.count("setId(View.generateViewId())") < 2 or "scope.check(allColora
     err("Alpha 6.1.2 mineral search area choices must be one mutually-exclusive RadioGroup selection.")
 if "listener.onMapOverlayTapped(coordinate, overlayLand)" not in java_text or "listener.onMineralTapped(hit)" not in java_text:
     err("Alpha 6.2 mineral map taps must route rich mineral details with land context before generic location info.")
+if "listener.onWaypointTapped(waypoint)" not in java_text or "findRenderedWaypoint" not in java_text:
+    err("Alpha 6.2.1 saved red markers must be hit-tested and reopen saved rich details before generic map info.")
 
 for required_source in (
     "pmtiles://",
@@ -550,15 +558,22 @@ for required_source in (
     "onMineralTapped",
     "Searched for: ",
     "All recorded minerals/materials: ",
-    "Source: USGS Mineral Resources Data System (MRDS)",
-    "Reliability: Documented mineral and geologic records; location precision and historical mine information may vary.",
-    "Source: Colorado Geological Survey (CGS)",
-    "Source: U.S. Geological Survey publication",
     "Land: Unknown — no mapped management feature at this point.",
     "LAND_QUERY_LAYER",
     "rockmap-land-hit-test",
     "mineral_localities",
     "hasOfficialLocalitySupplement",
+    "mineral_evidence",
+    "hasExpandedEvidence",
+    "sourceReliability",
+    "Reliability: ",
+    "Land source: BLM Colorado SMA",
+    "Land reliability: Management mapping; not parcel/legal boundaries.",
+    "CGS Gemstones of Colorado",
+    "CGS aquamarine locality reference",
+    "USGS publication 70021621",
+    "onWaypointTapped",
+    "findRenderedWaypoint",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -656,6 +671,57 @@ for required in (
 ):
     if required not in alpha62_doc:
         err(f"Alpha 6.2 mineral-coverage documentation missing required term: {required}")
+
+
+# Alpha 6.2.1 adds a larger but still compact official-source evidence index. It must
+# preserve source-specific provenance/reliability and must not scrape or bundle Mindat.
+evidence_builder_text = read("scripts/build_mineral_evidence.py")
+for required in (
+    '"USGS_MAS"',
+    '"CGS_B40"',
+    '"CGS_MS17"',
+    '"CGS_USFS_AML"',
+    '"CGS_DISTRICTS"',
+    'source_reliability',
+    'Historic site data; location and status may be approximate or outdated.',
+    'Documented occurrence; mapped precision and 1978-era details may vary.',
+    'Field inventory; locations vary and site conditions may have changed.',
+    'District evidence; boundaries are subjective, approximate 1:150,000 areas.',
+    'validate_source_counts',
+    'gzip.GzipFile',
+    'mtime=0',
+):
+    if required not in evidence_builder_text:
+        err(f"Alpha 6.2.1 evidence builder is missing required provenance/fail-closed behavior: {required}")
+
+if "mindat" in evidence_builder_text.lower() and "Not bundled" not in evidence_builder_text:
+    err("Alpha 6.2.1 must not bundle Mindat without approved API/license handling.")
+
+evidence_manifest_text = read("scripts/create_mineral_evidence_test_manifest.py")
+for required in (
+    'expected = {"style", "base", "land", "claims", "minerals", "mineral_localities"}',
+    '"id": "mineral_evidence"',
+    '15_000_000',
+    'Alpha 6.2.1 reuses exact Alpha 6.2 files and adds only mineral_evidence',
+):
+    if required not in evidence_manifest_text:
+        err(f"Alpha 6.2.1 manifest builder is missing immutable Alpha 6.2 baseline behavior: {required}")
+
+alpha621_doc = read("docs/ALPHA6_2_1_MINERAL_EVIDENCE.md")
+for required in (
+    "USGS MAS/MILS",
+    "CGS ON-B-40D",
+    "CGS MS-17",
+    "CGS/USFS ON-008-04D",
+    "CGS ON-007-08D",
+    "Mindat",
+    "15 MB",
+    "saved red marker",
+    "source-specific reliability",
+    "Do not uninstall",
+):
+    if required not in alpha621_doc:
+        err(f"Alpha 6.2.1 documentation missing required source/safety term: {required}")
 
 if "labels are not included yet" in java_text:
     err("Alpha 5 source still reports the already-proven labels as absent.")
@@ -785,4 +851,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.2 mineral-coverage source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.2.1 expanded mineral-evidence source preflight passed ({file_count} files checked).")
