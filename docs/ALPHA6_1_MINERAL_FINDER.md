@@ -1,6 +1,6 @@
-# Alpha 6.1 / 6.1.1 — compact Colorado mineral finder
+# Alpha 6.1 / 6.1.1 / 6.1.2 — compact Colorado mineral finder
 
-Alpha 6.1 adds an offline mineral-search research aid without turning RockMap into a permanently cluttered geology map. Alpha 6.1.1 refines how large search results are filtered, displayed, hidden, cleared, and saved; it does not change the mineral data pack.
+Alpha 6.1 adds an offline mineral-search research aid without turning RockMap into a permanently cluttered geology map. Alpha 6.1.1 refines how large search results are filtered, displayed, hidden, cleared, and saved. Alpha 6.1.2 fixes search-area selection and gives map-tapped mineral points the full MRDS site detail popup; neither UI refinement changes the mineral data pack.
 
 ## Data included
 
@@ -60,10 +60,20 @@ Alpha 6.1 uses concise, differentiated labels:
 
 The Alpha 6.1 data release reuses the exact Alpha 5 style, basemap, BLM Colorado land-status, and BLM MLRS claims file entries. It adds one required gzip JSON index with id `minerals`, kind `index`.
 
-Alpha 6.1.1 is APK-only. It continues to point to `rockmap-minerals-alpha6-1-20260815-test1` and must not publish or require a replacement mineral pack.
+Alpha 6.1.1 and Alpha 6.1.2 are APK-only. They continue to point to `rockmap-minerals-alpha6-1-20260815-test1` and must not publish or require a replacement mineral pack.
 
 The Android updater verifies the index size and SHA-256 before activation. Existing files whose size and SHA-256 already match are reused rather than downloaded again.
 
 ## Safety semantics
 
 MRDS is a mineral-resource research database, not a rockhounding-permission database. Human-activity information can be stale. A mapped mineral occurrence does not establish current ownership, legal access, mining-claim status, or permission to collect. Absence from the compact search index is not proof that a mineral is absent.
+
+
+## Alpha 6.1.2 marker-detail refinement
+
+- `All Colorado` and `Current map area` are mutually exclusive radio choices.
+- Tapping an individual cyan mineral marker opens the full MRDS site record, using the MRDS site name as the dialog title.
+- The popup shows the searched term, exact or parent-mineral match path, all recorded minerals/materials, commodities, district, deposit model, rock context, MRDS status, coordinates, and MRDS ID.
+- Compact provenance text is shown in the popup: `Source: USGS Mineral Resources Data System (MRDS)` and `Reliability: Documented mineral and geologic records; location precision and historical mine information may vary.`
+- Saving from a mineral marker preserves the MRDS site name, search term, match evidence, minerals/materials, and commodities in the saved marker.
+- This remains APK-only and continues to use `rockmap-minerals-alpha6-1-20260815-test1`.

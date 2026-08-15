@@ -39,6 +39,7 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 public final class MapController {
     public interface Listener {
         void onMapSafetyState(boolean verified, String message);
+        boolean onMapOverlayTapped(LatLng coordinate);
         void onMapFeaturesTapped(LatLng coordinate, List<Feature> land, List<Feature> claims);
     }
 
@@ -504,7 +505,9 @@ public final class MapController {
     }
 
     private boolean handleTap(LatLng coordinate) {
-        if (map == null || style == null || (!landStatusAvailable && !claimsAvailable)) return false;
+        if (map == null || style == null) return false;
+        if (listener.onMapOverlayTapped(coordinate)) return true;
+        if (!landStatusAvailable && !claimsAvailable) return false;
         PointF point = map.getProjection().toScreenLocation(coordinate);
         List<Feature> land = (landStatusAvailable && landVisible)
                 ? dedupe(query(point, LAND_FILL), "manager_name", "manager_code") : new ArrayList<>();

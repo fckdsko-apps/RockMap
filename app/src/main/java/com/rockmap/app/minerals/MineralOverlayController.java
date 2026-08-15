@@ -37,6 +37,10 @@ import static org.maplibre.android.style.layers.PropertyFactory.textSize;
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
 public final class MineralOverlayController {
+    public interface Listener {
+        void onMineralTapped(MineralSearchEngine.Hit hit);
+    }
+
     public interface BoundsCallback {
         void onBounds(MineralSearchEngine.Bounds bounds);
     }
@@ -47,19 +51,18 @@ public final class MineralOverlayController {
     public static final String CLUSTER_COUNT_LAYER_ID = "rockmap-mineral-cluster-count-layer";
 
     private final MapView mapView;
+    private final Listener listener;
     private MapLibreMap map;
     private List<MineralSearchEngine.Hit> activeHits = new ArrayList<>();
     private boolean visible = true;
 
-    public MineralOverlayController(MapView mapView) {
+    public MineralOverlayController(MapView mapView, Listener listener) {
         this.mapView = mapView;
+        this.listener = listener;
     }
 
     public void initialize() {
-        mapView.getMapAsync(mapLibreMap -> {
-            map = mapLibreMap;
-            map.addOnMapClickListener(this::handleTap);
-        });
+        mapView.getMapAsync(mapLibreMap -> map = mapLibreMap);
     }
 
     public void show(List<MineralSearchEngine.Hit> hits) {
@@ -166,8 +169,12 @@ public final class MineralOverlayController {
         });
     }
 
-    private boolean handleTap(LatLng coordinate) {
+    public boolean handleTap(LatLng coordinate) {
         if (map == null || !visible || activeHits.isEmpty()) return false;
+        org.maplibre.android.maps.Style currentStyle = map.getStyle();
+        if (currentStyle == null
+                || currentStyle.getLayer(CLUSTER_LAYER_ID) == null
+                || currentStyle.getLayer(LAYER_ID) == null) return false;
         PointF point = map.getProjection().toScreenLocation(coordinate);
 
         List<Feature> clusters = map.queryRenderedFeatures(point, new String[]{CLUSTER_LAYER_ID});
@@ -186,10 +193,25 @@ public final class MineralOverlayController {
             return true;
         }
 
-        // Individual mineral points deliberately pass through to RockMap's normal
-        // Location information popup. Alpha 6.1.1 adds Save marker there, so a map-tapped
-        // mineral point can be saved as a coordinate marker without opening the result list.
+        List<Feature> points = map.queryRenderedFeatures(point, new String[]{LAYER_ID});
+        for (Feature feature : points) {
+            MineralSearchEngine.Hit hit = findHit(feature);
+            if (hit != null) {
+                if (listener != null) listener.onMineralTapped(hit);
+                return true;
+            }
+        }
         return false;
+    }
+
+    private MineralSearchEngine.Hit findHit(Feature feature) {
+        if (feature == null || !feature.hasProperty("id")) return null;
+        String id = feature.getStringProperty("id");
+        if (id == null || id.isEmpty()) return null;
+        for (MineralSearchEngine.Hit hit : activeHits) {
+            if (hit != null && hit.record != null && id.equals(hit.record.id)) return hit;
+        }
+        return null;
     }
 
     private void applyVisibility(org.maplibre.android.maps.Style style) {

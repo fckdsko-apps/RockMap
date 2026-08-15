@@ -444,8 +444,8 @@ if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-minerals-alpha6-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
     err("Alpha 6.1 APK must point only to the immutable Alpha 6.1 mineral-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1.1" not in read("gradle.properties"):
-    err("Alpha 6.1 version name is not pinned in gradle.properties.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1.2" not in read("gradle.properties"):
+    err("Alpha 6.1.2 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -474,6 +474,11 @@ if "@Override protected void onLowMemory()" in java_text:
     err("Activity.onLowMemory() must remain public on current Android APIs.")
 if "@Override public void onLowMemory()" not in java_text:
     err("MainActivity must forward public onLowMemory() to MapView.")
+
+if java_text.count("setId(View.generateViewId())") < 2 or "scope.check(allColorado.getId())" not in java_text:
+    err("Alpha 6.1.2 mineral search area choices must be one mutually-exclusive RadioGroup selection.")
+if "listener.onMapOverlayTapped(coordinate)" not in java_text or "listener.onMineralTapped(hit)" not in java_text:
+    err("Alpha 6.1.2 mineral map taps must route through the rich MRDS marker-detail path before generic location info.")
 
 for required_source in (
     "pmtiles://",
@@ -533,6 +538,13 @@ for required_source in (
     "MINERAL_LIST_PAGE",
     "getVisibleBounds",
     "CLUSTER_LAYER_ID",
+    "View.generateViewId()",
+    "onMapOverlayTapped",
+    "onMineralTapped",
+    "Searched for: ",
+    "All recorded minerals/materials: ",
+    "Source: USGS Mineral Resources Data System (MRDS)",
+    "Reliability: Documented mineral and geologic records; location precision and historical mine information may vary.",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -695,4 +707,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.1.1 mineral-finder UI source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.1.2 mineral-finder UI source preflight passed ({file_count} files checked).")
