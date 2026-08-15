@@ -32,7 +32,7 @@ jobs:
       RELEASE_TAG: 'rockmap-minerals-alpha6-2-1-20260815-test1'
       EVIDENCE_NAME: 'colorado-mineral-evidence-usgs-cgs-20260815-alpha6-2-1-test1.json.gz'
       MAX_EVIDENCE_BYTES: '15000000'
-      MAS_URL: 'https://pubs.usgs.gov/of/2003/ofr-03-090/PartA-Data/CO_MAS.xls'
+      MAS_URL: 'https://pubs.usgs.gov/of/2003/ofr-03-090/PartA-Data/MapInfo/CO_MAS.zip'
       B40_URL: 'https://coloradogeologicalsurvey.org/wp-content/uploads/woocommerce_uploads/ON-B-40D.zip'
       MS17_URL: 'https://coloradogeologicalsurvey.org/Docs/Pubs/MS-17.zip'
       AML_URL: 'https://coloradogeologicalsurvey.org/wp-content/uploads/2025/07/ON-008-04.zip'
@@ -53,8 +53,6 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip install --disable-pip-version-check \
-            pandas==2.2.3 \
-            xlrd==2.0.1 \
             geopandas==1.1.2 \
             pyogrio==0.12.1 \
             pypdf==5.9.0
@@ -67,9 +65,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p sources/{b40,ms17,aml,districts} dist
+          mkdir -p sources/{mas,b40,ms17,aml,districts} dist
           curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
-            -A 'RockMap-data-builder/0.1' -o sources/CO_MAS.xls "$MAS_URL"
+            -A 'RockMap-data-builder/0.1' -o sources/CO_MAS.zip "$MAS_URL"
           curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
             -A 'RockMap-data-builder/0.1' -o sources/ON-B-40D.zip "$B40_URL"
           curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
@@ -79,12 +77,13 @@ jobs:
           curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
             -A 'RockMap-data-builder/0.1' -o sources/ON-007-08D.zip "$DISTRICTS_URL"
 
-          for f in sources/CO_MAS.xls sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip; do
+          for f in sources/CO_MAS.zip sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip; do
             test -s "$f"
           done
-          sha256sum sources/CO_MAS.xls sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip \
+          sha256sum sources/CO_MAS.zip sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip \
             > dist/SOURCE_SHA256SUMS.txt
 
+          unzip -q sources/CO_MAS.zip -d sources/mas
           unzip -q sources/ON-B-40D.zip -d sources/b40
           unzip -q sources/MS-17.zip -d sources/ms17
           unzip -q sources/ON-008-04D.zip -d sources/aml
@@ -95,7 +94,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/build_mineral_evidence.py \
-            --mas-xls sources/CO_MAS.xls \
+            --mas-root sources/mas \
             --b40-root sources/b40 \
             --ms17-root sources/ms17 \
             --aml-root sources/aml \
