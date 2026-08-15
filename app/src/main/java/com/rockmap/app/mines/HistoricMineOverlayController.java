@@ -4,6 +4,7 @@ import android.graphics.Color;
 import android.graphics.PointF;
 import android.graphics.RectF;
 
+import com.rockmap.app.map.MapController;
 import com.rockmap.app.minerals.MineralRecord;
 
 import org.json.JSONArray;
@@ -13,6 +14,7 @@ import org.maplibre.android.camera.CameraUpdateFactory;
 import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.maps.MapLibreMap;
 import org.maplibre.android.maps.MapView;
+import org.maplibre.android.maps.Style;
 import org.maplibre.android.style.expressions.Expression;
 import org.maplibre.android.style.layers.CircleLayer;
 import org.maplibre.android.style.layers.Layer;
@@ -128,7 +130,7 @@ public final class HistoricMineOverlayController {
 
     public boolean handleTap(LatLng coordinate) {
         if (map == null || !visible || activeRecords.isEmpty()) return false;
-        org.maplibre.android.maps.Style style = map.getStyle();
+        Style style = map.getStyle();
         if (style == null || style.getLayer(CLUSTER_LAYER_ID) == null) return false;
 
         PointF point = map.getProjection().toScreenLocation(coordinate);
@@ -197,7 +199,7 @@ public final class HistoricMineOverlayController {
                         circleStrokeWidth(1.5f));
                 properties.setFilter(Expression.eq(
                         Expression.get("kind"), Expression.literal("property")));
-                style.addLayer(properties);
+                addBelowSavedWaypoint(style, properties);
             }
 
             if (style.getLayer(OPENING_LAYER_ID) == null) {
@@ -209,7 +211,7 @@ public final class HistoricMineOverlayController {
                         circleStrokeWidth(1.5f));
                 openings.setFilter(Expression.eq(
                         Expression.get("kind"), Expression.literal("opening")));
-                style.addLayer(openings);
+                addBelowSavedWaypoint(style, openings);
             }
 
             if (style.getLayer(CLUSTER_LAYER_ID) == null) {
@@ -220,7 +222,7 @@ public final class HistoricMineOverlayController {
                         circleStrokeColor(Color.WHITE),
                         circleStrokeWidth(2f));
                 clusters.setFilter(Expression.has("point_count"));
-                style.addLayer(clusters);
+                addBelowSavedWaypoint(style, clusters);
             }
 
             if (style.getLayer(CLUSTER_COUNT_LAYER_ID) == null) {
@@ -233,13 +235,22 @@ public final class HistoricMineOverlayController {
                         textIgnorePlacement(true),
                         textAllowOverlap(true));
                 counts.setFilter(Expression.has("point_count"));
-                style.addLayer(counts);
+                addBelowSavedWaypoint(style, counts);
             }
             applyVisibility(style);
         }));
     }
 
-    private void applyVisibility(org.maplibre.android.maps.Style style) {
+    /** Keep persistent saved locations visually above the temporary/source mine overlay. */
+    private void addBelowSavedWaypoint(Style style, Layer layer) {
+        if (style.getLayer(MapController.WAYPOINT_LAYER) != null) {
+            style.addLayerBelow(layer, MapController.WAYPOINT_LAYER);
+        } else {
+            style.addLayer(layer);
+        }
+    }
+
+    private void applyVisibility(Style style) {
         boolean show = visible && isLoaded();
         setLayerVisible(style.getLayer(PROPERTY_LAYER_ID), show);
         setLayerVisible(style.getLayer(OPENING_LAYER_ID), show);
