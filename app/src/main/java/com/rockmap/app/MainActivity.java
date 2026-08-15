@@ -20,6 +20,8 @@ import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.ArrayAdapter;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -33,6 +35,10 @@ import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.MapController;
 import com.rockmap.app.map.LandStatusCatalog;
 import com.rockmap.app.map.MiningClaimCatalog;
+import com.rockmap.app.minerals.MineralIndexRepository;
+import com.rockmap.app.minerals.MineralOverlayController;
+import com.rockmap.app.minerals.MineralRecord;
+import com.rockmap.app.minerals.MineralSearchEngine;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
@@ -64,12 +70,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int MAX_IMPORT_BYTES = 5_000_000;
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
     private static final float MANUAL_COORDINATE_ACCURACY = -2f;
+    private static final float MINERAL_SOURCE_ACCURACY = -3f;
 
     private MapView mapView;
     private MapController mapController;
     private LocationRepository locationRepository;
     private WaypointRepository waypointRepository;
     private OfflineDataManager offlineDataManager;
+    private MineralIndexRepository mineralIndexRepository;
+    private MineralOverlayController mineralOverlayController;
     private TextView safetyBanner;
     private LiveData<WorkInfo> updateLiveData;
     private Observer<WorkInfo> updateObserver;
@@ -88,6 +97,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         FrameLayout root = new FrameLayout(this);
         mapView = new MapView(this);
+        mineralIndexRepository = new MineralIndexRepository(this, offlineDataManager);
+        mineralOverlayController = new MineralOverlayController(mapView);
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -107,11 +118,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
         controls.setGravity(Gravity.CENTER);
         controls.setPadding(dp(6), dp(6), dp(6), dp(6));
         controls.setBackgroundColor(Color.argb(235, 255, 255, 255));
-        addControl(controls, "Locate", v -> locate());
-        addControl(controls, "Save", v -> saveLocation());
-        addControl(controls, "Search", v -> showCoordinateSearch());
+        addControl(controls, "GPS", v -> locate());
+        addControl(controls, "Save GPS", v -> saveLocation());
+        addControl(controls, "Coords", v -> showCoordinateSearch());
+        addControl(controls, "Minerals", v -> showMineralSearch());
         addControl(controls, "Layers", v -> showLayers());
-        addControl(controls, "Saved", v -> showSaved());
+        addControl(controls, "Markers", v -> showSaved());
         addControl(controls, "Data", v -> showData());
         FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -143,13 +155,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextSize(11.5f);
+        button.setTextSize(9.5f);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setPadding(dp(2), 0, dp(2), 0);
+        button.setPadding(0, 0, 0, 0);
         button.setOnClickListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        params.setMargins(dp(1), 0, dp(1), 0);
+        params.setMargins(0, 0, 0, 0);
         row.addView(button, params);
     }
 
@@ -164,6 +176,166 @@ public final class MainActivity extends Activity implements LocationRepository.L
             mapController.updateCurrentLocation(location);
             mapController.centerOn(location);
         }, this::showMessage);
+    }
+
+    private void showMineralSearch() {
+        if (!mineralIndexRepository.isAvailable()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Mineral data not installed")
+                    .setMessage("The Alpha 6.1 USGS MRDS mineral index is not active yet. Open Data and choose Check for update. The existing basemap, land status, and claims remain installed while the small mineral index is added.")
+                    .setPositiveButton("Data", (d, w) -> showData())
+                    .setNegativeButton("Close", null)
+                    .show();
+            return;
+        }
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView help = new TextView(this);
+        help.setText("Search documented USGS MRDS minerals/materials first, then commodities, site names, districts, deposit models, and rock context.\n\nExamples: fluorite, rhodochrosite, beryl, topaz, telluride, pegmatite, gold.\n\nGemstone names such as aquamarine or amazonite fall back to their parent mineral only when MRDS has no exact match, and RockMap labels that fallback clearly.");
+        help.setTextSize(13f);
+        help.setTextColor(Color.rgb(65, 65, 65));
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+
+        EditText input = new EditText(this);
+        input.setHint("Mineral, gemstone, deposit, or rock");
+        input.setSingleLine(true);
+        box.addView(input);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Search minerals")
+                .setView(box)
+                .setPositiveButton("Search", null)
+                .setNeutralButton("Clear map", (d, w) -> mineralOverlayController.clear())
+                .setNegativeButton("Close", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            String query = input.getText().toString().trim();
+            if (query.length() < 2) {
+                input.setError("Enter at least 2 characters.");
+                return;
+            }
+            Button find = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            find.setEnabled(false);
+            find.setText("Searching…");
+            mineralIndexRepository.search(query, new MineralIndexRepository.Callback() {
+                @Override public void onResult(MineralSearchEngine.SearchResult result) {
+                    dialog.dismiss();
+                    showMineralResults(result);
+                }
+
+                @Override public void onError(String message) {
+                    find.setEnabled(true);
+                    find.setText("Search");
+                    input.setError(message == null ? "Mineral search failed." : message);
+                }
+            });
+        }));
+        dialog.show();
+        input.requestFocus();
+    }
+
+    private void showMineralResults(MineralSearchEngine.SearchResult result) {
+        if (result.hits.isEmpty()) {
+            mineralOverlayController.clear();
+            new AlertDialog.Builder(this)
+                    .setTitle("No mineral matches")
+                    .setMessage("No Colorado USGS MRDS records matched “" + result.requestedQuery + "”. This does not prove the mineral is absent; MRDS is a mineral-resource database and is not a complete rockhounding-locality catalog.")
+                    .setPositiveButton("Search again", (d, w) -> showMineralSearch())
+                    .setNegativeButton("Close", null)
+                    .show();
+            return;
+        }
+
+        mineralOverlayController.show(result.hits);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(4), dp(18), 0);
+
+        TextView summary = new TextView(this);
+        StringBuilder summaryText = new StringBuilder();
+        if (!result.aliasNote.isEmpty()) summaryText.append(result.aliasNote).append("\n\n");
+        summaryText.append("Showing ").append(result.hits.size()).append(" of ").append(result.totalMatches)
+                .append(" matches. Cyan points are only the current search results. Refine broad searches to reduce clutter.");
+        summary.setText(summaryText.toString());
+        summary.setTextSize(12.5f);
+        summary.setTextColor(Color.rgb(65, 65, 65));
+        summary.setPadding(0, 0, 0, dp(8));
+        box.addView(summary);
+
+        String[] labels = new String[result.hits.size()];
+        for (int i = 0; i < result.hits.size(); i++) {
+            MineralSearchEngine.Hit hit = result.hits.get(i);
+            labels[i] = hit.record.name + "\n" + hit.reason + "\n"
+                    + String.format(Locale.US, "%.5f, %.5f", hit.record.latitude, hit.record.longitude);
+        }
+        ListView list = new ListView(this);
+        list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(420));
+        box.addView(list, listParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Minerals: " + result.requestedQuery)
+                .setView(box)
+                .setPositiveButton("Search again", (d, w) -> showMineralSearch())
+                .setNeutralButton("Clear map", (d, w) -> mineralOverlayController.clear())
+                .setNegativeButton("Close", null)
+                .create();
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            dialog.dismiss();
+            showMineralDetail(result, position);
+        });
+        dialog.show();
+    }
+
+    private void showMineralDetail(MineralSearchEngine.SearchResult result, int position) {
+        MineralSearchEngine.Hit hit = result.hits.get(position);
+        MineralRecord record = hit.record;
+        mineralOverlayController.center(record);
+
+        StringBuilder text = new StringBuilder();
+        text.append(String.format(Locale.US, "%.6f, %.6f", record.latitude, record.longitude));
+        text.append("\nMatched: ").append(hit.reason);
+        if (!record.materials.isEmpty()) text.append("\n\nMinerals/materials: ").append(String.join(", ", record.materials));
+        if (!record.commodities.isEmpty()) text.append("\nCommodities: ").append(String.join(", ", record.commodities));
+        if (!record.districts.isEmpty()) text.append("\nDistrict: ").append(String.join(", ", record.districts));
+        if (!record.models.isEmpty()) text.append("\nDeposit model: ").append(String.join(", ", record.models));
+        if (!record.rocks.isEmpty()) text.append("\nRock context: ").append(String.join(", ", record.rocks));
+        if (!record.status.isEmpty()) text.append("\nMRDS development status: ").append(record.status);
+        text.append("\nUSGS MRDS ID: ").append(record.id);
+        text.append("\n\nUSGS warns that MRDS human-activity information can be outdated. RockMap uses the mineral/geologic content as a research lead, not as proof of current mine status, ownership, access, claim status, or permission to collect.");
+
+        ScrollView scroll = new ScrollView(this);
+        TextView body = new TextView(this);
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        scroll.addView(body);
+        new AlertDialog.Builder(this)
+                .setTitle(record.name)
+                .setView(scroll)
+                .setPositiveButton("Save marker", (d, w) -> saveMineralMarker(record, hit.reason))
+                .setNeutralButton("Results", (d, w) -> showMineralResults(result))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void saveMineralMarker(MineralRecord record, String matchReason) {
+        long now = System.currentTimeMillis();
+        String note = "USGS MRDS mineral-search result\nMRDS ID: " + record.id
+                + "\nMatched: " + matchReason
+                + (record.materials.isEmpty() ? "" : "\nMinerals/materials: " + String.join(", ", record.materials))
+                + (record.commodities.isEmpty() ? "" : "\nCommodities: " + String.join(", ", record.commodities));
+        WaypointEntity waypoint = new WaypointEntity(
+                record.latitude, record.longitude, MINERAL_SOURCE_ACCURACY, now,
+                boundedText(record.name, 500), boundedText(note, 20_000), now, now);
+        waypointRepository.insert(waypoint, () -> {
+            refreshWaypoints();
+            showMessage("Mineral result saved to Saved locations.");
+        });
     }
 
     private void showCoordinateSearch() {
@@ -478,12 +650,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showWaypoint(WaypointEntity waypoint) {
         boolean manualCoordinate = waypoint.accuracyMeters == MANUAL_COORDINATE_ACCURACY;
+        boolean mineralSource = waypoint.accuracyMeters == MINERAL_SOURCE_ACCURACY;
         String sourceLine = manualCoordinate
                 ? "Source: manually entered coordinates"
-                : waypoint.accuracyMeters >= 0
-                    ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
-                    : "GPS accuracy: not reported";
-        String timeLabel = manualCoordinate ? "Saved" : "Captured";
+                : mineralSource
+                    ? "Source: saved USGS MRDS mineral-search point"
+                    : waypoint.accuracyMeters >= 0
+                        ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
+                        : "GPS accuracy: not reported";
+        String timeLabel = (manualCoordinate || mineralSource) ? "Saved" : "Captured";
         String body = String.format(Locale.US,
                 "%.6f, %.6f\n%s\n%s: %s%s",
                 waypoint.latitude, waypoint.longitude, sourceLine, timeLabel,
@@ -536,6 +711,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setTitle("Offline data")
                 .setMessage("App: RockMap " + BuildConfig.VERSION_NAME + "\n\n"
                         + offlineDataManager.describeStatus()
+                        + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
+                            ? "installed offline (Alpha 6.1 compact USGS MRDS index)"
+                            : "not installed")
                         + (mapController == null ? ""
                             : "\n\n" + mapController.describeLabelDiagnostics()
                             + "\n\n" + mapController.describeLandDiagnostics()
@@ -561,6 +739,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 if (info == null || !info.getState().isFinished()) return;
                 clearUpdateObserver();
                 if (info.getState() == WorkInfo.State.SUCCEEDED) {
+                    mineralIndexRepository.clearCache();
                     mapController.reloadStyle();
                     showMessage("Offline data downloaded. RockMap is validating the installed map now.");
                 } else {
@@ -662,7 +841,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 String notes = props == null ? "" : props.optString("notes", "");
                 float accuracy = props == null ? -1f : (float) props.optDouble("accuracyMeters", -1d);
                 if (!Float.isFinite(accuracy)
-                        || (accuracy < 0f && accuracy != MANUAL_COORDINATE_ACCURACY)) accuracy = -1f;
+                        || (accuracy < 0f
+                            && accuracy != MANUAL_COORDINATE_ACCURACY
+                            && accuracy != MINERAL_SOURCE_ACCURACY)) accuracy = -1f;
                 long capturedAt = props == null ? now : props.optLong("capturedAt", now);
                 long createdAt = props == null ? now : props.optLong("createdAt", now);
                 long updatedAt = props == null ? now : props.optLong("updatedAt", now);

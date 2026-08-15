@@ -52,6 +52,14 @@ required_files = [
     "app/src/test/java/com/rockmap/app/offline/DataValidatorsTest.java",
     "app/src/main/java/com/rockmap/app/coordinates/CoordinateParser.java",
     "app/src/test/java/com/rockmap/app/coordinates/CoordinateParserTest.java",
+    "app/src/main/java/com/rockmap/app/minerals/MineralRecord.java",
+    "app/src/main/java/com/rockmap/app/minerals/MineralSearchEngine.java",
+    "app/src/main/java/com/rockmap/app/minerals/MineralIndexRepository.java",
+    "app/src/main/java/com/rockmap/app/minerals/MineralOverlayController.java",
+    "app/src/test/java/com/rockmap/app/minerals/MineralSearchEngineTest.java",
+    "scripts/fetch_usgs_mrds_minerals.py",
+    "scripts/create_mineral_test_manifest.py",
+    "docs/ALPHA6_1_MINERAL_FINDER.md",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -434,10 +442,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
-if "rockmap-claims-alpha5-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 5 APK must point only to the immutable Alpha 5 claims-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.0" not in read("gradle.properties"):
-    err("Alpha 6.0 version name is not pinned in gradle.properties.")
+if "rockmap-minerals-alpha6-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 6.1 APK must point only to the immutable Alpha 6.1 mineral-test release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1" not in read("gradle.properties"):
+    err("Alpha 6.1 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -506,13 +514,52 @@ for required_source in (
     "compactClaimQuality",
     "Mapping: ",
     "CoordinateParser",
-    "addControl(controls, \"Search\"",
+    "addControl(controls, \"GPS\"",
+    "addControl(controls, \"Save GPS\"",
+    "addControl(controls, \"Coords\"",
+    "addControl(controls, \"Minerals\"",
+    "addControl(controls, \"Markers\"",
     "Save coordinate marker",
     "MANUAL_COORDINATE_ACCURACY",
     "Source: manually entered coordinates",
+    "MineralIndexRepository",
+    "MineralOverlayController",
+    "rockmap-mineral-search-layer",
+    "Source: saved USGS MRDS mineral-search point",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
+
+# Alpha 6.1 adds one compact gzip JSON mineral index to the signed data contract.
+validators_text = read("app/src/main/java/com/rockmap/app/offline/DataValidators.java")
+if '"index".equals(kind)' not in validators_text or '.json.gz' not in validators_text:
+    err("Alpha 6.1 DataValidators must accept only the compact JSON/JSON.GZ index kind in addition to existing styles/PMTiles.")
+
+mineral_doc = read("docs/ALPHA6_1_MINERAL_FINDER.md")
+for required in (
+    "15 MB",
+    "USGS",
+    "MRDS",
+    "GPS | Save GPS | Coords | Minerals | Layers | Markers | Data",
+    "does not establish current ownership",
+):
+    if required not in mineral_doc:
+        err(f"Alpha 6.1 mineral-finder documentation missing required safety/size instruction: {required}")
+
+fetch_minerals = read("scripts/fetch_usgs_mrds_minerals.py")
+for required in (
+    "Mineral Resources Data System",
+    "materials",
+    "commodities",
+    "districts",
+    "models",
+    "rocks",
+    "production",
+    "ownership",
+):
+    if required not in fetch_minerals:
+        err(f"Alpha 6.1 compact MRDS builder missing expected contract text: {required}")
+
 if "labels are not included yet" in java_text:
     err("Alpha 5 source still reports the already-proven labels as absent.")
 if "OFFLINE BASEMAP + LABELS + LAND STATUS + MINING CLAIMS: TEST" not in java_text:
@@ -641,4 +688,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.0 coordinate-search source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.1 mineral-finder source preflight passed ({file_count} files checked).")

@@ -46,6 +46,7 @@ public final class DataValidators {
         String lower = fileName.toLowerCase(Locale.US);
         if ("style".equals(kind)) return lower.endsWith(".json");
         if ("pmtiles".equals(kind)) return lower.endsWith(".pmtiles");
+        if ("index".equals(kind)) return lower.endsWith(".json") || lower.endsWith(".json.gz");
         return false;
     }
 

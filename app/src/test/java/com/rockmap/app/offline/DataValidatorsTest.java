@@ -9,6 +9,7 @@ public class DataValidatorsTest {
     @Test public void acceptsExpectedFileNames() {
         assertTrue(DataValidators.isSafeFileName("colorado-claims-20260814.pmtiles"));
         assertTrue(DataValidators.isSafeFileName("rockmap-style-v1.json"));
+        assertTrue(DataValidators.isSafeFileName("colorado-minerals-alpha6-1.json.gz"));
     }
 
     @Test public void rejectsTraversalAndPaths() {
@@ -22,6 +23,14 @@ public class DataValidatorsTest {
         assertFalse(DataValidators.isSafeHttpsUrl("http://example.com/file.pmtiles"));
         assertFalse(DataValidators.isSafeHttpsUrl("file:///tmp/file.pmtiles"));
         assertFalse(DataValidators.isSafeHttpsUrl("https://user:pass@example.com/file.pmtiles"));
+    }
+
+    @Test public void validatesSupportedKinds() {
+        assertTrue(DataValidators.isSupportedKind("style", "rockmap-style-v1.json"));
+        assertTrue(DataValidators.isSupportedKind("pmtiles", "claims.pmtiles"));
+        assertTrue(DataValidators.isSupportedKind("index", "minerals.json.gz"));
+        assertFalse(DataValidators.isSupportedKind("index", "minerals.zip"));
+        assertFalse(DataValidators.isSupportedKind("pmtiles", "minerals.json.gz"));
     }
 
     @Test public void validatesHashesAndSizes() {
