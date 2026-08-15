@@ -83,6 +83,29 @@ DISTRICT_COMMODITIES = [
     "antimony","arsenic","bismuth","cobalt","nickel","platinum","palladium","fluorspar","feldspar",
 ]
 
+# B-40's published GIS uses compact field names. CGS describes MNZ as mineralogy and
+# the HOST/ALT/STRC/RMKS fields as geologic/context information. Keep direct MNZ
+# values, then extract only literal known mineral names from free text; never turn
+# arbitrary prose into mineral evidence.
+B40_EXTRA_MINERALS = [
+    "autunite", "becquerelite", "boltwoodite", "brannerite", "carnotite", "coffinite",
+    "davidite", "euxenite", "meta-autunite", "metatorbernite", "metazeunerite", "monazite",
+    "pitchblende", "saleeite", "samarskite", "schoepite", "schroeckingerite", "thorianite",
+    "thorite", "torbernite", "tyuyamunite", "uraninite", "uranophane", "vanadinite",
+    "weeksite", "xenotime", "zeunerite", "zippeite", "allanite", "apatite", "barite",
+    "calcite", "chalcopyrite", "fluorite", "galena", "hematite", "limonite", "pyrite",
+    "quartz", "sphalerite", "zircon",
+]
+B40_MINERAL_TERMS = list(dict.fromkeys(DISTRICT_MINERALS + B40_EXTRA_MINERALS))
+B40_URANIUM_MINERALS = {
+    "autunite", "becquerelite", "boltwoodite", "brannerite", "carnotite", "coffinite",
+    "meta-autunite", "metatorbernite", "metazeunerite", "pitchblende", "saleeite",
+    "schoepite", "schroeckingerite", "torbernite", "tyuyamunite", "uraninite",
+    "uranophane", "weeksite", "zeunerite", "zippeite",
+}
+B40_THORIUM_MINERALS = {"monazite", "thorianite", "thorite"}
+B40_VANADIUM_MINERALS = {"carnotite", "tyuyamunite", "vanadinite"}
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -345,18 +368,94 @@ def choose_layer(layers, kind, keyword_bonus=()):
     return candidates[0][2], candidates[0][3], candidates[0][4], [(x[2], x[1]) for x in candidates[:10]]
 
 
+def b40_column_map(columns):
+    pairs = {norm(c): c for c in columns}
+
+    def exact_many(*names):
+        return [pairs[norm(name)] for name in names if norm(name) in pairs]
+
+    mineral_cols = exact_many("MNZ", "MNZ2", "MNZ3")
+    for col in cols_containing(columns, ("mineralog", "mineral"), ("mineralbelt",)):
+        if col not in mineral_cols:
+            mineral_cols.append(col)
+
+    context_cols = exact_many(
+        "RMKS", "RMKS2", "RMKS3", "Notes", "HOST", "HOST2", "HOST3",
+        "ALT", "STRC", "STRC2", "BKG", "PROD", "PROD2", "PROD3",
+    )
+    rock_cols = exact_many("HOST", "HOST2", "HOST3", "Rock_Type", "ALT")
+    status_cols = exact_many("DVEL", "DVEL2", "DVEL3", "DVEL4")
+    commodity_cols = cols_containing(columns, ("commodity", "element"), ())
+
+    return {
+        "name": find_col(columns, exact=("Name", "MINE_NAME", "SITE_NAME", "OCCURRENCE_NAME", "MINE"),
+                         contains=("minename", "sitename", "occurrencename")),
+        "id": find_col(columns, exact=("IndexNum", "StationID", "ID", "REC_ID", "RECORD_ID", "OCC_ID", "NO", "NUMBER"),
+                       contains=("indexnum", "stationid", "occurrenceid", "recordid")),
+        "county": find_col(columns, exact=("County",)),
+        "minerals": mineral_cols,
+        "commodities": commodity_cols,
+        "context": context_cols,
+        "rocks": rock_cols,
+        "status": status_cols,
+    }
+
+
+def b40_materials_and_commodities(row, mapped):
+    # MNZ/MNZ2/MNZ3 are the source's direct mineralogy fields. Preserve their values.
+    materials = row_values(row, mapped["minerals"], 20)
+    explicit_commodities = row_values(row, mapped["commodities"], 12)
+
+    # The B-40 GIS also carries remarks/host/alteration/structure text. Pull only literal
+    # mineral names from that prose so a sentence is never mislabeled as a mineral.
+    context_parts = []
+    for col in list(mapped["minerals"]) + list(mapped["context"]):
+        if col in row:
+            text = clean_text(row[col], 1200)
+            if text:
+                context_parts.append(text)
+    context = " | ".join(context_parts)
+    materials = unique(materials + literal_terms(context, B40_MINERAL_TERMS), 20, 220)
+
+    commodities = list(explicit_commodities)
+    lower = context.lower()
+    for term in ("uranium", "thorium", "vanadium", "radium"):
+        if re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", lower):
+            commodities.append(term)
+
+    # B-40 commonly uses chemical abbreviations inside mineralogy fields. Interpret them
+    # only there, where U/Th/V are unambiguous mineralogical/commodity context.
+    mineralogy_text = " | ".join(clean_text(row[col], 600) for col in mapped["minerals"] if col in row)
+    for pattern, commodity in ((r"(?<![A-Za-z0-9])U(?![A-Za-z0-9])", "uranium"),
+                               (r"(?<![A-Za-z0-9])Th(?![A-Za-z0-9])", "thorium"),
+                               (r"(?<![A-Za-z0-9])V(?![A-Za-z0-9])", "vanadium"),
+                               (r"(?<![A-Za-z0-9])Ra(?![A-Za-z0-9])", "radium")):
+        if re.search(pattern, mineralogy_text, flags=re.I):
+            commodities.append(commodity)
+
+    material_keys = {x.lower() for x in materials}
+    if material_keys & B40_URANIUM_MINERALS:
+        commodities.append("uranium")
+    if material_keys & B40_THORIUM_MINERALS:
+        commodities.append("thorium")
+    if material_keys & B40_VANADIUM_MINERALS:
+        commodities.append("vanadium")
+
+    return unique(materials, 20, 220), unique(commodities, 12, 140)
+
+
 def read_b40(root):
     layers = vector_layers(root)
     name, path, gdf, candidates = choose_layer(layers, "point", ("radioactive", "occurrence", "b40", "mineral"))
     gdf = to_wgs84(gdf)
     columns = [c for c in gdf.columns if c != "geometry"]
-    name_col = find_col(columns, exact=("MINE_NAME","SITE_NAME","NAME","OCCURRENCE_NAME","MINE"), contains=("minename","sitename","occurrencename"))
-    id_col = find_col(columns, exact=("ID","REC_ID","RECORD_ID","OCC_ID","NO","NUMBER"), contains=("occurrenceid","recordid"))
-    mineral_cols = cols_containing(columns, ("mineralog","mineral"), ("mineralbelt",))
-    commodity_cols = cols_containing(columns, ("commodity","element"), ())
-    rock_cols = cols_containing(columns, ("hostrock","host_rock","rocktype","geology","alteration","formation"), ())
-    district_cols = cols_containing(columns, ("district",), ("ranger",))
-    status_col = find_col(columns, exact=("DEVELOPMENT","STATUS","MINE_DEV"), contains=("development","status"))
+    mapped = b40_column_map(columns)
+
+    # Fail closed if CGS changes the compact B-40 GIS schema. The 2021 digitization
+    # currently exposes MNZ/MNZ2/MNZ3 for mineralogy.
+    if not mapped["minerals"]:
+        raise RuntimeError(f"B-40 GIS missing mineralogy fields (expected MNZ/MNZ2/MNZ3 or named mineralogy): {columns}")
+
     out = []
     for i, row in gdf.iterrows():
         geom = row.geometry
@@ -365,22 +464,28 @@ def read_b40(root):
         lat, lon = float(geom.y), float(geom.x)
         if not in_colorado(lat, lon):
             continue
-        materials = row_values(row, mineral_cols)
-        commodities = row_values(row, commodity_cols)
-        searchable = " ".join(materials + commodities).lower()
-        for term in ("uranium", "thorium", "vanadium", "radium"):
-            if re.search(rf"\b{term}\b", searchable):
-                commodities.append(term)
-        rid = clean_text(row.get(id_col), 80) if id_col else ""
+
+        materials, commodities = b40_materials_and_commodities(row, mapped)
+        rid = clean_text(row.get(mapped["id"]), 80) if mapped["id"] else ""
+        status = "; ".join(row_values(row, mapped["status"], 4))
+        county = clean_text(row.get(mapped["county"]), 80) if mapped["county"] else ""
+        note = "Digitized from B-40; minerals use source mineralogy fields and literal mineral terms."
+        if county:
+            note += f" County: {county}."
+
         out.append(record(
-            f"b40-{rid or i+1}", row.get(name_col) if name_col else "", lat, lon, "CGS_B40",
-            status=row.get(status_col) if status_col else "",
-            materials=materials, commodities=commodities,
-            districts=row_values(row, district_cols, 6), rocks=row_values(row, rock_cols, 12),
-            note="Digitized from the 1978 B-40 occurrence compilation.",
+            f"b40-{rid or i+1}", row.get(mapped["name"]) if mapped["name"] else "", lat, lon, "CGS_B40",
+            status=status, materials=materials, commodities=commodities,
+            rocks=row_values(row, mapped["rocks"], 12), note=note,
         ))
-    meta = {"selected_layer": name, "selected_path": path, "candidate_layers": candidates,
-            "columns": [str(c) for c in columns]}
+
+    meta = {
+        "selected_layer": name, "selected_path": path, "candidate_layers": candidates,
+        "columns": [str(c) for c in columns],
+        "mapped_mineralogy_columns": [str(c) for c in mapped["minerals"]],
+        "mapped_context_columns": [str(c) for c in mapped["context"]],
+        "mapped_status_columns": [str(c) for c in mapped["status"]],
+    }
     return out, meta
 
 

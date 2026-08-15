@@ -7,6 +7,8 @@ from build_mineral_evidence import (
     literal_terms,
     record,
     mas_column_map,
+    b40_column_map,
+    b40_materials_and_commodities,
     DISTRICT_MINERALS,
     DISTRICT_COMMODITIES,
 )
@@ -27,6 +29,35 @@ def main():
     assert mas["district"] == "MINING_DIS"
     assert mas["status"] == "CURRENT_ST"
     assert mas["mrds"] == "GEOLSURVEY"
+
+    # Real ON-B-40D GIS uses compact mineralogy/geology columns. Make sure those
+    # abbreviations remain mapped and free-text extraction stays literal.
+    b40 = b40_column_map([
+        "GenericPoi", "County", "IndexNum", "Name", "DVEL", "DVEL2",
+        "BKG", "HOST", "HOST2", "ALT", "STRC", "MNZ", "MNZ2", "MNZ3",
+        "RMKS", "RMKS2", "Notes", "Rock_Type", "geometry",
+    ])
+    assert b40["id"] == "IndexNum"
+    assert b40["name"] == "Name"
+    assert b40["minerals"] == ["MNZ", "MNZ2", "MNZ3"]
+    assert "HOST" in b40["rocks"] and "Rock_Type" in b40["rocks"]
+    assert b40["status"] == ["DVEL", "DVEL2"]
+
+    row = {
+        "MNZ": "uraninite; pyrite",
+        "MNZ2": "quartz",
+        "MNZ3": "",
+        "RMKS": "Minor torbernite reported with calcite.",
+        "HOST": "granite",
+        "ALT": "iron staining",
+        "Notes": "No invented mineral names here.",
+    }
+    materials, commodities = b40_materials_and_commodities(row, b40)
+    assert "uraninite" in [x.lower() for x in materials]
+    assert "torbernite" in [x.lower() for x in materials]
+    assert "calcite" in [x.lower() for x in materials]
+    assert "uranium" in [x.lower() for x in commodities]
+    assert "granite" not in [x.lower() for x in materials]
 
     for code, rule in SOURCE_RULES.items():
         item = record(code.lower(), "Test", 39.0, -106.0, code, materials=["Quartz"])
