@@ -4,7 +4,7 @@ Alpha 6.1 adds an offline mineral-search research aid without turning RockMap in
 
 ## Data included
 
-The phone pack contains only a compact Colorado subset of the U.S. Geological Survey Mineral Resources Data System (MRDS). The builder keeps search-relevant fields: occurrence/site name and coordinates, mineral/material names, commodities, district names already present in MRDS records, deposit-model names, compact rock names, development-status text, and grade where present.
+The phone pack contains only a compact Colorado subset of the U.S. Geological Survey (USGS) Mineral Resources Data System (MRDS). The builder keeps search-relevant fields: occurrence/site name and coordinates, mineral/material names, commodities, district names already present in MRDS records, deposit-model names, compact rock names, development-status text, and grade where present.
 
 The phone pack deliberately excludes production history, ownership, reserves/resources, references, long comments, and verbose geology text. Alpha 6.1 does not add CGS mining-district polygons, geochemistry, terrain/contours, imagery, magnetics, radiometrics, or another state.
 
