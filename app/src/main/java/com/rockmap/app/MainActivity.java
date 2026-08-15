@@ -22,6 +22,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ArrayAdapter;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -71,6 +73,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
     private static final float MANUAL_COORDINATE_ACCURACY = -2f;
     private static final float MINERAL_SOURCE_ACCURACY = -3f;
+    private static final int MINERAL_LIST_PAGE = 100;
 
     private MapView mapView;
     private MapController mapController;
@@ -79,6 +82,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private OfflineDataManager offlineDataManager;
     private MineralIndexRepository mineralIndexRepository;
     private MineralOverlayController mineralOverlayController;
+    private String activeMineralScopeLabel = "All Colorado";
     private TextView safetyBanner;
     private LiveData<WorkInfo> updateLiveData;
     private Observer<WorkInfo> updateObserver;
@@ -146,6 +150,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         root.requestApplyInsets();
 
         mapView.onCreate(savedInstanceState);
+        mineralOverlayController.initialize();
         mapController = new MapController(mapView, offlineDataManager, this);
         mapController.initialize();
         refreshWaypoints();
@@ -194,7 +199,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search documented USGS MRDS minerals/materials first, then commodities, site names, districts, deposit models, and rock context.\n\nExamples: fluorite, rhodochrosite, beryl, topaz, telluride, pegmatite, gold.\n\nGemstone names such as aquamarine or amazonite fall back to their parent mineral only when MRDS has no exact match, and RockMap labels that fallback clearly.");
+        help.setText("Search documented USGS MRDS minerals/materials first, then commodities, site names, districts, deposit models, and rock context.\n\nExamples: fluorite, rhodochrosite, beryl, topaz, telluride, pegmatite, gold.\n\nAll matching records remain available. Dense map results are grouped into numbered clusters until you zoom in.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -205,11 +210,35 @@ public final class MainActivity extends Activity implements LocationRepository.L
         input.setSingleLine(true);
         box.addView(input);
 
+        TextView scopeTitle = new TextView(this);
+        scopeTitle.setText("Search area");
+        scopeTitle.setTextSize(14f);
+        scopeTitle.setPadding(0, dp(10), 0, 0);
+        box.addView(scopeTitle);
+
+        RadioGroup scope = new RadioGroup(this);
+        scope.setOrientation(RadioGroup.VERTICAL);
+        RadioButton allColorado = new RadioButton(this);
+        allColorado.setText("All Colorado");
+        allColorado.setChecked(true);
+        scope.addView(allColorado);
+        RadioButton mapArea = new RadioButton(this);
+        mapArea.setText("Current map area");
+        scope.addView(mapArea);
+        box.addView(scope);
+
+        TextView scopeHelp = new TextView(this);
+        scopeHelp.setText("Current map area uses whatever part of the map is visible behind this dialog. Pan and zoom first, then search—no county or district name required.");
+        scopeHelp.setTextSize(11.5f);
+        scopeHelp.setTextColor(Color.rgb(85, 85, 85));
+        scopeHelp.setPadding(0, 0, 0, dp(4));
+        box.addView(scopeHelp);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Search minerals")
                 .setView(box)
                 .setPositiveButton("Search", null)
-                .setNeutralButton("Clear map", (d, w) -> mineralOverlayController.clear())
+                .setNeutralButton("Clear minerals", (d, w) -> clearMinerals())
                 .setNegativeButton("Close", null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
@@ -221,29 +250,45 @@ public final class MainActivity extends Activity implements LocationRepository.L
             Button find = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             find.setEnabled(false);
             find.setText("Searching…");
-            mineralIndexRepository.search(query, new MineralIndexRepository.Callback() {
-                @Override public void onResult(MineralSearchEngine.SearchResult result) {
-                    dialog.dismiss();
-                    showMineralResults(result);
-                }
-
-                @Override public void onError(String message) {
-                    find.setEnabled(true);
-                    find.setText("Search");
-                    input.setError(message == null ? "Mineral search failed." : message);
-                }
-            });
+            if (mapArea.isChecked()) {
+                mineralOverlayController.getVisibleBounds(bounds -> runMineralSearch(
+                        query, bounds, "Current map area", dialog, input, find));
+            } else {
+                runMineralSearch(query, null, "All Colorado", dialog, input, find);
+            }
         }));
         dialog.show();
         input.requestFocus();
     }
 
+    private void runMineralSearch(String query, MineralSearchEngine.Bounds bounds, String scopeLabel,
+                                  AlertDialog searchDialog, EditText input, Button find) {
+        mineralIndexRepository.search(query, bounds, new MineralIndexRepository.Callback() {
+            @Override public void onResult(MineralSearchEngine.SearchResult result) {
+                activeMineralScopeLabel = scopeLabel;
+                searchDialog.dismiss();
+                showMineralResults(result, Math.min(MINERAL_LIST_PAGE, result.hits.size()));
+            }
+
+            @Override public void onError(String message) {
+                find.setEnabled(true);
+                find.setText("Search");
+                input.setError(message == null ? "Mineral search failed." : message);
+            }
+        });
+    }
+
     private void showMineralResults(MineralSearchEngine.SearchResult result) {
+        showMineralResults(result, Math.min(MINERAL_LIST_PAGE, result.hits.size()));
+    }
+
+    private void showMineralResults(MineralSearchEngine.SearchResult result, int requestedShown) {
         if (result.hits.isEmpty()) {
             mineralOverlayController.clear();
             new AlertDialog.Builder(this)
                     .setTitle("No mineral matches")
-                    .setMessage("No Colorado USGS MRDS records matched “" + result.requestedQuery + "”. This does not prove the mineral is absent; MRDS is a mineral-resource database and is not a complete rockhounding-locality catalog.")
+                    .setMessage("No USGS MRDS records matched “" + result.requestedQuery + "” in "
+                            + activeMineralScopeLabel + ". This does not prove the mineral is absent; MRDS is a mineral-resource database and is not a complete rockhounding-locality catalog.")
                     .setPositiveButton("Search again", (d, w) -> showMineralSearch())
                     .setNegativeButton("Close", null)
                     .show();
@@ -251,6 +296,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
 
         mineralOverlayController.show(result.hits);
+        int shown = Math.max(1, Math.min(requestedShown, result.hits.size()));
+
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(4), dp(18), 0);
@@ -258,16 +305,17 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView summary = new TextView(this);
         StringBuilder summaryText = new StringBuilder();
         if (!result.aliasNote.isEmpty()) summaryText.append(result.aliasNote).append("\n\n");
-        summaryText.append("Showing ").append(result.hits.size()).append(" of ").append(result.totalMatches)
-                .append(" matches. Cyan points are only the current search results. Refine broad searches to reduce clutter.");
+        summaryText.append(result.totalMatches).append(" matches in ").append(activeMineralScopeLabel).append(". ")
+                .append("All ").append(result.hits.size()).append(" are available on the map; dense areas are clustered and expand as you zoom. ")
+                .append("The list is showing ").append(shown).append(" at a time so the screen stays manageable.");
         summary.setText(summaryText.toString());
         summary.setTextSize(12.5f);
         summary.setTextColor(Color.rgb(65, 65, 65));
         summary.setPadding(0, 0, 0, dp(8));
         box.addView(summary);
 
-        String[] labels = new String[result.hits.size()];
-        for (int i = 0; i < result.hits.size(); i++) {
+        String[] labels = new String[shown];
+        for (int i = 0; i < shown; i++) {
             MineralSearchEngine.Hit hit = result.hits.get(i);
             labels[i] = hit.record.name + "\n" + hit.reason + "\n"
                     + String.format(Locale.US, "%.5f, %.5f", hit.record.latitude, hit.record.longitude);
@@ -275,27 +323,71 @@ public final class MainActivity extends Activity implements LocationRepository.L
         ListView list = new ListView(this);
         list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
         LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(420));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(390));
         box.addView(list, listParams);
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER);
+        if (shown < result.hits.size()) {
+            Button more = smallActionButton("+100");
+            actions.addView(more, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            Button showAll = smallActionButton("Show all");
+            actions.addView(showAll, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            more.setTag(shown);
+            showAll.setTag(result.hits.size());
+        }
+        Button clear = smallActionButton("Clear");
+        actions.addView(clear, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(actions);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Minerals: " + result.requestedQuery)
                 .setView(box)
                 .setPositiveButton("Search again", (d, w) -> showMineralSearch())
-                .setNeutralButton("Clear map", (d, w) -> mineralOverlayController.clear())
                 .setNegativeButton("Close", null)
                 .create();
+
+        if (shown < result.hits.size()) {
+            Button more = (Button) actions.getChildAt(0);
+            Button showAll = (Button) actions.getChildAt(1);
+            more.setOnClickListener(v -> {
+                dialog.dismiss();
+                showMineralResults(result, Math.min(result.hits.size(), shown + MINERAL_LIST_PAGE));
+            });
+            showAll.setOnClickListener(v -> {
+                dialog.dismiss();
+                showMineralResults(result, result.hits.size());
+            });
+        }
+        clear.setOnClickListener(v -> {
+            dialog.dismiss();
+            clearMinerals();
+            showMessage("Mineral search cleared.");
+        });
         list.setOnItemClickListener((parent, view, position, id) -> {
             dialog.dismiss();
-            showMineralDetail(result, position);
+            showMineralDetail(result.hits.get(position), result, true);
         });
         dialog.show();
     }
 
-    private void showMineralDetail(MineralSearchEngine.SearchResult result, int position) {
-        MineralSearchEngine.Hit hit = result.hits.get(position);
+    private Button smallActionButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextSize(11f);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(2), 0, dp(2), 0);
+        return button;
+    }
+
+    private void showMineralDetail(MineralSearchEngine.Hit hit,
+                                   MineralSearchEngine.SearchResult result,
+                                   boolean centerOnMap) {
         MineralRecord record = hit.record;
-        mineralOverlayController.center(record);
+        if (centerOnMap) mineralOverlayController.center(record);
 
         StringBuilder text = new StringBuilder();
         text.append(String.format(Locale.US, "%.6f, %.6f", record.latitude, record.longitude));
@@ -314,13 +406,21 @@ public final class MainActivity extends Activity implements LocationRepository.L
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
         scroll.addView(body);
-        new AlertDialog.Builder(this)
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(record.name)
                 .setView(scroll)
                 .setPositiveButton("Save marker", (d, w) -> saveMineralMarker(record, hit.reason))
-                .setNeutralButton("Results", (d, w) -> showMineralResults(result))
-                .setNegativeButton("Close", null)
-                .show();
+                .setNegativeButton("Close", null);
+        if (result != null && !result.hits.isEmpty()) {
+            builder.setNeutralButton("Results", (d, w) -> showMineralResults(result));
+        }
+        builder.show();
+    }
+
+    private void clearMinerals() {
+        activeMineralScopeLabel = "All Colorado";
+        mineralOverlayController.clear();
     }
 
     private void saveMineralMarker(MineralRecord record, String matchReason) {
@@ -509,11 +609,30 @@ public final class MainActivity extends Activity implements LocationRepository.L
         CheckBox claims = checkbox(claimsAvailable ? "Mining claims — BLM MLRS not closed" : "Mining claims — unavailable in current test",
                 claimsAvailable && mapController.isClaimsVisible());
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
+        boolean mineralsAvailable = mineralOverlayController.hasResults();
+        CheckBox minerals = checkbox(
+                mineralsAvailable
+                        ? "Mineral results — " + mineralOverlayController.getResultCount()
+                        : "Mineral results — none loaded",
+                mineralsAvailable && mineralOverlayController.isVisible());
         land.setEnabled(landAvailable);
         claims.setEnabled(claimsAvailable);
+        minerals.setEnabled(mineralsAvailable);
         box.addView(land);
         box.addView(claims);
         box.addView(saved);
+        box.addView(minerals);
+        if (mineralsAvailable) {
+            Button clearMineralsButton = smallActionButton("Clear minerals");
+            clearMineralsButton.setOnClickListener(v -> {
+                clearMinerals();
+                minerals.setChecked(false);
+                minerals.setEnabled(false);
+                clearMineralsButton.setEnabled(false);
+                minerals.setText("Mineral results — none loaded");
+            });
+            box.addView(clearMineralsButton);
+        }
         if (landAvailable) addLandStatusLegend(box);
         if (claimsAvailable) addMiningClaimsLegend(box);
 
@@ -526,6 +645,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     mapController.setLandVisible(landAvailable && land.isChecked());
                     mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
                     mapController.setWaypointsVisible(saved.isChecked());
+                    mineralOverlayController.setVisible(mineralOverlayController.hasResults() && minerals.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -1007,7 +1127,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         new AlertDialog.Builder(this)
                 .setTitle("Location information")
                 .setView(scroll)
-                .setPositiveButton("Close", null)
+                .setPositiveButton("Save marker", (d, w) -> showManualMarkerDialog(
+                        new CoordinateParser.Result(coordinate.getLatitude(), coordinate.getLongitude())))
+                .setNegativeButton("Close", null)
                 .show();
     }
 

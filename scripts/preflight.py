@@ -444,7 +444,7 @@ if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-minerals-alpha6-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
     err("Alpha 6.1 APK must point only to the immutable Alpha 6.1 mineral-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1" not in read("gradle.properties"):
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1.1" not in read("gradle.properties"):
     err("Alpha 6.1 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
@@ -526,6 +526,13 @@ for required_source in (
     "MineralOverlayController",
     "rockmap-mineral-search-layer",
     "Source: saved USGS MRDS mineral-search point",
+    "withCluster(true)",
+    "Current map area",
+    "Mineral results — ",
+    "Clear minerals",
+    "MINERAL_LIST_PAGE",
+    "getVisibleBounds",
+    "CLUSTER_LAYER_ID",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -538,7 +545,7 @@ if '"index".equals(kind)' not in validators_text or '.json.gz' not in validators
 mineral_doc = read("docs/ALPHA6_1_MINERAL_FINDER.md")
 for required in (
     "15 MB",
-    "USGS",
+    "U.S. Geological Survey",
     "MRDS",
     "GPS | Save GPS | Coords | Minerals | Layers | Markers | Data",
     "does not establish current ownership",
@@ -688,4 +695,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.1 mineral-finder source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.1.1 mineral-finder UI source preflight passed ({file_count} files checked).")

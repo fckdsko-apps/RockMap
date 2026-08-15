@@ -53,11 +53,15 @@ public final class MineralIndexRepository {
     }
 
     public void search(String query, Callback callback) {
+        search(query, null, callback);
+    }
+
+    public void search(String query, MineralSearchEngine.Bounds bounds, Callback callback) {
         new Thread(() -> {
             try {
                 List<MineralRecord> records = loadRecords();
                 MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
-                        records, query, MineralSearchEngine.DEFAULT_LIMIT);
+                        records, query, MineralSearchEngine.DEFAULT_LIMIT, bounds);
                 mainHandler.post(() -> callback.onResult(result));
             } catch (IllegalArgumentException | IOException | JSONException ex) {
                 mainHandler.post(() -> callback.onError(ex.getMessage()));

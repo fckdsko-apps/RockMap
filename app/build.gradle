@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
 }
 
-def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.1')
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.1.1')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
 def dataReleaseTag = 'rockmap-minerals-alpha6-1-20260815-test1'

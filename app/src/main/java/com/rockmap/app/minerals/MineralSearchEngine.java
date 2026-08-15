@@ -9,7 +9,33 @@ import java.util.Locale;
 import java.util.Map;
 
 public final class MineralSearchEngine {
-    public static final int DEFAULT_LIMIT = 50;
+    // Zero means no permanent result cap. UI pagination controls how many list rows are shown at once.
+    public static final int DEFAULT_LIMIT = 0;
+
+    public static final class Bounds {
+        public final double north;
+        public final double east;
+        public final double south;
+        public final double west;
+
+        public Bounds(double north, double east, double south, double west) {
+            if (!Double.isFinite(north) || !Double.isFinite(east)
+                    || !Double.isFinite(south) || !Double.isFinite(west)
+                    || north < south || east < west) {
+                throw new IllegalArgumentException("Invalid mineral-search map bounds.");
+            }
+            this.north = north;
+            this.east = east;
+            this.south = south;
+            this.west = west;
+        }
+
+        public boolean contains(MineralRecord record) {
+            return record != null
+                    && record.latitude <= north && record.latitude >= south
+                    && record.longitude <= east && record.longitude >= west;
+        }
+    }
 
     public static final class Hit {
         public final MineralRecord record;
@@ -56,18 +82,22 @@ public final class MineralSearchEngine {
     private MineralSearchEngine() {}
 
     public static SearchResult search(List<MineralRecord> records, String rawQuery, int limit) {
+        return search(records, rawQuery, limit, null);
+    }
+
+    public static SearchResult search(List<MineralRecord> records, String rawQuery, int limit, Bounds bounds) {
         String requested = normalize(rawQuery);
         if (requested.length() < 2) throw new IllegalArgumentException("Enter at least 2 characters.");
-        int safeLimit = Math.max(1, Math.min(250, limit));
 
-        List<Hit> exact = searchInternal(records, requested);
+        List<MineralRecord> scopedRecords = filterBounds(records, bounds);
+        List<Hit> exact = searchInternal(scopedRecords, requested);
         String effective = requested;
         String note = "";
         if (exact.isEmpty() && GEM_ALIASES.containsKey(requested)) {
             effective = GEM_ALIASES.get(requested);
-            exact = searchInternal(records, effective);
+            exact = searchInternal(scopedRecords, effective);
             if (!exact.isEmpty()) {
-                note = "No exact MRDS record matched “" + rawQuery.trim() + "”. Showing parent-mineral matches for “"
+                note = "No exact MRDS record matched “" + rawQuery.trim() + "” in the selected area. Showing parent-mineral matches for “"
                         + effective + "”. These are geological leads, not proof that the gemstone variety occurs at every result.";
             }
         }
@@ -76,8 +106,19 @@ public final class MineralSearchEngine {
                 .thenComparing(hit -> hit.record.name.toLowerCase(Locale.US))
                 .thenComparing(hit -> hit.record.id));
         int total = exact.size();
-        List<Hit> limited = new ArrayList<>(exact.subList(0, Math.min(total, safeLimit)));
-        return new SearchResult(rawQuery == null ? "" : rawQuery.trim(), effective, note, total, limited);
+        int shown = limit <= 0 ? total : Math.min(total, limit);
+        List<Hit> resultHits = new ArrayList<>(exact.subList(0, shown));
+        return new SearchResult(rawQuery == null ? "" : rawQuery.trim(), effective, note, total, resultHits);
+    }
+
+    private static List<MineralRecord> filterBounds(List<MineralRecord> records, Bounds bounds) {
+        if (records == null) return Collections.emptyList();
+        if (bounds == null) return records;
+        ArrayList<MineralRecord> scoped = new ArrayList<>();
+        for (MineralRecord record : records) {
+            if (bounds.contains(record)) scoped.add(record);
+        }
+        return scoped;
     }
 
     private static List<Hit> searchInternal(List<MineralRecord> records, String query) {
