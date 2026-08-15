@@ -6,6 +6,7 @@ from build_mineral_evidence import (
     district_window,
     literal_terms,
     record,
+    mas_column_map,
     DISTRICT_MINERALS,
     DISTRICT_COMMODITIES,
 )
@@ -14,6 +15,18 @@ from build_mineral_evidence import (
 def main():
     assert SPECIAL_COMMODITY_CODES["QTZ"] == "quartz"
     assert SPECIAL_COMMODITY_CODES["FLD"] == "feldspar"
+
+    mas = mas_column_map([
+        "MAS_NO", "GEOLSURVEY", "SITE_NAME", "COMM", "COMMO_FULL",
+        "MINING_DIS", "CURRENT_ST", "geometry",
+    ])
+    assert mas["id"] == "MAS_NO"
+    assert mas["name"] == "SITE_NAME"
+    assert mas["code"] == "COMM"
+    assert mas["full"] == "COMMO_FULL"
+    assert mas["district"] == "MINING_DIS"
+    assert mas["status"] == "CURRENT_ST"
+    assert mas["mrds"] == "GEOLSURVEY"
 
     for code, rule in SOURCE_RULES.items():
         item = record(code.lower(), "Test", 39.0, -106.0, code, materials=["Quartz"])

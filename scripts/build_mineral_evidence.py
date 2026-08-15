@@ -13,7 +13,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pandas as pd
 
 COLORADO_BBOX = (-109.10, 36.95, -102.00, 41.05)
 
@@ -201,54 +200,77 @@ def record(rec_id, name, lat, lon, source_code, status="", materials=None, commo
     }
 
 
-def read_mas(path):
-    sheets = pd.read_excel(path, sheet_name=None, dtype=str)
-    chosen = None
-    for sheet_name, df in sheets.items():
-        keys = {norm(c) for c in df.columns}
-        if {"latd", "longd", "sitename"}.issubset(keys):
-            chosen = (sheet_name, df)
-            break
-    if chosen is None:
-        details = {name: [str(c) for c in df.columns[:30]] for name, df in sheets.items()}
-        raise RuntimeError(f"CO_MAS.xls missing expected LATD/LONGD/SITE_NAME fields: {details}")
-    sheet_name, df = chosen
-    columns = list(df.columns)
-    lat_col = find_col(columns, exact=("LATD",))
-    lon_col = find_col(columns, exact=("LONGD",))
-    id_col = find_col(columns, exact=("MAS_NO", "SEQUENCE_N"))
-    name_col = find_col(columns, exact=("SITE_NAME",))
-    code_col = find_col(columns, exact=("COMM",))
-    full_col = find_col(columns, exact=("COMMO_FULL",))
-    district_col = find_col(columns, exact=("MINING_DIS",))
-    status_col = find_col(columns, exact=("CURRENT_ST",))
-    mrds_col = find_col(columns, exact=("GEOLSURVEY",))
+def mas_column_map(columns):
+    """Resolve the documented OFR 03-090 GIS field names without depending on column order."""
+    return {
+        "id": find_col(columns, exact=("MAS_NO", "SEQUENCE_N")),
+        "name": find_col(columns, exact=("SITE_NAME",)),
+        "code": find_col(columns, exact=("COMM",)),
+        "full": find_col(columns, exact=("COMMO_FULL",)),
+        "district": find_col(columns, exact=("MINING_DIS",)),
+        "status": find_col(columns, exact=("CURRENT_ST",)),
+        "mrds": find_col(columns, exact=("GEOLSURVEY",)),
+    }
+
+
+def read_mas(root):
+    # Use the OFR 03-090 GIS table rather than the original unedited XLS workbook.
+    # The publication metadata says the GIS file contains the revised plotted locations
+    # and commonly populated analysis fields, while the XLS is the original unedited data.
+    layers = vector_layers(root)
+    point_layers = [(n, p, g) for n, p, g in layers if geometry_kind(g) == "point"]
+    candidates = []
+    for name, path, gdf in point_layers:
+        columns = [c for c in gdf.columns if c != "geometry"]
+        mapped = mas_column_map(columns)
+        required_score = sum(1 for key in ("name", "code", "full") if mapped[key] is not None)
+        name_score = 1 if "mas" in norm(name) or "mas" in norm(path) else 0
+        candidates.append((required_score, name_score, len(gdf), name, path, gdf, mapped))
+    candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+    if not candidates or candidates[0][0] < 2:
+        details = [(n, len(g), [str(c) for c in g.columns[:30]]) for n, p, g in point_layers[:10]]
+        raise RuntimeError(f"OFR 03-090 MAS GIS package missing expected SITE_NAME/COMM/COMMO_FULL fields: {details}")
+
+    _, _, _, layer_name, layer_path, gdf, mapped = candidates[0]
+    gdf = to_wgs84(gdf)
+    columns = [c for c in gdf.columns if c != "geometry"]
+    mapped = mas_column_map(columns)
     out = []
-    for i, row in df.iterrows():
-        lat, lon = float_value(row.get(lat_col)), float_value(row.get(lon_col))
-        if lat is None or lon is None or not in_colorado(lat, lon):
+    for i, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
             continue
-        raw_id = clean_text(row.get(id_col), 80) if id_col else ""
+        lat, lon = float(geom.y), float(geom.x)
+        if not in_colorado(lat, lon):
+            continue
+        raw_id = clean_text(row.get(mapped["id"]), 80) if mapped["id"] else ""
         rec_id = f"mas-{raw_id or i+1}"
         commodity = []
-        full = clean_text(row.get(full_col), 120) if full_col else ""
+        full = clean_text(row.get(mapped["full"]), 120) if mapped["full"] else ""
         if full:
             commodity.append(full)
-        code = clean_text(row.get(code_col), 20).upper() if code_col else ""
+        code = clean_text(row.get(mapped["code"]), 20).upper() if mapped["code"] else ""
         if code:
             commodity.append(SPECIAL_COMMODITY_CODES.get(code, ELEMENT_CODES.get(code, code)))
-        note = "Primary commodity/site record; not mineral-species proof."
-        mrds = clean_text(row.get(mrds_col), 60) if mrds_col else ""
+        note = "Primary commodity/property record; commodity is not mineral-species proof."
+        mrds = clean_text(row.get(mapped["mrds"]), 60) if mapped["mrds"] else ""
         if mrds:
             note += f" MRDS cross-reference: {mrds}."
         out.append(record(
-            rec_id, row.get(name_col) if name_col else "", lat, lon, "USGS_MAS",
-            status=row.get(status_col) if status_col else "",
+            rec_id, row.get(mapped["name"]) if mapped["name"] else "", lat, lon, "USGS_MAS",
+            status=row.get(mapped["status"]) if mapped["status"] else "",
             commodities=commodity,
-            districts=[row.get(district_col)] if district_col else [],
+            districts=[row.get(mapped["district"])] if mapped["district"] else [],
             note=note,
         ))
-    return out, {"sheet": sheet_name, "columns": [str(c) for c in columns], "raw_rows": len(df)}
+    return out, {
+        "selected_layer": layer_name,
+        "selected_path": layer_path,
+        "candidate_layers": [(x[3], x[2]) for x in candidates[:10]],
+        "columns": [str(c) for c in columns],
+        "raw_rows": len(gdf),
+        "location_source": "GIS point geometry from USGS OFR 03-090 CO_MAS table",
+    }
 
 
 def vector_layers(root):
@@ -260,6 +282,20 @@ def vector_layers(root):
         try:
             gdf = gpd.read_file(shp)
             layers.append((shp.stem, str(shp), gdf))
+        except Exception:
+            continue
+    # USGS OFR 03-090 distributes the revised Colorado MAS GIS table as MapInfo TAB.
+    # Pyogrio/GDAL reads the TAB plus its companion DAT/MAP/ID files as one vector layer.
+    for tab in root.rglob("*.tab"):
+        try:
+            gdf = gpd.read_file(tab)
+            layers.append((tab.stem, str(tab), gdf))
+        except Exception:
+            continue
+    for tab in root.rglob("*.TAB"):
+        try:
+            gdf = gpd.read_file(tab)
+            layers.append((tab.stem, str(tab), gdf))
         except Exception:
             continue
     for gdb in root.rglob("*.gdb"):
@@ -555,7 +591,7 @@ def validate_source_counts(groups):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--mas-xls", required=True)
+    p.add_argument("--mas-root", required=True)
     p.add_argument("--b40-root", required=True)
     p.add_argument("--ms17-root", required=True)
     p.add_argument("--aml-root", required=True)
@@ -564,7 +600,7 @@ def main():
     p.add_argument("--metadata", required=True)
     args = p.parse_args()
 
-    mas, mas_meta = read_mas(Path(args.mas_xls))
+    mas, mas_meta = read_mas(Path(args.mas_root))
     b40, b40_meta = read_b40(Path(args.b40_root))
     ms17, ms17_meta = read_ms17(Path(args.ms17_root))
     aml, aml_meta = read_aml(Path(args.aml_root))
@@ -612,11 +648,8 @@ def main():
             r["materials"] + r["commodities"] + r["districts"] + [r["name"]]).lower())
 
     source_files = {}
-    for label, path in {
-        "usgs_mas_xls": args.mas_xls,
-    }.items():
-        pth = Path(path)
-        source_files[label] = {"name": pth.name, "bytes": pth.stat().st_size, "sha256": sha256(pth)}
+    # The workflow hashes every downloaded source archive before extraction. The builder records
+    # the selected GIS layer diagnostics here; archive hashes are published in SOURCE_SHA256SUMS.txt.
 
     metadata = {
         "built_at": utc_now(),
