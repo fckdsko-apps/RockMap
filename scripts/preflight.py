@@ -363,8 +363,8 @@ if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-land-alpha4-20260814-test1" not in all_gradle or "/releases/download/" not in all_gradle:
     err("Alpha 4 APK must point only to the immutable Alpha 4 land-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha4" not in read("gradle.properties"):
-    err("Alpha 4 version name is not pinned in gradle.properties.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha4.1" not in read("gradle.properties"):
+    err("Alpha 4.1 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -419,6 +419,9 @@ for required_source in (
     "rockmap-land-outline",
     "Mining-claim data is not included in this Alpha 4 land-status test",
     "Treat this as unknown, not as public land",
+    "Land status legend",
+    "LandStatusCatalog",
+    "Tap a colored polygon for its category and source manager/name",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")

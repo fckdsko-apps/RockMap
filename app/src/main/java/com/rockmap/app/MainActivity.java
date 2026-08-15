@@ -30,6 +30,7 @@ import androidx.work.WorkInfo;
 
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.MapController;
+import com.rockmap.app.map.LandStatusCatalog;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
@@ -223,7 +224,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void showLayers() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(4), dp(20), dp(4));
+        box.setPadding(dp(20), dp(4), dp(20), dp(12));
         boolean landAvailable = mapController.hasLandStatusAvailable();
         boolean claimsAvailable = mapController.hasClaimsAvailable();
         CheckBox land = checkbox(landAvailable ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
@@ -236,9 +237,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(land);
         box.addView(claims);
         box.addView(saved);
+        if (landAvailable) addLandStatusLegend(box);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(box);
         new AlertDialog.Builder(this)
                 .setTitle("Layers")
-                .setView(box)
+                .setView(scroll)
                 .setPositiveButton("Apply", (d, w) -> {
                     mapController.setLandVisible(landAvailable && land.isChecked());
                     mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
@@ -246,6 +251,47 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    private void addLandStatusLegend(LinearLayout box) {
+        TextView title = new TextView(this);
+        title.setText("Land status legend");
+        title.setTextSize(16f);
+        title.setTextColor(Color.rgb(35, 35, 35));
+        title.setPadding(0, dp(12), 0, dp(2));
+        box.addView(title);
+
+        TextView note = new TextView(this);
+        note.setText("BLM Colorado Surface Management Agency categories. These are broad management/status polygons, not parcel ownership or legal boundaries. Map fills are translucent, so the hue can look different over the basemap. Tap a colored polygon for its category and source manager/name.");
+        note.setTextSize(12f);
+        note.setTextColor(Color.rgb(75, 75, 75));
+        note.setPadding(0, 0, 0, dp(6));
+        box.addView(note);
+
+        for (LandStatusCatalog.Entry entry : LandStatusCatalog.entries()) {
+            addLandStatusLegendRow(box, entry);
+        }
+    }
+
+    private void addLandStatusLegendRow(LinearLayout box, LandStatusCatalog.Entry entry) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(1), 0, dp(1));
+
+        TextView swatch = new TextView(this);
+        swatch.setText("■");
+        swatch.setTextSize(23f);
+        swatch.setTextColor(Color.parseColor(entry.colorHex));
+        LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.WRAP_CONTENT);
+        row.addView(swatch, swatchParams);
+
+        TextView label = new TextView(this);
+        label.setText(entry.label + "  [" + entry.code + "]");
+        label.setTextSize(13f);
+        label.setTextColor(Color.rgb(45, 45, 45));
+        row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(row);
     }
 
     private CheckBox checkbox(String label, boolean checked) {
@@ -345,7 +391,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void showData() {
         new AlertDialog.Builder(this)
                 .setTitle("Offline data")
-                .setMessage(offlineDataManager.describeStatus()
+                .setMessage("App: RockMap " + BuildConfig.VERSION_NAME + "\n\n"
+                        + offlineDataManager.describeStatus()
                         + (mapController == null ? ""
                             : "\n\n" + mapController.describeLabelDiagnostics()
                             + "\n\n" + mapController.describeLandDiagnostics()))
@@ -573,8 +620,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
             for (Feature feature : land) {
                 String manager = stringProp(feature, "manager_name", "Unknown manager");
                 String code = stringProp(feature, "manager_code", "");
-                text.append("• ").append(manager);
-                if (!code.isEmpty() && !manager.equalsIgnoreCase(code)) text.append(" [").append(code).append(']');
+                String category = LandStatusCatalog.labelFor(code, manager);
+                text.append("• ").append(category);
+                if (!sameLandLabel(category, manager) && !"Unknown manager".equals(manager)) {
+                    text.append(" — ").append(manager);
+                }
+                if (!code.isEmpty()) text.append(" [").append(code).append(']');
                 text.append('\n');
             }
         }
@@ -613,6 +664,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private String stringProp(Feature feature, String name, String fallback) {
         if (feature == null || !feature.hasProperty(name) || feature.getStringProperty(name) == null) return fallback;
         return feature.getStringProperty(name);
+    }
+
+    private boolean sameLandLabel(String a, String b) {
+        if (a == null || b == null) return false;
+        return a.replaceAll("[^A-Za-z0-9]", "").equalsIgnoreCase(b.replaceAll("[^A-Za-z0-9]", ""));
     }
 
     private String boundedText(String value, int maxChars) {

@@ -9,6 +9,8 @@ import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
+import com.rockmap.app.map.LandStatusCatalog;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -205,22 +207,13 @@ public final class OfflineDataManager {
             JSONArray fillColor = new JSONArray();
             fillColor.put("match");
             fillColor.put(new JSONArray().put("get").put("manager_code"));
-            fillColor.put("BLM"); fillColor.put("#f2cf63");
-            fillColor.put("BOR"); fillColor.put("#eadf91");
-            fillColor.put("BIA"); fillColor.put("#e79a62");
-            fillColor.put("DOD"); fillColor.put("#d99bb6");
-            fillColor.put("USFS_NG"); fillColor.put("#c8df84");
-            fillColor.put("NPS"); fillColor.put("#aa98c8");
-            fillColor.put("USFW"); fillColor.put("#78b995");
-            fillColor.put("USFS"); fillColor.put("#91c686");
-            fillColor.put("STA"); fillColor.put("#82bdcd");
-            fillColor.put("LOCAL"); fillColor.put("#78a3aa");
-            fillColor.put("BLM_LU"); fillColor.put("#e7adb4");
-            fillColor.put("USFS_LU"); fillColor.put("#e7adb4");
-            fillColor.put("OTHER"); fillColor.put("#bea283");
-            // Private land is intentionally visible rather than white in the source renderer.
-            fillColor.put("PRI"); fillColor.put("#d39282");
-            fillColor.put("#b8b8b8");
+            for (LandStatusCatalog.Entry entry : LandStatusCatalog.entries()) {
+                fillColor.put(entry.code);
+                fillColor.put(entry.colorHex);
+            }
+            // Unknown values should never reach a published Alpha 4 pack because the data
+            // builder fails closed on category drift, but keep a visible fallback anyway.
+            fillColor.put(LandStatusCatalog.DEFAULT_COLOR_HEX);
 
             JSONObject fill = new JSONObject();
             fill.put("id", "rockmap-land-fill");

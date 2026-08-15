@@ -71,3 +71,12 @@ Then prove offline operation:
 7. Tap land polygons and confirm manager information still appears.
 
 The red `NOT VERIFIED FOR NAVIGATION` state must remain throughout the entire Alpha 4 test. No mining-claim conclusion can be made in this phase.
+
+## Alpha 4.1 land legend acceptance
+
+- Open **Layers** with the Alpha 4 land-status pack active. A scrollable **Land status legend** must appear under the layer toggles.
+- The legend and map renderer must use the same shared `LandStatusCatalog`; do not maintain a second independent UI color table.
+- The legend must state that BLM Colorado SMA is broad management/status mapping, not parcel ownership or a legal boundary, and that translucent fills can look different over the basemap.
+- A tap on a rendered land polygon must report the plain-English category, the source manager/name when it adds information, and the manager code.
+- Confirm at minimum that a salmon `PRI` polygon reports **Private**, a green `USFS` polygon reports **U.S. Forest Service**, and a gold `BLM` polygon reports **Bureau of Land Management**.
+- Toggling **Land status — BLM Colorado SMA** off must hide the colored land polygons; toggling it back on must restore them.
