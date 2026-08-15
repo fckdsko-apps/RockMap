@@ -1,0 +1,230 @@
+name: Build Colorado Expanded Mineral Evidence Test Pack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'gradle.properties'
+      - 'scripts/build_mineral_evidence.py'
+      - 'scripts/test_mineral_evidence_builder.py'
+      - 'scripts/create_mineral_evidence_test_manifest.py'
+      - 'scripts/preflight.py'
+      - 'docs/ALPHA6_2_1_MINERAL_EVIDENCE.md'
+      - 'docs/DATA_CONTRACT.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rockmap-minerals-alpha6-2-1-test1
+  cancel-in-progress: false
+
+jobs:
+  build-evidence:
+    name: Build and publish Alpha 6.2.1 Colorado expanded mineral evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASELINE_TAG: 'rockmap-minerals-alpha6-2-20260815-test1'
+      RELEASE_TAG: 'rockmap-minerals-alpha6-2-1-20260815-test1'
+      EVIDENCE_NAME: 'colorado-mineral-evidence-usgs-cgs-20260815-alpha6-2-1-test1.json.gz'
+      MAX_EVIDENCE_BYTES: '15000000'
+      MAS_URL: 'https://pubs.usgs.gov/of/2003/ofr-03-090/PartA-Data/CO_MAS.xls'
+      B40_URL: 'https://coloradogeologicalsurvey.org/wp-content/uploads/woocommerce_uploads/ON-B-40D.zip'
+      MS17_URL: 'https://coloradogeologicalsurvey.org/Docs/Pubs/MS-17.zip'
+      AML_URL: 'https://coloradogeologicalsurvey.org/wp-content/uploads/2025/07/ON-008-04.zip'
+      DISTRICTS_URL: 'https://coloradogeologicalsurvey.org/Docs/Pubs/ON-007-08D-v20201112.zip'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source before data build
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Install pinned evidence-builder dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check \
+            pandas==2.2.3 \
+            xlrd==2.0.1 \
+            geopandas==1.1.2 \
+            pyogrio==0.12.1 \
+            pypdf==5.9.0
+
+      - name: Run evidence-builder regression checks
+        shell: bash
+        run: python3 scripts/test_mineral_evidence_builder.py
+
+      - name: Download official USGS and CGS source packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sources/{b40,ms17,aml,districts} dist
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            -A 'RockMap-data-builder/0.1' -o sources/CO_MAS.xls "$MAS_URL"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            -A 'RockMap-data-builder/0.1' -o sources/ON-B-40D.zip "$B40_URL"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            -A 'RockMap-data-builder/0.1' -o sources/MS-17.zip "$MS17_URL"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            -A 'RockMap-data-builder/0.1' -o sources/ON-008-04D.zip "$AML_URL"
+          curl --fail --location --retry 4 --retry-all-errors --connect-timeout 30 --max-time 600 \
+            -A 'RockMap-data-builder/0.1' -o sources/ON-007-08D.zip "$DISTRICTS_URL"
+
+          for f in sources/CO_MAS.xls sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip; do
+            test -s "$f"
+          done
+          sha256sum sources/CO_MAS.xls sources/ON-B-40D.zip sources/MS-17.zip sources/ON-008-04D.zip sources/ON-007-08D.zip \
+            > dist/SOURCE_SHA256SUMS.txt
+
+          unzip -q sources/ON-B-40D.zip -d sources/b40
+          unzip -q sources/MS-17.zip -d sources/ms17
+          unzip -q sources/ON-008-04D.zip -d sources/aml
+          unzip -q sources/ON-007-08D.zip -d sources/districts
+
+      - name: Build expanded official-source mineral evidence index
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build_mineral_evidence.py \
+            --mas-xls sources/CO_MAS.xls \
+            --b40-root sources/b40 \
+            --ms17-root sources/ms17 \
+            --aml-root sources/aml \
+            --district-root sources/districts \
+            --output "dist/$EVIDENCE_NAME" \
+            --metadata dist/mineral-evidence-source-metadata.json
+
+          test -s "dist/$EVIDENCE_NAME"
+          test -s dist/mineral-evidence-source-metadata.json
+          BYTES="$(stat -c '%s' "dist/$EVIDENCE_NAME")"
+          if [ "$BYTES" -gt "$MAX_EVIDENCE_BYTES" ]; then
+            echo "::error::Alpha 6.2.1 evidence index exceeds the 15 MB hard-data budget ($BYTES bytes)."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path('dist/mineral-evidence-source-metadata.json').read_text(encoding='utf-8'))
+          counts = meta['record_counts_by_source']
+          assert meta['record_count'] >= 26000
+          assert counts['USGS_MAS'] >= 14000
+          assert counts['CGS_B40'] >= 1800
+          assert counts['CGS_USFS_AML'] >= 10000
+          assert counts['CGS_MS17'] >= 100
+          assert counts['CGS_DISTRICTS'] >= 80
+          assert 0 < meta['compressed_index_bytes'] <= 15_000_000
+          assert meta['searchable_records_by_source']['USGS_MAS'] >= 10000
+          assert meta['searchable_records_by_source']['CGS_B40'] >= 900
+          assert meta['searchable_records_by_source']['CGS_DISTRICTS'] >= 25
+          assert 'Not bundled' in meta['mindat_status']
+          print('Alpha 6.2.1 source-count, searchability, provenance, and size checks passed')
+          print(json.dumps(counts, indent=2, sort_keys=True))
+          print(json.dumps(meta['coverage_record_counts'], indent=2, sort_keys=True))
+          PY
+
+      - name: Download immutable Alpha 6.2 baseline manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$BASELINE_TAG/manifest.json"
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            --output dist/baseline-manifest.json "$BASELINE_URL"
+          python3 -m json.tool dist/baseline-manifest.json >/dev/null
+
+      - name: Create Alpha 6.2.1 cumulative mineral-evidence manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/create_mineral_evidence_test_manifest.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --baseline-manifest dist/baseline-manifest.json \
+            --evidence "dist/$EVIDENCE_NAME" \
+            --source-metadata dist/mineral-evidence-source-metadata.json \
+            --output dist/manifest.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          baseline = json.loads(Path('dist/baseline-manifest.json').read_text(encoding='utf-8'))
+          manifest = json.loads(Path('dist/manifest.json').read_text(encoding='utf-8'))
+          base_files = {item['id']: item for item in baseline['files']}
+          files = {item['id']: item for item in manifest['files']}
+          expected_base = {'style', 'base', 'land', 'claims', 'minerals', 'mineral_localities'}
+          assert set(base_files) == expected_base
+          assert set(files) == expected_base | {'mineral_evidence'}
+          for item_id in expected_base:
+              assert files[item_id] == base_files[item_id]
+          evidence = files['mineral_evidence']
+          assert evidence['kind'] == 'index'
+          assert evidence['required'] is True
+          assert evidence['fileName'].endswith('.json.gz')
+          assert 0 < evidence['bytes'] <= 15_000_000
+          assert len(evidence['sha256']) == 64
+          print('Alpha 6.2.1 manifest reuses exact Alpha 6.2 files and adds only mineral_evidence')
+          PY
+
+          sha256sum \
+            "dist/$EVIDENCE_NAME" \
+            dist/manifest.json \
+            dist/mineral-evidence-source-metadata.json \
+            dist/SOURCE_SHA256SUMS.txt \
+            > dist/SHA256SUMS.txt
+
+      - name: Verify repository can host public map assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility')"
+          if [ "$VISIBILITY" != "public" ]; then
+            echo "::error::RockMap data releases must be public because the Android downloader does not embed GitHub credentials. Repository visibility is: $VISIBILITY"
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing Alpha 6.2.1 evidence release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Alpha 6.2.1 test data is immutable; do not overwrite it."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Refusing to move an existing data tag."
+            exit 1
+          fi
+
+      - name: Publish immutable Alpha 6.2.1 expanded mineral-evidence prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist/$EVIDENCE_NAME" \
+            dist/manifest.json \
+            dist/mineral-evidence-source-metadata.json \
+            dist/SOURCE_SHA256SUMS.txt \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "RockMap Alpha 6.2.1 Colorado expanded mineral evidence test" \
+            --notes "UNVERIFIED TEST DATA — research aid only. Reuses every Alpha 6.2 map/mineral asset exactly. Adds official-source Colorado evidence from USGS MAS/MILS OFR 03-090, CGS ON-B-40D radioactive occurrences, the 2022 CGS MS-17 nonmetallic/industrial inventory (which updates IS-62), CGS/USFS ON-008-04D abandoned-mine inventory, and CGS ON-007-08D historic mining districts. Evidence classes remain distinct. District display points represent broad approximate districts; AML points are mine-feature evidence, not automatic mineral-occurrence proof. Mindat is not bundled or scraped because its API requires approved access and license compatibility." \
+            --prerelease \
+            --latest=false
+
+          gh release view "$RELEASE_TAG"
