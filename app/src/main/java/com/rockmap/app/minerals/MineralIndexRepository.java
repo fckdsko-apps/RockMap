@@ -1,6 +1,8 @@
 package com.rockmap.app.minerals;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 
 import com.rockmap.app.offline.OfflineDataManager;
 
@@ -26,14 +28,13 @@ public final class MineralIndexRepository {
         void onError(String message);
     }
 
-    private final Context context;
     private final OfflineDataManager dataManager;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile List<MineralRecord> cachedRecords;
     private volatile String cachedPath = "";
     private volatile int cachedRecordCount;
 
     public MineralIndexRepository(Context context, OfflineDataManager dataManager) {
-        this.context = context.getApplicationContext();
         this.dataManager = dataManager;
     }
 
@@ -57,11 +58,11 @@ public final class MineralIndexRepository {
                 List<MineralRecord> records = loadRecords();
                 MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
                         records, query, MineralSearchEngine.DEFAULT_LIMIT);
-                context.getMainExecutor().execute(() -> callback.onResult(result));
+                mainHandler.post(() -> callback.onResult(result));
             } catch (IllegalArgumentException | IOException | JSONException ex) {
-                context.getMainExecutor().execute(() -> callback.onError(ex.getMessage()));
+                mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
-                context.getMainExecutor().execute(() -> callback.onError("Mineral search failed safely."));
+                mainHandler.post(() -> callback.onError("Mineral search failed safely."));
             }
         }, "rockmap-mineral-search").start();
     }
