@@ -2,7 +2,7 @@
 
 RockMap is an Android-first, offline-first field map project built through GitHub Actions. Android Studio is not required for the normal workflow.
 
-## Current source build: 0.1.0-alpha5
+## Current source build: 0.1.0-alpha5.1
 
 Alpha 5 is a deliberately isolated **mining-claims test** on top of the working Alpha 4.1 checkpoint. It keeps the exact Colorado Protomaps/OpenStreetMap basemap, Alpha 3.1 offline labels, and Alpha 4 BLM Colorado Surface Management Agency land-status PMTiles, then adds a separate offline BLM MLRS Mining Claims — Not Closed PMTiles overlay.
 
@@ -23,7 +23,7 @@ Core functionality included:
 
 ## Critical safety state
 
-**0.1.0-alpha5 remains a red `NOT VERIFIED FOR NAVIGATION` test build.** Alpha 5 must not turn the safety banner green.
+**0.1.0-alpha5.1 remains a red `NOT VERIFIED FOR NAVIGATION` test build.** Alpha 5.1 is UI-only: it keeps the Alpha 5 claims data release unchanged, compresses the persistent safety banner to one line, and removes verbose BLM processing text from the normal claim popup.
 
 The BLM Colorado SMA source remains surface-management/status mapping, not a parcel survey or legal boundary. The mining-claims overlay uses BLM MLRS records whose disposition is not closed; it is not a surveyed claim-boundary product. BLM states that some cases may lack geospatial representation when they cannot be geocoded. County-only quality-score 25 geometry is excluded from the footprint overlay.
 

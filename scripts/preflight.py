@@ -434,8 +434,8 @@ if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-claims-alpha5-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
     err("Alpha 5 APK must point only to the immutable Alpha 5 claims-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha5" not in read("gradle.properties"):
-    err("Alpha 5 version name is not pinned in gradle.properties.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha5.1" not in read("gradle.properties"):
+    err("Alpha 5.1 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -500,6 +500,9 @@ for required_source in (
     "Land status legend",
     "LandStatusCatalog",
     "Tap a colored polygon for its category and source manager/name",
+    "TEST DATA — NOT VERIFIED FOR NAVIGATION",
+    "compactClaimQuality",
+    "Mapping: ",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")

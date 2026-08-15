@@ -92,8 +92,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         safetyBanner = new TextView(this);
         safetyBanner.setTextColor(Color.WHITE);
         safetyBanner.setBackgroundColor(Color.rgb(150, 35, 25));
-        safetyBanner.setPadding(dp(12), dp(10), dp(12), dp(10));
-        safetyBanner.setTextSize(14f);
+        // Keep the safety state persistent but compact. Full pack/version/source details live in Data.
+        safetyBanner.setPadding(dp(10), dp(5), dp(10), dp(5));
+        safetyBanner.setTextSize(12f);
         safetyBanner.setGravity(Gravity.CENTER_HORIZONTAL);
         FrameLayout.LayoutParams bannerParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
@@ -121,7 +122,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             int top = insets.getSystemWindowInsetTop();
             int right = insets.getSystemWindowInsetRight();
             int bottom = insets.getSystemWindowInsetBottom();
-            safetyBanner.setPadding(dp(12) + left, dp(10) + top, dp(12) + right, dp(10));
+            safetyBanner.setPadding(dp(10) + left, dp(5) + top, dp(10) + right, dp(5));
             controls.setPadding(dp(6) + left, dp(6), dp(6) + right, dp(6) + bottom);
             return insets;
         });
@@ -635,7 +636,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override
     public void onMapSafetyState(boolean verified, String message) {
-        safetyBanner.setText(message);
+        // The old banner repeated the entire data manifest/status block and consumed a large
+        // part of the map. Keep the critical safety state permanently visible here, while the
+        // Data dialog remains the authoritative place for detailed pack/source diagnostics.
+        safetyBanner.setText(verified
+                ? "OFFLINE MAP DATA VERIFIED"
+                : "TEST DATA — NOT VERIFIED FOR NAVIGATION");
         safetyBanner.setBackgroundColor(verified ? Color.rgb(30, 100, 55) : Color.rgb(150, 35, 25));
         safetyBanner.setVisibility(View.VISIBLE);
     }
@@ -672,10 +678,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         } else if (claims.isEmpty()) {
             text.append("No claim feature was rendered at this exact tap and zoom. This is not proof that no mining claim exists.");
         } else {
-            text.append(claims.size()).append(claims.size() == 1 ? " claim case shown here:\n" : " claim cases shown here:\n");
+            text.append(claims.size()).append(claims.size() == 1
+                    ? " claim case at this location\n"
+                    : " claim cases at this location\n");
             int shown = 0;
             for (Feature feature : claims) {
                 if (shown >= 20) break;
+                if (shown > 0) text.append('\n');
                 shown++;
                 String name = stringProp(feature, "name", "Unnamed claim");
                 String serial = stringProp(feature, "serial", "");
@@ -683,16 +692,19 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 String type = stringProp(feature, "type", "Unknown claim type");
                 String disposition = stringProp(feature, "disposition", "Not reported");
                 String acres = stringProp(feature, "acres", "");
-                String quality = stringProp(feature, "quality_description", "BLM mapping quality not reported");
-                text.append("• ").append(name).append(" — ").append(type);
+                String quality = compactClaimQuality(feature);
+
+                text.append("• ").append(name).append('\n');
+                text.append("  ").append(type);
+                text.append("\n  Status: ").append(disposition);
                 if (!serial.isEmpty()) text.append("\n  Serial: ").append(serial);
-                if (!legacy.isEmpty() && !legacy.equalsIgnoreCase(serial)) text.append("\n  Legacy serial: ").append(legacy);
-                text.append("\n  Disposition: ").append(disposition);
-                if (!acres.isEmpty()) text.append("\n  Acres: ").append(acres);
-                text.append("\n  Mapping quality: ").append(quality).append('\n');
+                if (!legacy.isEmpty() && !legacy.equalsIgnoreCase(serial)) text.append("\n  Legacy: ").append(legacy);
+                if (!acres.isEmpty()) text.append("\n  Area: ").append(acres).append(" acres");
+                text.append("\n  Mapping: ").append(quality).append('\n');
             }
             if (claims.size() > shown) {
-                text.append("… ").append(claims.size() - shown).append(" additional overlapping claim cases not expanded here.\n");
+                text.append("\n… ").append(claims.size() - shown)
+                        .append(" additional overlapping claim cases not expanded here.\n");
             }
         }
         text.append("\nBLM Surface Management Agency data is management/status mapping, not a parcel survey or surveyed legal boundary. The claim overlay contains BLM MLRS records selected from the Not Closed dataset; it is not a surveyed claim-boundary product, and BLM says some cases may have no geospatial representation. RockMap does not determine whether collecting is legal at a location.");
@@ -707,6 +719,27 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setView(scroll)
                 .setPositiveButton("Close", null)
                 .show();
+    }
+
+    private String compactClaimQuality(Feature feature) {
+        String description = stringProp(feature, "quality_description", "BLM mapping quality not reported").trim();
+        // Alpha 5 preserved the complete BLM QLTY source string for provenance. Some source
+        // values contain verbose internal processing notes. Do not dump those notes into the
+        // field popup; retain the normalized quality label and score instead.
+        int sourceValue = description.indexOf("; source value:");
+        if (sourceValue >= 0) description = description.substring(0, sourceValue).trim();
+
+        final String prefix = "BLM quality score ";
+        if (description.startsWith(prefix)) {
+            String remainder = description.substring(prefix.length()).trim();
+            int colon = remainder.indexOf(':');
+            if (colon > 0) {
+                String score = remainder.substring(0, colon).trim();
+                String label = remainder.substring(colon + 1).trim();
+                if (!label.isEmpty() && !score.isEmpty()) return label + " — quality " + score;
+            }
+        }
+        return description;
     }
 
     private String stringProp(Feature feature, String name, String fallback) {
