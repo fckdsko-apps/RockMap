@@ -1,0 +1,171 @@
+name: Build Colorado Mineral Finder Test Pack
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'gradle.properties'
+      - 'scripts/fetch_usgs_mrds_minerals.py'
+      - 'scripts/create_mineral_test_manifest.py'
+      - 'scripts/preflight.py'
+      - 'docs/ALPHA6_1_MINERAL_FINDER.md'
+      - '.github/workflows/build-minerals-test.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rockmap-minerals-alpha6-1-test1
+  cancel-in-progress: false
+
+jobs:
+  build-minerals:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Add Alpha 6.1 mineral finder'
+    name: Build and publish Alpha 6.1 Colorado mineral-finder test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MRDS_URL: 'https://energy.usgs.gov/arcgis/rest/services/MRData/Mineral_Resource_Data_System/FeatureServer/3'
+      BASELINE_TAG: 'rockmap-claims-alpha5-20260815-test1'
+      RELEASE_TAG: 'rockmap-minerals-alpha6-1-20260815-test1'
+      MINERALS_NAME: 'colorado-minerals-usgs-mrds-20260815-alpha6-1-test1.json.gz'
+      MAX_MINERAL_BYTES: '15000000'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source before data build
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Fetch and compact official USGS MRDS records intersecting Colorado
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          python3 scripts/fetch_usgs_mrds_minerals.py \
+            --url "$MRDS_URL" \
+            --output "dist/$MINERALS_NAME" \
+            --metadata dist/minerals-source-metadata.json
+          test -s "dist/$MINERALS_NAME"
+          test -s dist/minerals-source-metadata.json
+
+          BYTES="$(stat -c '%s' "dist/$MINERALS_NAME")"
+          if [ "$BYTES" -gt "$MAX_MINERAL_BYTES" ]; then
+            echo "::error::Alpha 6.1 compact mineral index exceeds the 15 MB phone-data budget ($BYTES bytes)."
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          meta = json.loads(Path('dist/minerals-source-metadata.json').read_text(encoding='utf-8'))
+          assert meta['normalized_unique_records'] >= 100
+          assert meta['compressed_index_bytes'] > 0
+          assert meta['compressed_index_bytes'] <= 15_000_000
+          assert meta['uncompressed_json_bytes'] <= 64_000_000
+          print('Alpha 6.1 compact-index budget checks passed')
+          print(json.dumps(meta['coverage_record_counts'], indent=2, sort_keys=True))
+          PY
+
+      - name: Download immutable Alpha 5 baseline manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASELINE_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$BASELINE_TAG/manifest.json"
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            --output dist/baseline-manifest.json "$BASELINE_URL"
+          python3 -m json.tool dist/baseline-manifest.json >/dev/null
+
+      - name: Create Alpha 6.1 mineral-finder manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/create_mineral_test_manifest.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --baseline-manifest dist/baseline-manifest.json \
+            --minerals "dist/$MINERALS_NAME" \
+            --source-metadata dist/minerals-source-metadata.json \
+            --output dist/manifest.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          baseline = json.loads(Path('dist/baseline-manifest.json').read_text(encoding='utf-8'))
+          manifest = json.loads(Path('dist/manifest.json').read_text(encoding='utf-8'))
+          assert manifest['manifestVersion'] == 1
+          assert manifest['styleSchemaVersion'] == 1
+          assert manifest['status'] == 'basemap_test'
+          files = {item['id']: item for item in manifest['files']}
+          base_files = {item['id']: item for item in baseline['files']}
+          assert set(files) == {'style', 'base', 'land', 'claims', 'minerals'}
+          for item_id in ('style', 'base', 'land', 'claims'):
+              assert files[item_id] == base_files[item_id]
+          mineral = files['minerals']
+          assert mineral['kind'] == 'index'
+          assert mineral['required'] is True
+          assert mineral['fileName'].endswith('.json.gz')
+          assert 0 < mineral['bytes'] <= 15_000_000
+          assert len(mineral['sha256']) == 64
+          print('Alpha 6.1 manifest reuses exact Alpha 5 map entries and adds only minerals')
+          PY
+
+          sha256sum \
+            "dist/$MINERALS_NAME" \
+            dist/manifest.json \
+            dist/minerals-source-metadata.json \
+            > dist/SHA256SUMS.txt
+
+      - name: Verify repository can host public map assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility')"
+          if [ "$VISIBILITY" != "public" ]; then
+            echo "::error::RockMap data releases must be public because the Android downloader does not embed GitHub credentials. Repository visibility is: $VISIBILITY"
+            exit 1
+          fi
+
+      - name: Refuse to overwrite an existing Alpha 6.1 mineral release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Alpha 6.1 test data is immutable; do not overwrite it."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Refusing to move an existing data tag."
+            exit 1
+          fi
+
+      - name: Publish immutable Alpha 6.1 mineral-finder prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist/$MINERALS_NAME" \
+            dist/manifest.json \
+            dist/minerals-source-metadata.json \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "RockMap Alpha 6.1 Colorado mineral-finder test" \
+            --notes "UNVERIFIED TEST DATA — research aid only. Adds a compact Colorado USGS MRDS mineral/geologic search index while reusing the tested Alpha 5 basemap, land-status, and mining-claims files unchanged. MRDS human-activity fields may be stale. A mineral occurrence does not establish ownership, access, claim status, or collecting legality. No CGS district polygons, geochemistry, imagery, magnetics, radiometrics, terrain, or additional states are included in Alpha 6.1." \
+            --prerelease \
+            --latest=false
+
+          gh release view "$RELEASE_TAG"
