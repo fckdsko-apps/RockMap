@@ -10,6 +10,7 @@ import androidx.work.OneTimeWorkRequest;
 import androidx.work.WorkManager;
 
 import com.rockmap.app.map.LandStatusCatalog;
+import com.rockmap.app.map.MiningClaimCatalog;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -89,12 +90,22 @@ public final class OfflineDataManager {
         return active != null && active.isBasemapTest() && hasCompleteSnapshotBySize(active);
     }
 
-    /** Alpha 4 keeps status=basemap_test so the red safety state cannot be bypassed. */
+    /** Alpha 4/5 keep status=basemap_test so the red safety state cannot be bypassed. */
     public boolean hasLandStatusTestPack() {
         DataManifest active = getActiveManifest();
         if (active == null || !active.isBasemapTest() || !hasCompleteSnapshotBySize(active)) return false;
         DataFileSpec land = active.find("land");
         return land != null && land.required && getActiveFile("land") != null;
+    }
+
+    /** Alpha 5 test: land + BLM MLRS not-closed claims are present, but still not field-verified. */
+    public boolean hasClaimsTestPack() {
+        DataManifest active = getActiveManifest();
+        if (active == null || !active.isBasemapTest() || !hasCompleteSnapshotBySize(active)) return false;
+        DataFileSpec land = active.find("land");
+        DataFileSpec claims = active.find("claims");
+        return land != null && land.required && getActiveFile("land") != null
+                && claims != null && claims.required && getActiveFile("claims") != null;
     }
 
     public boolean hasCompleteSnapshotBySize(DataManifest manifest) {
@@ -131,10 +142,10 @@ public final class OfflineDataManager {
             throw new IOException("Active map snapshot is missing its basemap.");
         }
 
-        // Alpha 4 still reuses the exact Alpha 2 basemap bytes and the proven Alpha 3.1
-        // local-label style. A basemap_test manifest may now add a required "land" PMTiles
-        // component. We inject that source/layers into the known-good local style in memory,
-        // leaving the immutable Alpha 2 style file and statewide basemap untouched.
+        // Alpha 5 still reuses the exact Alpha 2 basemap bytes, Alpha 3.1 local labels,
+        // and the already-tested Alpha 4 land PMTiles. A basemap_test manifest may add land
+        // and then claims; both sources/layers are injected into the known-good local style
+        // in memory without mutating the immutable baseline files.
         String template;
         if (manifest.isBasemapTest()) {
             template = readAssetUtf8(BASEMAP_LABEL_STYLE_ASSET, 8_000_000);
@@ -144,6 +155,13 @@ public final class OfflineDataManager {
                 template = addLandStatusTestLayers(template);
                 requirePlaceholder(template, LAND_PLACEHOLDER);
                 template = template.replace(LAND_PLACEHOLDER, pmtilesUri(landFile));
+            }
+            if (manifest.find("claims") != null) {
+                File claimsFile = getActiveFile("claims");
+                if (claimsFile == null) throw new IOException("Claims test snapshot is missing its claims PMTiles file.");
+                template = addClaimsTestLayers(template);
+                requirePlaceholder(template, CLAIMS_PLACEHOLDER);
+                template = template.replace(CLAIMS_PLACEHOLDER, pmtilesUri(claimsFile));
             }
         } else {
             File styleFile = getActiveFile("style");
@@ -274,6 +292,89 @@ public final class OfflineDataManager {
         }
     }
 
+
+    private String addClaimsTestLayers(String template) throws IOException {
+        try {
+            JSONObject root = new JSONObject(template);
+            JSONObject sources = root.getJSONObject("sources");
+            if (sources.has("rockmap-claims")) throw new IOException("Alpha 5 style already contains rockmap-claims unexpectedly.");
+
+            JSONObject claimSource = new JSONObject();
+            claimSource.put("type", "vector");
+            claimSource.put("url", CLAIMS_PLACEHOLDER);
+            claimSource.put("attribution", "U.S. Department of the Interior, Bureau of Land Management (BLM), MLRS");
+            claimSource.put("maxzoom", 14);
+            sources.put("rockmap-claims", claimSource);
+
+            JSONArray layers = root.getJSONArray("layers");
+            for (int i = 0; i < layers.length(); i++) {
+                JSONObject layer = layers.optJSONObject(i);
+                if (layer == null) continue;
+                String id = layer.optString("id", "");
+                if ("rockmap-claim-fill".equals(id) || "rockmap-claim-outline".equals(id)) {
+                    throw new IOException("Alpha 5 style already contains mining-claim layers unexpectedly.");
+                }
+            }
+
+            JSONObject fill = new JSONObject();
+            fill.put("id", "rockmap-claim-fill");
+            fill.put("type", "fill");
+            fill.put("source", "rockmap-claims");
+            fill.put("source-layer", "claims");
+            fill.put("minzoom", 7);
+            JSONObject fillPaint = new JSONObject();
+            fillPaint.put("fill-color", MiningClaimCatalog.COLOR_HEX);
+            fillPaint.put("fill-opacity", 0.18);
+            fill.put("paint", fillPaint);
+
+            JSONObject outline = new JSONObject();
+            outline.put("id", "rockmap-claim-outline");
+            outline.put("type", "line");
+            outline.put("source", "rockmap-claims");
+            outline.put("source-layer", "claims");
+            outline.put("minzoom", 7);
+            JSONObject outlinePaint = new JSONObject();
+            outlinePaint.put("line-color", MiningClaimCatalog.COLOR_HEX);
+            outlinePaint.put("line-opacity", 0.95);
+            outlinePaint.put("line-width", new JSONArray()
+                    .put("interpolate")
+                    .put(new JSONArray().put("linear"))
+                    .put(new JSONArray().put("zoom"))
+                    .put(7).put(0.8)
+                    .put(12).put(1.4)
+                    .put(16).put(2.2));
+            outline.put("paint", outlinePaint);
+
+            // Claims sit above land-status fills/outlines but below road/place labels.
+            JSONArray rebuilt = new JSONArray();
+            boolean inserted = false;
+            for (int i = 0; i < layers.length(); i++) {
+                JSONObject layer = layers.getJSONObject(i);
+                if (!inserted && "symbol".equals(layer.optString("type"))) {
+                    rebuilt.put(fill);
+                    rebuilt.put(outline);
+                    inserted = true;
+                }
+                rebuilt.put(layer);
+            }
+            if (!inserted) {
+                rebuilt.put(fill);
+                rebuilt.put(outline);
+            }
+            root.put("layers", rebuilt);
+            JSONObject metadata = root.optJSONObject("metadata");
+            if (metadata == null) {
+                metadata = new JSONObject();
+                root.put("metadata", metadata);
+            }
+            metadata.put("rockmap:mining-claims", "alpha5-blm-mlrs-not-closed-test");
+            metadata.put("rockmap:warning", "NOT VERIFIED FOR NAVIGATION. Claims are BLM MLRS records whose disposition is not closed, not surveyed claim boundaries; some MLRS cases may lack geospatial representation.");
+            return root.toString();
+        } catch (JSONException ex) {
+            throw new IOException("Could not construct Alpha 5 mining-claims style: " + ex.getMessage(), ex);
+        }
+    }
+
     private void requirePlaceholder(String template, String placeholder) throws IOException {
         if (!template.contains(placeholder)) {
             throw new IOException("Map style is missing required placeholder " + placeholder);
@@ -308,6 +409,21 @@ public final class OfflineDataManager {
         }
 
         if (active.isBasemapTest()) {
+            if (active.find("claims") != null && getActiveFile("claims") != null
+                    && active.find("land") != null && getActiveFile("land") != null) {
+                return "OFFLINE BASEMAP + LABELS + LAND STATUS + MINING CLAIMS: TEST — NOT VERIFIED FOR NAVIGATION"
+                        + "\nLand status: included offline (Alpha 4 BLM Colorado SMA test)"
+                        + "\nMining claims: included offline (Alpha 5 BLM MLRS not-closed test)"
+                        + "\nLabels: included offline (Alpha 3.1 dual-font path retained)"
+                        + "\nPack: " + active.pack
+                        + "\nVersion: " + active.version
+                        + "\nPublished: " + active.publishedAt
+                        + "\nMap data: © OpenStreetMap contributors · Protomaps"
+                        + "\nLand data: Bureau of Land Management, Colorado Surface Management Agency"
+                        + "\nClaim data: Bureau of Land Management, Mineral & Land Records System (MLRS), Mining Claims — Not Closed"
+                        + "\nBoundary note: land status is management/status mapping, not a parcel survey or legal boundary."
+                        + "\nClaim note: BLM says some MLRS cases may lack geospatial representation. No rendered claim is not proof that no claim exists.";
+            }
             if (active.find("land") != null && getActiveFile("land") != null) {
                 return "OFFLINE BASEMAP + LABELS + LAND STATUS: TEST — NOT VERIFIED FOR NAVIGATION"
                         + "\nLand status: included offline (Alpha 4 BLM Colorado SMA test)"

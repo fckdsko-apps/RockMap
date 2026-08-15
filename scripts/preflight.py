@@ -38,12 +38,16 @@ required_files = [
     "docs/BASEMAP_ALPHA2.md",
     "docs/BASEMAP_ALPHA3.md",
     "docs/LAND_STATUS_ALPHA4.md",
+    "docs/MINING_CLAIMS_ALPHA5.md",
     "scripts/create_basemap_test_manifest.py",
     "scripts/create_land_test_manifest.py",
+    "scripts/create_claims_test_manifest.py",
     "scripts/fetch_blm_land_status.py",
+    "scripts/fetch_blm_mining_claims.py",
     "scripts/prepare_offline_glyphs.py",
     "scripts/validate_basemap_metadata.py",
     "scripts/validate_land_metadata.py",
+    "scripts/validate_claims_metadata.py",
     "signing-certificate.sha256",
     "app/src/test/java/com/rockmap/app/offline/DataValidatorsTest.java",
 ]
@@ -330,7 +334,74 @@ for required_validator_text in ("manager_code", "manager_name", 'x.get("id") == 
     if required_validator_text not in land_validator_text:
         err(f"Alpha 4 land metadata validator is missing: {required_validator_text}")
 
-# The repository placeholder manifest remains unpublished. Alpha 4 points the APK updater
+# Alpha 5 claims builder: official MLRS not-closed source, conservative Colorado spatial
+# selection, exact OBJECTID completeness, type-code whitelist, and coarse-quality filtering.
+try:
+    claim_module = runpy.run_path(str(ROOT / "scripts/fetch_blm_mining_claims.py"))
+    expected_claims_url = (
+        "https://gis.blm.gov/nlsdb/rest/services/HUB/"
+        "BLM_Natl_MLRS_Mining_Claims_Not_Closed/FeatureServer/0"
+    )
+    if claim_module.get("DEFAULT_URL") != expected_claims_url:
+        err("Alpha 5 BLM MLRS claims source URL unexpectedly changed.")
+    expected_type_codes = {
+        "384101", "384103", "384201", "384203",
+        "384301", "384303", "384401", "384403",
+    }
+    if set(claim_module.get("TYPE_NAMES", {})) != expected_type_codes:
+        err("Alpha 5 mining-claim type-code whitelist unexpectedly changed.")
+    if claim_module.get("NO_FOOTPRINT_QUALITY_SCORES") != {"11", "12", "20", "21", "22", "25"}:
+        err("Alpha 5 coarse/no-footprint quality exclusion set unexpectedly changed.")
+    if not (1 <= int(claim_module.get("BATCH_SIZE", 0)) <= 500):
+        err("Alpha 5 BLM claim query batch size is outside the conservative range.")
+except Exception as exc:
+    err(f"Alpha 5 BLM claims fetch script validation failed: {exc}")
+
+claims_fetch_text = read("scripts/fetch_blm_mining_claims.py")
+for required_claim_fetch in (
+    "Mining Claims- Not Closed",
+    "returnIdsOnly",
+    "esriGeometryEnvelope",
+    "esriSpatialRelIntersects",
+    "objectIds",
+    '"outSR": "4326"',
+    '"serial"',
+    '"quality_description"',
+    "claim completeness check failed",
+    "Mapped to county",
+    "schema drift",
+):
+    if required_claim_fetch not in claims_fetch_text:
+        err(f"Alpha 5 claims builder is missing fail-closed behavior: {required_claim_fetch}")
+
+claims_manifest_text = read("scripts/create_claims_test_manifest.py")
+for required_claim_manifest in (
+    'baseline.get("status") != "basemap_test"',
+    'set(baseline_files) != {"style", "base", "land"}',
+    'files = [baseline_files["style"], baseline_files["base"], baseline_files["land"]]',
+    '"id": "claims"',
+    '"status": "basemap_test"',
+):
+    if required_claim_manifest not in claims_manifest_text:
+        err(f"Alpha 5 claims manifest builder is missing immutable Alpha 4 baseline behavior: {required_claim_manifest}")
+
+claims_validator_text = read("scripts/validate_claims_metadata.py")
+for required_claim_validator in (
+    "legacy_serial", "type_code", "quality_description", 'x.get("id") == "claims"', "unexpected raw fields"
+):
+    if required_claim_validator not in claims_validator_text:
+        err(f"Alpha 5 claims metadata validator is missing: {required_claim_validator}")
+
+manifest_parser_text = read("app/src/main/java/com/rockmap/app/offline/DataManifestParser.java")
+for required_parser_guard in (
+    'if (hasId(files, "claims"))',
+    'require(files, "land", "pmtiles", status);',
+    'require(files, "claims", "pmtiles", status);',
+):
+    if required_parser_guard not in manifest_parser_text:
+        err(f"Alpha 5 manifest parser is missing staged-overlay dependency guard: {required_parser_guard}")
+
+# The repository placeholder manifest remains unpublished. Alpha 5 points the APK updater
 # at a separate land-test release whose manifest reuses the immutable Alpha 2 base/style.
 try:
     data_manifest = json.loads(read("data/manifest.json"))
@@ -361,10 +432,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
-if "rockmap-land-alpha4-20260814-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 4 APK must point only to the immutable Alpha 4 land-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha4.1" not in read("gradle.properties"):
-    err("Alpha 4.1 version name is not pinned in gradle.properties.")
+if "rockmap-claims-alpha5-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 5 APK must point only to the immutable Alpha 5 claims-test release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha5" not in read("gradle.properties"):
+    err("Alpha 5 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -375,7 +446,7 @@ for required_gradle in (
     "dependsOn tasks.named('prepareOfflineGlyphs')",
 ):
     if required_gradle not in all_gradle:
-        err(f"Alpha 4 must retain the proven Alpha 3.1 generated offline text wiring: {required_gradle}")
+        err(f"Alpha 5 must retain the proven Alpha 3.1 generated offline text wiring: {required_gradle}")
 
 # Java/source guardrails.
 java_files = list((ROOT / "app/src/main/java").rglob("*.java"))
@@ -412,12 +483,19 @@ for required_source in (
     "STATUS_BASEMAP_TEST",
     "hasRenderableActivePack",
     "hasLandStatusTestPack",
+    "hasClaimsTestPack",
     "hasLandStatusAvailable",
     "hasClaimsAvailable",
     "describeLandDiagnostics",
+    "describeClaimsDiagnostics",
     "rockmap-land-fill",
     "rockmap-land-outline",
-    "Mining-claim data is not included in this Alpha 4 land-status test",
+    "rockmap-claim-fill",
+    "rockmap-claim-outline",
+    "Mining claims legend",
+    "MiningClaimCatalog",
+    "BLM MLRS NOT CLOSED",
+    "This is not proof that no mining claim exists",
     "Treat this as unknown, not as public land",
     "Land status legend",
     "LandStatusCatalog",
@@ -426,16 +504,19 @@ for required_source in (
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
 if "labels are not included yet" in java_text:
-    err("Alpha 4 source still reports the already-proven labels as absent.")
-if "OFFLINE BASEMAP + LABELS + LAND STATUS: TEST" not in java_text:
-    err("Alpha 4 status text does not expose the land-status test state.")
+    err("Alpha 5 source still reports the already-proven labels as absent.")
+if "OFFLINE BASEMAP + LABELS + LAND STATUS + MINING CLAIMS: TEST" not in java_text:
+    err("Alpha 5 status text does not expose the combined claims-test state.")
 if "management/status mapping only; not a parcel survey or legal boundary" not in java_text:
-    err("Alpha 4 land-status safety wording is missing from OfflineDataManager.")
+    err("Alpha 5 must retain the Alpha 4 land-status safety wording.")
+if "some MLRS cases may lack geospatial representation" not in java_text:
+    err("Alpha 5 MLRS incompleteness warning is missing from OfflineDataManager.")
 
 # Stable data contract.
 contract = read("docs/DATA_CONTRACT.md")
 for required in (
-    "alpha4",
+    "Alpha 4",
+    "alpha5",
     "basemap_test",
     "${ROCKMAP_BASE_URI}",
     "${ROCKMAP_LAND_URI}",
@@ -457,8 +538,12 @@ for required in (
     "rockmap-label-road-any",
     "manager_code",
     "manager_name",
+    "legacy_serial",
+    "type_code",
+    "quality_description",
     "BLM Colorado Surface Management Agency",
     "not a parcel survey",
+    "not closed",
 ):
     if required not in contract:
         err(f"Data contract missing required term: {required}")
@@ -481,6 +566,20 @@ for required in (
 ):
     if required not in alpha4_doc:
         err(f"Alpha 4 land-status acceptance test missing required instruction: {required}")
+
+alpha5_doc = read("docs/MINING_CLAIMS_ALPHA5.md") if (ROOT / "docs/MINING_CLAIMS_ALPHA5.md").is_file() else ""
+for required in (
+    "Do not uninstall",
+    "Build Colorado Mining Claims Test Pack",
+    "Add Alpha 5 mining claims test",
+    "Check for update",
+    "airplane mode",
+    "quality score **25**",
+    "not proof that no claim exists",
+    "rockmap-claims-alpha5-20260815-test1",
+):
+    if required not in alpha5_doc:
+        err(f"Alpha 5 mining-claims acceptance test missing required instruction: {required}")
 
 # Public signing fingerprint is required; private signing material and original font files are forbidden.
 fingerprint = ROOT / "signing-certificate.sha256"
@@ -532,4 +631,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 4 land-status source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 5 mining-claims source preflight passed ({file_count} files checked).")

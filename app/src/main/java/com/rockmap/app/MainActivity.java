@@ -31,6 +31,7 @@ import androidx.work.WorkInfo;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.MapController;
 import com.rockmap.app.map.LandStatusCatalog;
+import com.rockmap.app.map.MiningClaimCatalog;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
@@ -229,7 +230,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         boolean claimsAvailable = mapController.hasClaimsAvailable();
         CheckBox land = checkbox(landAvailable ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
                 landAvailable && mapController.isLandVisible());
-        CheckBox claims = checkbox(claimsAvailable ? "Mining claims — not closed" : "Mining claims — unavailable in Alpha 4 land test",
+        CheckBox claims = checkbox(claimsAvailable ? "Mining claims — BLM MLRS not closed" : "Mining claims — unavailable in current test",
                 claimsAvailable && mapController.isClaimsVisible());
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
         land.setEnabled(landAvailable);
@@ -238,6 +239,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(claims);
         box.addView(saved);
         if (landAvailable) addLandStatusLegend(box);
+        if (claimsAvailable) addMiningClaimsLegend(box);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);
@@ -292,6 +294,38 @@ public final class MainActivity extends Activity implements LocationRepository.L
         label.setTextColor(Color.rgb(45, 45, 45));
         row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         box.addView(row);
+    }
+
+    private void addMiningClaimsLegend(LinearLayout box) {
+        TextView title = new TextView(this);
+        title.setText("Mining claims legend");
+        title.setTextSize(16f);
+        title.setTextColor(Color.rgb(35, 35, 35));
+        title.setPadding(0, dp(14), 0, dp(2));
+        box.addView(title);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(1), 0, dp(1));
+        TextView swatch = new TextView(this);
+        swatch.setText("■");
+        swatch.setTextSize(23f);
+        swatch.setTextColor(Color.parseColor(MiningClaimCatalog.COLOR_HEX));
+        row.addView(swatch, new LinearLayout.LayoutParams(dp(32), ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView label = new TextView(this);
+        label.setText(MiningClaimCatalog.LEGEND_LABEL);
+        label.setTextSize(13f);
+        label.setTextColor(Color.rgb(45, 45, 45));
+        row.addView(label, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(row);
+
+        TextView note = new TextView(this);
+        note.setText("Magenta means the BLM MLRS source reports a mining-claim case whose disposition is not closed. It does not mean RockMap independently verified that the claim is active, valid, or surveyed to the displayed polygon. BLM notes that some cases cannot be geocoded and may have no map geometry. County-only quality-score 25 geometry is intentionally excluded because it is too coarse for a claim-footprint overlay. Tap a claim for its type, serial, disposition, acreage, and mapping-quality note.");
+        note.setTextSize(12f);
+        note.setTextColor(Color.rgb(75, 75, 75));
+        note.setPadding(0, dp(2), 0, dp(6));
+        box.addView(note);
     }
 
     private CheckBox checkbox(String label, boolean checked) {
@@ -395,7 +429,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         + offlineDataManager.describeStatus()
                         + (mapController == null ? ""
                             : "\n\n" + mapController.describeLabelDiagnostics()
-                            + "\n\n" + mapController.describeLandDiagnostics()))
+                            + "\n\n" + mapController.describeLandDiagnostics()
+                            + "\n\n" + mapController.describeClaimsDiagnostics()))
                 .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
                 .setNegativeButton("Close", null)
                 .show();
@@ -629,25 +664,38 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 text.append('\n');
             }
         }
-        text.append("\nMINING CLAIMS — NOT CLOSED\n");
+        text.append("\nMINING CLAIMS — BLM MLRS NOT CLOSED\n");
         if (!mapController.hasClaimsAvailable()) {
-            text.append("Mining-claim data is not included in this Alpha 4 land-status test. No claim conclusion was made.");
+            text.append("Mining-claim data is not included in the active test snapshot. No claim conclusion was made.");
         } else if (!mapController.isClaimsVisible()) {
             text.append("Claims layer is turned off. No claim conclusion was made.");
         } else if (claims.isEmpty()) {
             text.append("No claim feature was rendered at this exact tap and zoom. This is not proof that no mining claim exists.");
         } else {
-            text.append(claims.size()).append(claims.size() == 1 ? " claim shown here:\n" : " claims shown here:\n");
+            text.append(claims.size()).append(claims.size() == 1 ? " claim case shown here:\n" : " claim cases shown here:\n");
+            int shown = 0;
             for (Feature feature : claims) {
-                text.append("• ").append(stringProp(feature, "name", "Unnamed claim"));
+                if (shown >= 20) break;
+                shown++;
+                String name = stringProp(feature, "name", "Unnamed claim");
                 String serial = stringProp(feature, "serial", "");
-                if (!serial.isEmpty()) text.append(" (").append(serial).append(')');
-                String quality = stringProp(feature, "quality_description", "");
-                if (!quality.isEmpty()) text.append(" — ").append(quality);
-                text.append('\n');
+                String legacy = stringProp(feature, "legacy_serial", "");
+                String type = stringProp(feature, "type", "Unknown claim type");
+                String disposition = stringProp(feature, "disposition", "Not reported");
+                String acres = stringProp(feature, "acres", "");
+                String quality = stringProp(feature, "quality_description", "BLM mapping quality not reported");
+                text.append("• ").append(name).append(" — ").append(type);
+                if (!serial.isEmpty()) text.append("\n  Serial: ").append(serial);
+                if (!legacy.isEmpty() && !legacy.equalsIgnoreCase(serial)) text.append("\n  Legacy serial: ").append(legacy);
+                text.append("\n  Disposition: ").append(disposition);
+                if (!acres.isEmpty()) text.append("\n  Acres: ").append(acres);
+                text.append("\n  Mapping quality: ").append(quality).append('\n');
+            }
+            if (claims.size() > shown) {
+                text.append("… ").append(claims.size() - shown).append(" additional overlapping claim cases not expanded here.\n");
             }
         }
-        text.append("\nBLM Surface Management Agency data is management/status mapping, not a parcel survey or a surveyed legal boundary. RockMap does not determine whether collecting is legal at a location.");
+        text.append("\nBLM Surface Management Agency data is management/status mapping, not a parcel survey or surveyed legal boundary. The claim overlay contains BLM MLRS records selected from the Not Closed dataset; it is not a surveyed claim-boundary product, and BLM says some cases may have no geospatial representation. RockMap does not determine whether collecting is legal at a location.");
 
         ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);

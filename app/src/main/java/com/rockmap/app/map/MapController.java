@@ -124,7 +124,9 @@ public final class MapController {
         }
 
         final boolean expectedVerified = dataManager.hasVerifiedActivePack();
+        final boolean expectedClaimsTest = dataManager.hasClaimsTestPack();
         final boolean expectedLandTest = dataManager.hasLandStatusTestPack();
+        final boolean claimsWereAvailable = claimsAvailable;
         try {
             String styleJson = dataManager.buildActiveStyleJson();
             attemptingOfflineStyle = true;
@@ -137,22 +139,27 @@ public final class MapController {
                 style = loaded;
                 boolean contractValid = expectedVerified
                         ? verifyRequiredDataContract(loaded)
-                        : expectedLandTest
-                            ? verifyLandStatusTestContract(loaded)
-                            : verifyBasemapTestContract(loaded);
+                        : expectedClaimsTest
+                            ? verifyClaimsTestContract(loaded)
+                            : expectedLandTest
+                                ? verifyLandStatusTestContract(loaded)
+                                : verifyBasemapTestContract(loaded);
                 if (!contractValid) {
                     failOfflineStyle(expectedVerified
                             ? "Published files loaded, but the map style is missing required RockMap sources/layers."
-                            : expectedLandTest
-                                ? "Alpha 4 land-status test loaded, but required base/label/land sources or layers are missing."
-                                : "Alpha 3.1 basemap files loaded, but required offline label sources/layers are missing.");
+                            : expectedClaimsTest
+                                ? "Alpha 5 claims test loaded, but required base/label/land/claims sources or layers are missing."
+                                : expectedLandTest
+                                    ? "Alpha 4 land-status test loaded, but required base/label/land sources or layers are missing."
+                                    : "Alpha 3.1 basemap files loaded, but required offline label sources/layers are missing.");
                     return;
                 }
                 attemptingOfflineStyle = false;
                 offlineStyleActive = true;
                 verifiedStyleActive = expectedVerified;
-                landStatusAvailable = expectedVerified || expectedLandTest;
-                claimsAvailable = expectedVerified;
+                landStatusAvailable = expectedVerified || expectedLandTest || expectedClaimsTest;
+                claimsAvailable = expectedVerified || expectedClaimsTest;
+                if (claimsAvailable && !claimsWereAvailable) claimsVisible = true;
                 if (!claimsAvailable) claimsVisible = false;
                 installLocalOverlayLayers();
                 renderCurrentLocation();
@@ -181,6 +188,13 @@ public final class MapController {
                 && loaded.getSource(LAND_SOURCE) != null
                 && loaded.getLayer(LAND_FILL) != null
                 && loaded.getLayer(LAND_OUTLINE) != null;
+    }
+
+    private boolean verifyClaimsTestContract(Style loaded) {
+        return verifyLandStatusTestContract(loaded)
+                && loaded.getSource(CLAIM_SOURCE) != null
+                && loaded.getLayer(CLAIM_FILL) != null
+                && loaded.getLayer(CLAIM_OUTLINE) != null;
     }
 
     private boolean verifyRequiredDataContract(Style loaded) {
@@ -314,6 +328,49 @@ public final class MapController {
                 + "\nLand source features loaded: " + sourceFeatures
                 + "\nFeatures with normalized manager fields: " + namedFeatures
                 + "\nRendered land features: " + renderedFeatures;
+    }
+
+    public String describeClaimsDiagnostics() {
+        if (!claimsAvailable || !offlineStyleActive || style == null || map == null) {
+            return "Claims diagnostics: mining-claims test is not active.";
+        }
+
+        int sourceFeatures = 0;
+        int normalizedFeatures = 0;
+        VectorSource claims = null;
+        try {
+            claims = style.getSourceAs(CLAIM_SOURCE);
+        } catch (RuntimeException ignored) {
+        }
+        if (claims != null) {
+            try {
+                List<Feature> features = claims.querySourceFeatures(new String[]{"claims"}, null);
+                sourceFeatures = features.size();
+                for (Feature feature : features) {
+                    if (feature != null
+                            && feature.hasProperty("serial")
+                            && feature.hasProperty("type")
+                            && feature.hasProperty("disposition")
+                            && feature.hasProperty("quality_description")) {
+                        normalizedFeatures++;
+                    }
+                }
+            } catch (RuntimeException ignored) {
+            }
+        }
+
+        int renderedFeatures = 0;
+        if (mapView.getWidth() > 0 && mapView.getHeight() > 0) {
+            try {
+                RectF viewport = new RectF(0f, 0f, mapView.getWidth(), mapView.getHeight());
+                renderedFeatures = map.queryRenderedFeatures(viewport, new String[]{CLAIM_FILL}).size();
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return "Claims diagnostics (current viewport):"
+                + "\nClaim source features loaded: " + sourceFeatures
+                + "\nFeatures with normalized claim fields: " + normalizedFeatures
+                + "\nRendered claim features: " + renderedFeatures;
     }
 
     public void updateCurrentLocation(Location location) {
@@ -453,8 +510,8 @@ public final class MapController {
                 ? dedupe(query(point, LAND_FILL), "manager_name", "manager_code") : new ArrayList<>();
         List<Feature> claims = (claimsAvailable && claimsVisible)
                 ? dedupe(query(point, CLAIM_FILL), "serial", "name") : new ArrayList<>();
-        // Empty rendered results are never interpreted as public/unclaimed land. Alpha 4
-        // permits this panel for land-status testing while mining claims remain unavailable.
+        // Empty rendered results are never interpreted as public/unclaimed land. Alpha 5
+        // adds claims for testing while the entire snapshot remains explicitly unverified.
         listener.onMapFeaturesTapped(coordinate, land, claims);
         return true;
     }

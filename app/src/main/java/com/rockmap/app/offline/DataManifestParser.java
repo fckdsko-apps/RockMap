@@ -100,10 +100,28 @@ public final class DataManifestParser {
         if (published) {
             require(files, "land", "pmtiles", status);
             require(files, "claims", "pmtiles", status);
+        } else if (basemapTest) {
+            // Test snapshots are staged: base only -> land -> land + claims. If an overlay
+            // id is present at all, require the complete dependency chain and require it to
+            // be a required PMTiles component. This prevents a malformed claims-test manifest
+            // from activating claims without the land snapshot it was built against.
+            if (hasId(files, "claims")) {
+                require(files, "land", "pmtiles", status);
+                require(files, "claims", "pmtiles", status);
+            } else if (hasId(files, "land")) {
+                require(files, "land", "pmtiles", status);
+            }
         }
 
         return new DataManifest(manifestVersion, styleSchemaVersion, minimumAppVersionCode,
                 pack, version, publishedAt, status, message, files);
+    }
+
+    private static boolean hasId(List<DataFileSpec> files, String id) {
+        for (DataFileSpec file : files) {
+            if (id.equals(file.id)) return true;
+        }
+        return false;
     }
 
     private static void require(List<DataFileSpec> files, String id, String kind, String status)

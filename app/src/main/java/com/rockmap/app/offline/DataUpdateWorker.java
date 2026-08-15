@@ -107,7 +107,10 @@ public final class DataUpdateWorker extends Worker {
             // semantically valid-but-unrenderable new style can be rolled back on the device.
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
-                if (manifest.find("land") != null) {
+                if (manifest.find("claims") != null && manifest.find("land") != null) {
+                    manager.setLastUpdateStatus("Alpha 5 mining-claims test pack downloaded and activated: " + manifest.version
+                            + ". NOT VERIFIED FOR NAVIGATION; BLM Colorado SMA land status and BLM MLRS not-closed mining-claim data are included.");
+                } else if (manifest.find("land") != null) {
                     manager.setLastUpdateStatus("Alpha 4 land-status test pack downloaded and activated: " + manifest.version
                             + ". NOT VERIFIED FOR NAVIGATION; BLM Colorado SMA land-status data is included, mining claims are not included.");
                 } else {
