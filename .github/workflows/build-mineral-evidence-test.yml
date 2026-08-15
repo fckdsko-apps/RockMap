@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   build-evidence:
+    if: github.event_name == 'workflow_dispatch'
     name: Build and publish Alpha 6.2.1 Colorado expanded mineral evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 30
