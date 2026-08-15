@@ -83,6 +83,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private MineralIndexRepository mineralIndexRepository;
     private MineralOverlayController mineralOverlayController;
     private MineralSearchEngine.SearchResult activeMineralSearchResult;
+    private List<Feature> pendingMineralTapLand = new ArrayList<>();
     private String activeMineralScopeLabel = "All Colorado";
     private TextView safetyBanner;
     private LiveData<WorkInfo> updateLiveData;
@@ -188,7 +189,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (!mineralIndexRepository.isAvailable()) {
             new AlertDialog.Builder(this)
                     .setTitle("Mineral data not installed")
-                    .setMessage("The Alpha 6.1 USGS MRDS mineral index is not active yet. Open Data and choose Check for update. The existing basemap, land status, and claims remain installed while the small mineral index is added.")
+                    .setMessage("The USGS MRDS mineral index is not active yet. Open Data and choose Check for update. Existing basemap, land status, claims, and saved markers are preserved while mineral-search data is added.")
                     .setPositiveButton("Data", (d, w) -> showData())
                     .setNegativeButton("Close", null)
                     .show();
@@ -200,7 +201,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search documented USGS MRDS minerals/materials first, then commodities, site names, districts, deposit models, and rock context.\n\nExamples: fluorite, rhodochrosite, beryl, topaz, telluride, pegmatite, gold.\n\nAll matching records remain available. Dense map results are grouped into numbered clusters until you zoom in.");
+        help.setText("Search documented mineral records and official Colorado gemstone/locality references, then commodities, site names, districts, deposit models, and rock context.\n\nExamples: amazonite, aquamarine, fluorite, rhodochrosite, topaz, telluride, pegmatite, gold.\n\nAll matching records remain available. Dense map results are grouped into numbered clusters until you zoom in.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -323,8 +324,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         String[] labels = new String[shown];
         for (int i = 0; i < shown; i++) {
             MineralSearchEngine.Hit hit = result.hits.get(i);
-            labels[i] = hit.record.name + "\n" + hit.reason + "\n"
-                    + String.format(Locale.US, "%.5f, %.5f", hit.record.latitude, hit.record.longitude);
+            labels[i] = hit.record.name + "\n" + hit.reason
+                    + (hit.record.evidenceType.isEmpty() ? "" : "\n" + hit.record.evidenceType)
+                    + "\n" + String.format(Locale.US, "%.5f, %.5f", hit.record.latitude, hit.record.longitude);
         }
         ListView list = new ListView(this);
         list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
@@ -373,7 +375,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         });
         list.setOnItemClickListener((parent, view, position, id) -> {
             dialog.dismiss();
-            showMineralDetail(result.hits.get(position), result, true);
+            showMineralDetail(result.hits.get(position), result, true, null);
         });
         dialog.show();
     }
@@ -391,7 +393,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showMineralDetail(MineralSearchEngine.Hit hit,
                                    MineralSearchEngine.SearchResult result,
-                                   boolean centerOnMap) {
+                                   boolean centerOnMap,
+                                   List<Feature> landAtMarker) {
         MineralRecord record = hit.record;
         if (centerOnMap) mineralOverlayController.center(record);
 
@@ -412,6 +415,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         text.append("\nCoordinates: ")
                 .append(String.format(Locale.US, "%.6f, %.6f", record.latitude, record.longitude));
+        if (landAtMarker != null) {
+            text.append('\n').append(formatMineralLand(landAtMarker));
+            text.append("\nLand note: Management/status mapping; not a parcel or legal boundary.");
+        }
         if (!record.materials.isEmpty()) {
             text.append("\n\nAll recorded minerals/materials: ").append(String.join(", ", record.materials));
         }
@@ -419,12 +426,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (!record.districts.isEmpty()) text.append("\nDistrict: ").append(String.join(", ", record.districts));
         if (!record.models.isEmpty()) text.append("\nDeposit model: ").append(String.join(", ", record.models));
         if (!record.rocks.isEmpty()) text.append("\nRock context: ").append(String.join(", ", record.rocks));
-        if (!record.status.isEmpty()) text.append("\nMRDS development status: ").append(record.status);
-        text.append("\nUSGS MRDS ID: ").append(record.id);
+        if (record.isMrds() && !record.status.isEmpty()) text.append("\nMRDS development status: ").append(record.status);
+        if (!record.evidenceType.isEmpty()) text.append("\nEvidence: ").append(record.evidenceType);
+        if (!record.locationPrecision.isEmpty()) text.append("\nPrecision: ").append(record.locationPrecision);
+        if (record.isMrds()) {
+            text.append("\nUSGS MRDS ID: ").append(record.id);
+        } else {
+            text.append("\nSource record ID: ").append(record.id);
+        }
 
-        text.append("\n\nSource: USGS Mineral Resources Data System (MRDS)");
-        text.append("\nReliability: Documented mineral and geologic records; location precision and historical mine information may vary.");
-        text.append("\nUse: Federal reference for documented mineral occurrences and geology.");
+        appendMineralSource(text, record);
         text.append("\n\nA mapped occurrence is a research lead, not proof of current ownership, access, claim status, or permission to collect.");
 
         ScrollView scroll = new ScrollView(this);
@@ -436,7 +447,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(record.name)
                 .setView(scroll)
-                .setPositiveButton("Save marker", (d, w) -> saveMineralMarker(record, hit.reason, result))
+                .setPositiveButton("Save marker", (d, w) -> saveMineralMarker(record, hit.reason, result, landAtMarker))
                 .setNegativeButton("Close", null);
         if (result != null && !result.hits.isEmpty()) {
             builder.setNeutralButton("Results", (d, w) -> showMineralResults(result));
@@ -444,9 +455,52 @@ public final class MainActivity extends Activity implements LocationRepository.L
         builder.show();
     }
 
+    private void appendMineralSource(StringBuilder text, MineralRecord record) {
+        if (record.isMrds()) {
+            text.append("\n\nSource: USGS Mineral Resources Data System (MRDS)");
+            text.append("\nReliability: Documented mineral and geologic records; location precision and historical mine information may vary.");
+            text.append("\nUse: Federal reference for documented mineral occurrences and geology.");
+            return;
+        }
+        if (record.sourceCode.startsWith("CGS_")) {
+            text.append("\n\nSource: Colorado Geological Survey (CGS)");
+            text.append("\nReliability: Official locality reference; mapped point may represent a broader mineral-bearing area.");
+            text.append("\nUse: Official Colorado evidence filling gaps in the broader MRDS index.");
+        } else {
+            text.append("\n\nSource: U.S. Geological Survey publication");
+            text.append("\nReliability: Published geologic locality; mapped point may represent a broader study area.");
+            text.append("\nUse: Published geologic evidence filling gaps in the broader MRDS index.");
+        }
+        if (!record.sourceNote.isEmpty()) text.append("\nNote: ").append(record.sourceNote);
+    }
+
+    private String formatMineralLand(List<Feature> land) {
+        if (!mapController.hasLandStatusAvailable()) {
+            return "Land: Unknown — land-status data not active.";
+        }
+        if (land == null || land.isEmpty()) {
+            return "Land: Unknown — no mapped management feature at this point.";
+        }
+        StringBuilder out = new StringBuilder("Land: ");
+        int shown = 0;
+        for (Feature feature : land) {
+            if (shown >= 3) break;
+            String code = stringProp(feature, "manager_code", "").trim();
+            String manager = stringProp(feature, "manager_name", "Unknown manager").trim();
+            String category = LandStatusCatalog.labelFor(code, manager);
+            if (shown++ > 0) out.append(" / ");
+            if (!code.isEmpty()) out.append(code).append(" — ");
+            out.append(category);
+        }
+        if (land.size() > shown) out.append(" +").append(land.size() - shown).append(" more");
+        return out.toString();
+    }
+
     private void onMineralTapped(MineralSearchEngine.Hit hit) {
         if (hit == null) return;
-        showMineralDetail(hit, activeMineralSearchResult, false);
+        List<Feature> land = pendingMineralTapLand == null
+                ? new ArrayList<>() : new ArrayList<>(pendingMineralTapLand);
+        showMineralDetail(hit, activeMineralSearchResult, false, land);
     }
 
     private void clearMinerals() {
@@ -456,13 +510,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void saveMineralMarker(MineralRecord record, String matchReason,
-                                   MineralSearchEngine.SearchResult result) {
+                                   MineralSearchEngine.SearchResult result,
+                                   List<Feature> landAtMarker) {
         long now = System.currentTimeMillis();
         String searchedFor = result == null || result.requestedQuery.isEmpty()
                 ? "" : "\nSearched for: " + result.requestedQuery;
         String fallback = result == null || result.aliasNote.isEmpty()
                 ? "" : "\nMatched through: " + result.effectiveQuery + " (parent-mineral fallback)";
-        String note = "USGS MRDS mineral-search result\nMRDS ID: " + record.id
+        String recordIdLabel = record.isMrds() ? "MRDS ID: " : "Source record ID: ";
+        String note = "Mineral-search result\n" + recordIdLabel + record.id
                 + searchedFor
                 + fallback
                 + "\nMatched: " + matchReason
@@ -471,8 +527,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 + (record.districts.isEmpty() ? "" : "\nDistrict: " + String.join(", ", record.districts))
                 + (record.models.isEmpty() ? "" : "\nDeposit model: " + String.join(", ", record.models))
                 + (record.rocks.isEmpty() ? "" : "\nRock context: " + String.join(", ", record.rocks))
-                + (record.status.isEmpty() ? "" : "\nMRDS development status: " + record.status)
-                + "\nSource: USGS Mineral Resources Data System (MRDS)";
+                + (record.isMrds() && !record.status.isEmpty() ? "\nMRDS development status: " + record.status : "")
+                + (record.evidenceType.isEmpty() ? "" : "\nEvidence: " + record.evidenceType)
+                + (landAtMarker == null ? "" : "\n" + formatMineralLand(landAtMarker))
+                + "\nSource: " + (record.sourceTitle.isEmpty() ? record.sourceCode : record.sourceTitle);
         WaypointEntity waypoint = new WaypointEntity(
                 record.latitude, record.longitude, MINERAL_SOURCE_ACCURACY, now,
                 boundedText(record.name, 500), boundedText(note, 20_000), now, now);
@@ -818,7 +876,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         String sourceLine = manualCoordinate
                 ? "Source: manually entered coordinates"
                 : mineralSource
-                    ? "Source: saved USGS MRDS mineral-search point"
+                    ? "Source: saved mineral-search point"
                     : waypoint.accuracyMeters >= 0
                         ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
                         : "GPS accuracy: not reported";
@@ -876,7 +934,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setMessage("App: RockMap " + BuildConfig.VERSION_NAME + "\n\n"
                         + offlineDataManager.describeStatus()
                         + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
-                            ? "installed offline (Alpha 6.1 compact USGS MRDS index)"
+                            ? (mineralIndexRepository.hasOfficialLocalitySupplement()
+                                ? "installed offline (USGS MRDS + official CGS/USGS locality supplement)"
+                                : "installed offline (USGS MRDS; locality supplement not active)")
                             : "not installed")
                         + (mapController == null ? ""
                             : "\n\n" + mapController.describeLabelDiagnostics()
@@ -1101,8 +1161,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     @Override
-    public boolean onMapOverlayTapped(LatLng coordinate) {
-        return mineralOverlayController != null && mineralOverlayController.handleTap(coordinate);
+    public boolean onMapOverlayTapped(LatLng coordinate, List<Feature> landAtCoordinate) {
+        pendingMineralTapLand = landAtCoordinate == null
+                ? new ArrayList<>() : new ArrayList<>(landAtCoordinate);
+        try {
+            return mineralOverlayController != null && mineralOverlayController.handleTap(coordinate);
+        } finally {
+            pendingMineralTapLand = new ArrayList<>();
+        }
     }
 
     @Override

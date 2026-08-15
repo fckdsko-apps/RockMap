@@ -101,11 +101,18 @@ public final class DataManifestParser {
             require(files, "land", "pmtiles", status);
             require(files, "claims", "pmtiles", status);
         } else if (basemapTest) {
-            // Test snapshots are staged: base only -> land -> land + claims. If an overlay
-            // id is present at all, require the complete dependency chain and require it to
-            // be a required PMTiles component. This prevents a malformed claims-test manifest
-            // from activating claims without the land snapshot it was built against.
-            if (hasId(files, "claims")) {
+            // Test snapshots are staged and cumulative. New research indexes may only activate
+            // on top of the exact earlier land/claims/mineral chain they were built against.
+            if (hasId(files, "mineral_localities")) {
+                require(files, "land", "pmtiles", status);
+                require(files, "claims", "pmtiles", status);
+                require(files, "minerals", "index", status);
+                require(files, "mineral_localities", "index", status);
+            } else if (hasId(files, "minerals")) {
+                require(files, "land", "pmtiles", status);
+                require(files, "claims", "pmtiles", status);
+                require(files, "minerals", "index", status);
+            } else if (hasId(files, "claims")) {
                 require(files, "land", "pmtiles", status);
                 require(files, "claims", "pmtiles", status);
             } else if (hasId(files, "land")) {

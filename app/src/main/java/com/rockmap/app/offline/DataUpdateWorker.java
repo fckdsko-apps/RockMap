@@ -107,7 +107,13 @@ public final class DataUpdateWorker extends Worker {
             // semantically valid-but-unrenderable new style can be rolled back on the device.
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
-                if (manifest.find("claims") != null && manifest.find("land") != null) {
+                if (manifest.find("mineral_localities") != null && manifest.find("minerals") != null) {
+                    manager.setLastUpdateStatus("Alpha 6.2 mineral-coverage test pack downloaded and activated: " + manifest.version
+                            + ". NOT VERIFIED FOR NAVIGATION; existing basemap/land/claims/MRDS files were reused and the official CGS/USGS locality supplement was added.");
+                } else if (manifest.find("minerals") != null) {
+                    manager.setLastUpdateStatus("Alpha 6.1 mineral-finder test pack downloaded and activated: " + manifest.version
+                            + ". NOT VERIFIED FOR NAVIGATION; compact USGS MRDS mineral-search data are included with the existing land/claims snapshot.");
+                } else if (manifest.find("claims") != null && manifest.find("land") != null) {
                     manager.setLastUpdateStatus("Alpha 5 mining-claims test pack downloaded and activated: " + manifest.version
                             + ". NOT VERIFIED FOR NAVIGATION; BLM Colorado SMA land status and BLM MLRS not-closed mining-claim data are included.");
                 } else if (manifest.find("land") != null) {

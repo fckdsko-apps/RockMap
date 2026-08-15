@@ -17,6 +17,7 @@ import org.maplibre.android.maps.MapLibreMap;
 import org.maplibre.android.maps.MapView;
 import org.maplibre.android.maps.Style;
 import org.maplibre.android.style.layers.CircleLayer;
+import org.maplibre.android.style.layers.FillLayer;
 import org.maplibre.android.style.layers.Layer;
 import org.maplibre.android.style.sources.GeoJsonSource;
 import org.maplibre.android.style.sources.VectorSource;
@@ -34,12 +35,14 @@ import static org.maplibre.android.style.layers.PropertyFactory.circleColor;
 import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
+import static org.maplibre.android.style.layers.PropertyFactory.fillColor;
+import static org.maplibre.android.style.layers.PropertyFactory.fillOpacity;
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
 public final class MapController {
     public interface Listener {
         void onMapSafetyState(boolean verified, String message);
-        boolean onMapOverlayTapped(LatLng coordinate);
+        boolean onMapOverlayTapped(LatLng coordinate, List<Feature> landAtCoordinate);
         void onMapFeaturesTapped(LatLng coordinate, List<Feature> land, List<Feature> claims);
     }
 
@@ -48,6 +51,7 @@ public final class MapController {
     public static final String CLAIM_SOURCE = "rockmap-claims";
     public static final String LAND_FILL = "rockmap-land-fill";
     public static final String LAND_OUTLINE = "rockmap-land-outline";
+    public static final String LAND_QUERY_LAYER = "rockmap-land-hit-test";
     public static final String CLAIM_FILL = "rockmap-claim-fill";
     public static final String CLAIM_OUTLINE = "rockmap-claim-outline";
     public static final String CURRENT_SOURCE = "rockmap-current-location-source";
@@ -431,6 +435,19 @@ public final class MapController {
                     circleStrokeWidth(3f));
             style.addLayer(current);
         }
+        // Keep a nearly invisible land-status hit-test layer independent of the visual land toggle.
+        // It lets a mineral marker report mapped management at its coordinate even when the user
+        // has hidden the colored land layer. This remains management/status mapping, not parcel data.
+        if (landStatusAvailable && style.getSource(LAND_SOURCE) != null && style.getLayer(LAND_QUERY_LAYER) == null) {
+            FillLayer landHitTest = new FillLayer(LAND_QUERY_LAYER, LAND_SOURCE);
+            landHitTest.setSourceLayer("land");
+            landHitTest.setMinZoom(5f);
+            landHitTest.setProperties(
+                    fillColor(Color.WHITE),
+                    fillOpacity(0.001f));
+            style.addLayer(landHitTest);
+        }
+
         if (style.getSource(WAYPOINT_SOURCE) == null) style.addSource(new GeoJsonSource(WAYPOINT_SOURCE, emptyCollection()));
         if (style.getLayer(WAYPOINT_LAYER) == null) {
             CircleLayer saved = new CircleLayer(WAYPOINT_LAYER, WAYPOINT_SOURCE);
@@ -506,9 +523,11 @@ public final class MapController {
 
     private boolean handleTap(LatLng coordinate) {
         if (map == null || style == null) return false;
-        if (listener.onMapOverlayTapped(coordinate)) return true;
-        if (!landStatusAvailable && !claimsAvailable) return false;
         PointF point = map.getProjection().toScreenLocation(coordinate);
+        List<Feature> overlayLand = landStatusAvailable
+                ? dedupe(query(point, LAND_QUERY_LAYER), "manager_name", "manager_code") : new ArrayList<>();
+        if (listener.onMapOverlayTapped(coordinate, overlayLand)) return true;
+        if (!landStatusAvailable && !claimsAvailable) return false;
         List<Feature> land = (landStatusAvailable && landVisible)
                 ? dedupe(query(point, LAND_FILL), "manager_name", "manager_code") : new ArrayList<>();
         List<Feature> claims = (claimsAvailable && claimsVisible)

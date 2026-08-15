@@ -196,3 +196,13 @@ Alpha 3.1 also includes schema-tolerant fallback symbol layers `rockmap-label-pl
 ## Alpha 5 test release
 
 The Alpha 5 APK points to immutable prerelease `rockmap-claims-alpha5-20260815-test1`. That manifest remains `basemap_test`, copies the exact Alpha 4 style/base/land entries, and adds only the claims PMTiles. The normal claim display uses a single magenta treatment so it cannot be confused with land-status ownership/management colors; claim type and disposition are reported on tap.
+
+## Alpha 6.1 / 6.2 mineral-search indexes
+
+Alpha 6.1 adds required index id `minerals`, a gzip JSON schema-1 compact USGS MRDS search index. Alpha 6.2 reuses that exact immutable file and adds required index id `mineral_localities`, a separate tiny reviewed official CGS/USGS locality supplement. Both use kind `index` and `.json.gz` filenames.
+
+Alpha 6.2 manifests must contain the cumulative required chain `style`, `base`, `land`, `claims`, `minerals`, `mineral_localities`. The first five entries must be byte-for-byte manifest entries copied from the immutable Alpha 6.1 baseline; only `mineral_localities` is new.
+
+Locality records carry source/evidence/precision metadata and are area reference points, not specimen pockets. Mineral-search results do not establish ownership, access, claim status, or collecting legality.
+
+The runtime land hit-test layer `rockmap-land-hit-test` is an informational query layer over `rockmap-land`. It remains queryable when the colored land-status display is hidden so a tapped mineral point can report mapped manager code (for example `PRI`, `BLM`, `USFS`, or `NPS`). It does not change the legal meaning or precision of the BLM SMA land dataset.

@@ -60,6 +60,10 @@ required_files = [
     "scripts/fetch_usgs_mrds_minerals.py",
     "scripts/create_mineral_test_manifest.py",
     "docs/ALPHA6_1_MINERAL_FINDER.md",
+    "data/official-mineral-localities-alpha6-2.json",
+    "scripts/build_official_mineral_localities.py",
+    "scripts/create_mineral_coverage_test_manifest.py",
+    "docs/ALPHA6_2_MINERAL_COVERAGE.md",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -404,12 +408,15 @@ for required_claim_validator in (
 
 manifest_parser_text = read("app/src/main/java/com/rockmap/app/offline/DataManifestParser.java")
 for required_parser_guard in (
-    'if (hasId(files, "claims"))',
+    'if (hasId(files, "mineral_localities"))',
+    'else if (hasId(files, "minerals"))',
     'require(files, "land", "pmtiles", status);',
     'require(files, "claims", "pmtiles", status);',
+    'require(files, "minerals", "index", status);',
+    'require(files, "mineral_localities", "index", status);',
 ):
     if required_parser_guard not in manifest_parser_text:
-        err(f"Alpha 5 manifest parser is missing staged-overlay dependency guard: {required_parser_guard}")
+        err(f"Alpha 6.2 manifest parser is missing cumulative dependency guard: {required_parser_guard}")
 
 # The repository placeholder manifest remains unpublished. Alpha 5 points the APK updater
 # at a separate land-test release whose manifest reuses the immutable Alpha 2 base/style.
@@ -442,10 +449,10 @@ if "targetSdk 36" not in all_gradle:
     err("targetSdk 36 unexpectedly changed.")
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
-if "rockmap-minerals-alpha6-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 6.1 APK must point only to the immutable Alpha 6.1 mineral-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.1.2" not in read("gradle.properties"):
-    err("Alpha 6.1.2 version name is not pinned in gradle.properties.")
+if "rockmap-minerals-alpha6-2-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
+    err("Alpha 6.2 APK must point only to the immutable Alpha 6.2 cumulative mineral-coverage release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.2" not in read("gradle.properties"):
+    err("Alpha 6.2 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -477,8 +484,8 @@ if "@Override public void onLowMemory()" not in java_text:
 
 if java_text.count("setId(View.generateViewId())") < 2 or "scope.check(allColorado.getId())" not in java_text:
     err("Alpha 6.1.2 mineral search area choices must be one mutually-exclusive RadioGroup selection.")
-if "listener.onMapOverlayTapped(coordinate)" not in java_text or "listener.onMineralTapped(hit)" not in java_text:
-    err("Alpha 6.1.2 mineral map taps must route through the rich MRDS marker-detail path before generic location info.")
+if "listener.onMapOverlayTapped(coordinate, overlayLand)" not in java_text or "listener.onMineralTapped(hit)" not in java_text:
+    err("Alpha 6.2 mineral map taps must route rich mineral details with land context before generic location info.")
 
 for required_source in (
     "pmtiles://",
@@ -530,7 +537,7 @@ for required_source in (
     "MineralIndexRepository",
     "MineralOverlayController",
     "rockmap-mineral-search-layer",
-    "Source: saved USGS MRDS mineral-search point",
+    "Source: saved mineral-search point",
     "withCluster(true)",
     "Current map area",
     "Mineral results — ",
@@ -545,6 +552,13 @@ for required_source in (
     "All recorded minerals/materials: ",
     "Source: USGS Mineral Resources Data System (MRDS)",
     "Reliability: Documented mineral and geologic records; location precision and historical mine information may vary.",
+    "Source: Colorado Geological Survey (CGS)",
+    "Source: U.S. Geological Survey publication",
+    "Land: Unknown — no mapped management feature at this point.",
+    "LAND_QUERY_LAYER",
+    "rockmap-land-hit-test",
+    "mineral_localities",
+    "hasOfficialLocalitySupplement",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -578,6 +592,70 @@ for required in (
 ):
     if required not in fetch_minerals:
         err(f"Alpha 6.1 compact MRDS builder missing expected contract text: {required}")
+
+# Alpha 6.2 keeps the MRDS file immutable and adds only a tiny reviewed official-source
+# locality index for high-value gemstone gaps. The repository source is intentionally small
+# enough to audit by eye and fail closed on any source/domain/coordinate drift.
+try:
+    locality_source = json.loads(read("data/official-mineral-localities-alpha6-2.json"))
+    locality_records = locality_source.get("records", [])
+    expected_locality_ids = {
+        "cgs-mt-antero-aquamarine",
+        "cgs-mt-white-aquamarine",
+        "usgs-crystal-peak-amazonite",
+    }
+    ids = {str(item.get("id", "")) for item in locality_records if isinstance(item, dict)}
+    if locality_source.get("schema") != 1 or ids != expected_locality_ids or len(locality_records) != 3:
+        err(f"Alpha 6.2 reviewed locality set changed unexpectedly: {sorted(ids)}")
+    allowed_hosts = {"coloradogeologicalsurvey.org", "www.usgs.gov"}
+    from urllib.parse import urlparse
+    for item in locality_records:
+        if not isinstance(item, dict):
+            err("Alpha 6.2 locality entry is not an object.")
+            continue
+        try:
+            lat, lon = float(item["lat"]), float(item["lon"])
+        except Exception:
+            err(f"Alpha 6.2 locality has invalid coordinates: {item.get('id')}")
+            continue
+        if not (36.9924 <= lat <= 41.0034 and -109.0603 <= lon <= -102.0415):
+            err(f"Alpha 6.2 locality lies outside the Colorado envelope: {item.get('id')}")
+        if not item.get("materials") or not item.get("source_code") or not item.get("evidence_type") or not item.get("location_precision"):
+            err(f"Alpha 6.2 locality is missing search/provenance fields: {item.get('id')}")
+        for key in ("source_url", "coordinate_source_url"):
+            parsed = urlparse(str(item.get(key, "")))
+            if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
+                err(f"Alpha 6.2 locality uses an unapproved source URL: {item.get('id')} {key}")
+except Exception as exc:
+    err(f"Alpha 6.2 locality source is invalid: {exc}")
+
+locality_builder_text = read("scripts/build_official_mineral_localities.py")
+for required in ("EXPECTED_IDS", "ALLOWED_SOURCE_HOSTS", "precision_note", "gzip.GzipFile", "mtime=0"):
+    if required not in locality_builder_text:
+        err(f"Alpha 6.2 locality builder is missing fail-closed behavior: {required}")
+
+coverage_manifest_text = read("scripts/create_mineral_coverage_test_manifest.py")
+for required in (
+    'expected = {"style", "base", "land", "claims", "minerals"}',
+    '"id": "mineral_localities"',
+    'by_id["minerals"]',
+    '"status"] = "basemap_test"',
+):
+    if required not in coverage_manifest_text:
+        err(f"Alpha 6.2 manifest builder is missing immutable Alpha 6.1 baseline behavior: {required}")
+
+alpha62_doc = read("docs/ALPHA6_2_MINERAL_COVERAGE.md")
+for required in (
+    "Mount Antero Aquamarine Locality",
+    "Mount White Aquamarine Locality",
+    "Crystal Peak–Lake George Amazonite Locality",
+    "mineral_localities",
+    "Land: BLM",
+    "not a parcel survey or legal boundary",
+    "Do not uninstall",
+):
+    if required not in alpha62_doc:
+        err(f"Alpha 6.2 mineral-coverage documentation missing required term: {required}")
 
 if "labels are not included yet" in java_text:
     err("Alpha 5 source still reports the already-proven labels as absent.")
@@ -707,4 +785,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.1.2 mineral-finder UI source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.2 mineral-coverage source preflight passed ({file_count} files checked).")

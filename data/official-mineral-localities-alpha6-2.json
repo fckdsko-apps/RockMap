@@ -1,0 +1,63 @@
+{
+  "schema": 1,
+  "purpose": "Small official-source Colorado locality supplement for gemstones/minerals underrepresented by MRDS. Reference points represent named localities or areas, not specimen pockets.",
+  "records": [
+    {
+      "id": "cgs-mt-antero-aquamarine",
+      "name": "Mount Antero Aquamarine Locality",
+      "lat": 38.67420,
+      "lon": -106.24619,
+      "materials": ["Aquamarine", "Beryl", "Smoky Quartz", "Quartz"],
+      "commodities": [],
+      "districts": ["Mount Antero area, Chaffee County"],
+      "models": [],
+      "rocks": ["Pegmatite", "Mount Antero Granite"],
+      "source_code": "CGS_GEMSTONES",
+      "evidence_type": "Official gemstone/mineral locality",
+      "location_precision": "Named Mount Antero reference point; mineral-bearing area is broader",
+      "source_title": "Colorado Geological Survey (CGS)",
+      "source_url": "https://coloradogeologicalsurvey.org/geology/gemstones/",
+      "coordinate_source": "USGS GNIS named-feature reference point",
+      "coordinate_source_url": "https://www.usgs.gov/tools/geographic-names-information-system-gnis",
+      "source_note": "CGS documents aquamarine (blue beryl) with smoky quartz in pegmatites on Mount Antero; access can be claimed/private."
+    },
+    {
+      "id": "cgs-mt-white-aquamarine",
+      "name": "Mount White Aquamarine Locality",
+      "lat": 38.65686,
+      "lon": -106.23749,
+      "materials": ["Aquamarine", "Beryl"],
+      "commodities": [],
+      "districts": ["Mount White area, Chaffee County"],
+      "models": [],
+      "rocks": ["Pegmatite", "Granite"],
+      "source_code": "CGS_TEACHERS",
+      "evidence_type": "Official gemstone/mineral locality",
+      "location_precision": "Named Mount White reference point; mineral-bearing area is broader",
+      "source_title": "Colorado Geological Survey (CGS)",
+      "source_url": "https://coloradogeologicalsurvey.org/geology/teachers/",
+      "coordinate_source": "USGS GNIS named-feature reference point",
+      "coordinate_source_url": "https://www.usgs.gov/tools/geographic-names-information-system-gnis",
+      "source_note": "CGS identifies Mount Antero and Mount White as premier gem-quality aquamarine localities in pegmatitic granite."
+    },
+    {
+      "id": "usgs-crystal-peak-amazonite",
+      "name": "Crystal Peak–Lake George Amazonite Locality",
+      "lat": 38.99583,
+      "lon": -105.28916,
+      "materials": ["Amazonite", "Microcline", "Smoky Quartz", "Quartz"],
+      "commodities": [],
+      "districts": ["Crystal Peak area near Lake George"],
+      "models": [],
+      "rocks": ["Miarolitic Pegmatite", "Pikes Peak Batholith"],
+      "source_code": "USGS_PUB_70021621",
+      "evidence_type": "Published geologic mineral locality",
+      "location_precision": "Crystal Peak area reference point; study locality is broader",
+      "source_title": "U.S. Geological Survey publication",
+      "source_url": "https://www.usgs.gov/publications/crystal-growth-mechanisms-miarolitic-cavities-lake-george-ring-complex-and-vicinity",
+      "coordinate_source": "USGS GNIS named-feature reference point",
+      "coordinate_source_url": "https://www.usgs.gov/tools/geographic-names-information-system-gnis",
+      "source_note": "USGS describes the Crystal Peak area near Lake George as world-renowned for amazonite (microcline) and smoky quartz."
+    }
+  ]
+}

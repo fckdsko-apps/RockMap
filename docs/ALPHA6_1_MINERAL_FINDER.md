@@ -77,3 +77,7 @@ MRDS is a mineral-resource research database, not a rockhounding-permission data
 - Compact provenance text is shown in the popup: `Source: USGS Mineral Resources Data System (MRDS)` and `Reliability: Documented mineral and geologic records; location precision and historical mine information may vary.`
 - Saving from a mineral marker preserves the MRDS site name, search term, match evidence, minerals/materials, and commodities in the saved marker.
 - This remains APK-only and continues to use `rockmap-minerals-alpha6-1-20260815-test1`.
+
+## Alpha 6.2 continuation
+
+Alpha 6.2 does not replace or rebuild the Alpha 6.1 MRDS index. It reuses that immutable file and adds a separate tiny `mineral_localities` index containing a deliberately small reviewed set of official CGS/USGS locality references for high-value gemstone gaps. Search combines both indexes while preserving source/evidence labels.

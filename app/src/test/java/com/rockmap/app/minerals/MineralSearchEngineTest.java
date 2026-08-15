@@ -74,6 +74,24 @@ public class MineralSearchEngineTest {
         assertEquals("inside-parent", result.hits.get(0).record.id);
     }
 
+
+    @Test public void officialAmazoniteExactMatchPreventsParentFallback() {
+        MineralRecord exact = new MineralRecord(
+                "official-amazonite", "Crystal Peak locality", 38.99, -105.29, "", "",
+                Collections.singletonList("Amazonite"), Collections.emptyList(),
+                Collections.emptyList(), Collections.emptyList(), Collections.singletonList("Miarolitic Pegmatite"),
+                "USGS_PUB_TEST", "Published geologic mineral locality",
+                "Area reference point", "U.S. Geological Survey publication", "test");
+        MineralRecord parent = record("mrds-microcline", "Microcline occurrence",
+                Collections.singletonList("Microcline"), Collections.emptyList(), Collections.emptyList());
+        MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
+                Arrays.asList(parent, exact), "amazonite", 0);
+        assertEquals("amazonite", result.effectiveQuery);
+        assertTrue(result.aliasNote.isEmpty());
+        assertEquals(1, result.totalMatches);
+        assertEquals("official-amazonite", result.hits.get(0).record.id);
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void rejectsOneCharacterSearches() {
         MineralSearchEngine.search(Collections.emptyList(), "q", 100);
