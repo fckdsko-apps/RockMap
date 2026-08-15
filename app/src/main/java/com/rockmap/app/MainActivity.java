@@ -28,6 +28,7 @@ import androidx.lifecycle.LiveData;
 import androidx.lifecycle.Observer;
 import androidx.work.WorkInfo;
 
+import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.MapController;
 import com.rockmap.app.map.LandStatusCatalog;
@@ -62,6 +63,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int IMPORT_WAYPOINTS_REQUEST = 503;
     private static final int MAX_IMPORT_BYTES = 5_000_000;
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
+    private static final float MANUAL_COORDINATE_ACCURACY = -2f;
 
     private MapView mapView;
     private MapController mapController;
@@ -107,6 +109,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         controls.setBackgroundColor(Color.argb(235, 255, 255, 255));
         addControl(controls, "Locate", v -> locate());
         addControl(controls, "Save", v -> saveLocation());
+        addControl(controls, "Search", v -> showCoordinateSearch());
         addControl(controls, "Layers", v -> showLayers());
         addControl(controls, "Saved", v -> showSaved());
         addControl(controls, "Data", v -> showData());
@@ -140,9 +143,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
+        button.setTextSize(11.5f);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(2), 0, dp(2), 0);
         button.setOnClickListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        params.setMargins(dp(2), 0, dp(2), 0);
+        params.setMargins(dp(1), 0, dp(1), 0);
         row.addView(button, params);
     }
 
@@ -157,6 +164,102 @@ public final class MainActivity extends Activity implements LocationRepository.L
             mapController.updateCurrentLocation(location);
             mapController.centerOn(location);
         }, this::showMessage);
+    }
+
+    private void showCoordinateSearch() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView help = new TextView(this);
+        help.setText("Enter latitude first, then longitude. This works offline.\n\nExamples:\n39.290719, -106.212474\n39°17'26.6\"N 106°12'44.9\"W\n39°17.443′ N, 106°12.748′ W");
+        help.setTextSize(13f);
+        help.setTextColor(Color.rgb(65, 65, 65));
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+
+        EditText input = new EditText(this);
+        input.setHint("Latitude, longitude");
+        input.setSingleLine(true);
+        box.addView(input);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Search coordinates")
+                .setView(box)
+                .setPositiveButton("Find", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                try {
+                    CoordinateParser.Result result = CoordinateParser.parse(input.getText().toString());
+                    dialog.dismiss();
+                    showCoordinateResult(result);
+                } catch (IllegalArgumentException ex) {
+                    input.setError(ex.getMessage());
+                }
+            });
+        });
+        dialog.show();
+        input.requestFocus();
+    }
+
+    private void showCoordinateResult(CoordinateParser.Result result) {
+        Location target = new Location("manual-coordinate");
+        target.setLatitude(result.latitude);
+        target.setLongitude(result.longitude);
+        mapController.centerOn(target);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Coordinate found")
+                .setMessage(result.formatDecimal()
+                        + "\n\nRockMap centered the map here. Save it to place a persistent marker with a name and notes.")
+                .setPositiveButton("Save marker", (d, w) -> showManualMarkerDialog(result))
+                .setNeutralButton("Search again", (d, w) -> showCoordinateSearch())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showManualMarkerDialog(CoordinateParser.Result result) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView coordinate = new TextView(this);
+        coordinate.setText(result.formatDecimal());
+        coordinate.setTextSize(13f);
+        coordinate.setPadding(0, 0, 0, dp(6));
+        box.addView(coordinate);
+
+        EditText name = new EditText(this);
+        name.setHint("Marker name");
+        box.addView(name);
+
+        EditText notes = new EditText(this);
+        notes.setHint("Notes (optional)");
+        notes.setMinLines(3);
+        box.addView(notes);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Save coordinate marker")
+                .setView(box)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    long now = System.currentTimeMillis();
+                    String label = boundedText(name.getText().toString().trim(), 500);
+                    if (label.isEmpty()) label = "Coordinate marker";
+                    String noteText = boundedText(notes.getText().toString().trim(), 20_000);
+                    WaypointEntity waypoint = new WaypointEntity(
+                            result.latitude, result.longitude, MANUAL_COORDINATE_ACCURACY, now,
+                            label, noteText, now, now);
+                    waypointRepository.insert(waypoint, () -> {
+                        refreshWaypoints();
+                        showMessage(mapController.isWaypointsVisible()
+                                ? "Coordinate marker saved."
+                                : "Coordinate marker saved. Turn on Saved locations in Layers to see it.");
+                    });
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void saveLocation() {
@@ -374,11 +477,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showWaypoint(WaypointEntity waypoint) {
-        String accuracy = waypoint.accuracyMeters >= 0
-                ? String.format(Locale.US, "±%.1f m", waypoint.accuracyMeters) : "not reported";
+        boolean manualCoordinate = waypoint.accuracyMeters == MANUAL_COORDINATE_ACCURACY;
+        String sourceLine = manualCoordinate
+                ? "Source: manually entered coordinates"
+                : waypoint.accuracyMeters >= 0
+                    ? String.format(Locale.US, "Reported GPS accuracy: ±%.1f m", waypoint.accuracyMeters)
+                    : "GPS accuracy: not reported";
+        String timeLabel = manualCoordinate ? "Saved" : "Captured";
         String body = String.format(Locale.US,
-                "%.6f, %.6f\nAccuracy when saved: %s\nCaptured: %s%s",
-                waypoint.latitude, waypoint.longitude, accuracy,
+                "%.6f, %.6f\n%s\n%s: %s%s",
+                waypoint.latitude, waypoint.longitude, sourceLine, timeLabel,
                 DateFormat.getDateTimeInstance().format(new Date(waypoint.capturedAt)),
                 waypoint.notes == null || waypoint.notes.trim().isEmpty() ? "" : "\n\n" + waypoint.notes);
         new AlertDialog.Builder(this)
@@ -553,7 +661,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 String name = props == null ? "Imported location" : props.optString("name", "Imported location");
                 String notes = props == null ? "" : props.optString("notes", "");
                 float accuracy = props == null ? -1f : (float) props.optDouble("accuracyMeters", -1d);
-                if (!Float.isFinite(accuracy) || accuracy < 0f) accuracy = -1f;
+                if (!Float.isFinite(accuracy)
+                        || (accuracy < 0f && accuracy != MANUAL_COORDINATE_ACCURACY)) accuracy = -1f;
                 long capturedAt = props == null ? now : props.optLong("capturedAt", now);
                 long createdAt = props == null ? now : props.optLong("createdAt", now);
                 long updatedAt = props == null ? now : props.optLong("updatedAt", now);

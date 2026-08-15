@@ -50,6 +50,8 @@ required_files = [
     "scripts/validate_claims_metadata.py",
     "signing-certificate.sha256",
     "app/src/test/java/com/rockmap/app/offline/DataValidatorsTest.java",
+    "app/src/main/java/com/rockmap/app/coordinates/CoordinateParser.java",
+    "app/src/test/java/com/rockmap/app/coordinates/CoordinateParserTest.java",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -434,8 +436,8 @@ if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-claims-alpha5-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
     err("Alpha 5 APK must point only to the immutable Alpha 5 claims-test release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha5.1" not in read("gradle.properties"):
-    err("Alpha 5.1 version name is not pinned in gradle.properties.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.0" not in read("gradle.properties"):
+    err("Alpha 6.0 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -503,6 +505,11 @@ for required_source in (
     "TEST DATA — NOT VERIFIED FOR NAVIGATION",
     "compactClaimQuality",
     "Mapping: ",
+    "CoordinateParser",
+    "addControl(controls, \"Search\"",
+    "Save coordinate marker",
+    "MANUAL_COORDINATE_ACCURACY",
+    "Source: manually entered coordinates",
 ):
     if required_source not in java_text:
         err(f"Offline/safety implementation is missing: {required_source}")
@@ -634,4 +641,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 5 mining-claims source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.0 coordinate-search source preflight passed ({file_count} files checked).")
