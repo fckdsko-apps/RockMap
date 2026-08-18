@@ -44,6 +44,16 @@ public final class MineralIndexRepository {
         void onError(String message);
     }
 
+    public interface AreaAnalysisCallback {
+        void onResult(MineralAreaAnalyzer.AnalysisResult result);
+        void onError(String message);
+    }
+
+    public interface AreaEvidenceCallback {
+        void onResult(List<MineralAreaAnalyzer.EvidencePoint> evidence);
+        void onError(String message);
+    }
+
     private final OfflineDataManager dataManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private volatile List<MineralRecord> cachedRecords;
@@ -105,6 +115,35 @@ public final class MineralIndexRepository {
                 mainHandler.post(() -> callback.onError("Mineral search failed safely."));
             }
         }, "rockmap-mineral-search").start();
+    }
+
+    public void analyzeArea(MineralSearchEngine.Bounds bounds, AreaAnalysisCallback callback) {
+        new Thread(() -> {
+            try {
+                MineralAreaAnalyzer.AnalysisResult result =
+                        MineralAreaAnalyzer.analyze(loadRecords(), bounds);
+                mainHandler.post(() -> callback.onResult(result));
+            } catch (IllegalArgumentException | IOException | JSONException ex) {
+                mainHandler.post(() -> callback.onError(ex.getMessage()));
+            } catch (RuntimeException ex) {
+                mainHandler.post(() -> callback.onError("Selected-area mineral analysis failed safely."));
+            }
+        }, "rockmap-mineral-area-analysis").start();
+    }
+
+    public void loadAreaEvidence(MineralSearchEngine.Bounds bounds, String mineralKey,
+                                 AreaEvidenceCallback callback) {
+        new Thread(() -> {
+            try {
+                List<MineralAreaAnalyzer.EvidencePoint> evidence =
+                        MineralAreaAnalyzer.evidenceFor(loadRecords(), bounds, mineralKey);
+                mainHandler.post(() -> callback.onResult(evidence));
+            } catch (IllegalArgumentException | IOException | JSONException ex) {
+                mainHandler.post(() -> callback.onError(ex.getMessage()));
+            } catch (RuntimeException ex) {
+                mainHandler.post(() -> callback.onError("Mineral heatmap evidence lookup failed safely."));
+            }
+        }, "rockmap-mineral-area-heatmap").start();
     }
 
     public void loadHistoricMines(RecordListCallback callback) {
@@ -204,7 +243,6 @@ public final class MineralIndexRepository {
                     item.optString("source_note", "")));
         }
     }
-
 
     private static String compactSourceTitle(String sourceCode, String fallback) {
         String code = sourceCode == null ? "" : sourceCode.trim().toUpperCase(java.util.Locale.US);
