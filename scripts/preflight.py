@@ -494,7 +494,7 @@ if "@Override public void onLowMemory()" not in java_text:
 
 if java_text.count("setId(View.generateViewId())") < 2 or "scope.check(allColorado.getId())" not in java_text:
     err("Alpha 6.1.2 mineral search area choices must be one mutually-exclusive RadioGroup selection.")
-if "listener.onMapOverlayTapped(coordinate, overlayLand)" not in java_text or "listener.onMineralTapped(hit)" not in java_text:
+if "listener.onMapOverlayTapped(coordinate, overlayLand)" not in java_text or ("listener.onMineralTapped(hit)" not in java_text and "listener.onMineralTapped(hit," not in java_text):
     err("Alpha 6.2 mineral map taps must route rich mineral details with land context before generic location info.")
 if "listener.onWaypointTapped(waypoint)" not in java_text or "findRenderedWaypoint" not in java_text:
     err("Alpha 6.2.1 saved red markers must be hit-tested and reopen saved rich details before generic map info.")
