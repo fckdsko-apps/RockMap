@@ -2,7 +2,7 @@
 """Generate RockMap's Alpha 6.6 offline Find index during the normal Gradle build.
 
 This runs from the normal Gradle build and derives a compact search index
-from RockMap's own immutable Colorado PMTiles basemap by range-extracting only zoom 9-11,
+from RockMap's own immutable Colorado PMTiles basemap by range-extracting only zoom 9-12,
 decoding named features, and passing them to build_place_index.py.
 """
 from __future__ import annotations
@@ -25,8 +25,8 @@ BASE_RELEASE_TAG = "rockmap-basemap-alpha2-20260722-z14"
 BASE_NAME = "colorado-base-protomaps-20260722-z14.pmtiles"
 COLORADO_BBOX = "-109.10,36.95,-102.00,41.05"
 SEARCH_MINZOOM = 9
-SEARCH_MAXZOOM = 11
-MAX_SUBSET_BYTES = 80_000_000
+SEARCH_MAXZOOM = 12
+MAX_SUBSET_BYTES = 120_000_000
 MIN_INDEX_BYTES = 10_000
 MAX_INDEX_BYTES = 12 * 1024 * 1024
 
