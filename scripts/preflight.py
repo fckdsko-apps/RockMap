@@ -72,6 +72,14 @@ required_files = [
     "app/src/main/java/com/rockmap/app/mines/HistoricMineOverlayController.java",
     "app/src/test/java/com/rockmap/app/mines/HistoricMineCatalogTest.java",
     "docs/ALPHA6_3_HISTORIC_MINES.md",
+    "app/src/main/java/com/rockmap/app/places/PlaceRecord.java",
+    "app/src/main/java/com/rockmap/app/places/PlaceSearchEngine.java",
+    "app/src/main/java/com/rockmap/app/places/PlaceIndexRepository.java",
+    "app/src/test/java/com/rockmap/app/places/PlaceSearchEngineTest.java",
+    "scripts/build_place_index.py",
+    "scripts/prepare_place_index.py",
+    "docs/ALPHA6_6_OFFLINE_PLACE_SEARCH.md",
+    "app/src/main/assets/rockmap-place-index-NOTICE.txt",
 ]
 for rel in required_files:
     if not (ROOT / rel).is_file():
@@ -460,9 +468,9 @@ if "targetSdk 36" not in all_gradle:
 if "minSdk 26" not in all_gradle:
     err("minSdk 26 unexpectedly changed.")
 if "rockmap-minerals-alpha6-2-1-20260815-test1" not in all_gradle or "/releases/download/" not in all_gradle:
-    err("Alpha 6.3 APK must reuse only the immutable Alpha 6.2.1 cumulative mineral-evidence release manifest.")
-if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.3" not in read("gradle.properties"):
-    err("Alpha 6.3 version name is not pinned in gradle.properties.")
+    err("Alpha 6.6 APK must reuse only the immutable Alpha 6.2.1 cumulative mineral-evidence release manifest.")
+if "ROCKMAP_VERSION_NAME=0.1.0-alpha6.6" not in read("gradle.properties"):
+    err("Alpha 6.6 version name is not pinned in gradle.properties.")
 if re.search(r"(?:implementation|annotationProcessor|testImplementation)\s+['\"][^'\"]*\+", all_gradle):
     err("Dynamic dependency version detected.")
 for required_gradle in (
@@ -471,10 +479,31 @@ for required_gradle in (
     "tasks.register('prepareOfflineGlyphs', Exec)",
     "scripts/prepare_offline_glyphs.py",
     "dependsOn tasks.named('prepareOfflineGlyphs')",
+    "generatedOfflinePlaceAssetsDir",
+    "assets.srcDir generatedOfflinePlaceAssetsDir",
+    "offlinePlaceIndexFile",
+    "tasks.register('prepareOfflinePlaceIndex', Exec)",
+    "scripts/prepare_place_index.py",
+    "tasks.register('verifyOfflinePlaceIndex')",
+    "dependsOn tasks.named('prepareOfflinePlaceIndex')",
+    "dependsOn tasks.named('verifyOfflinePlaceIndex')",
 ):
     if required_gradle not in all_gradle:
-        err(f"Alpha 5 must retain the proven Alpha 3.1 generated offline text wiring: {required_gradle}")
+        err(f"Alpha 6.6 must retain the proven generated offline asset wiring: {required_gradle}")
 
+prepare_place_text = read("scripts/prepare_place_index.py")
+for required_place_prepare in (
+    'BASE_RELEASE_TAG = "rockmap-basemap-alpha2-20260722-z14"',
+    'BASE_NAME = "colorado-base-protomaps-20260722-z14.pmtiles"',
+    'SEARCH_MINZOOM = 9',
+    'SEARCH_MAXZOOM = 11',
+    'MAX_SUBSET_BYTES = 80_000_000',
+    'PMTILES_ARCHIVE_SHA256',
+    'TIPPECANOE_COMMIT',
+    'fckdsko-apps/RockMap',
+):
+    if required_place_prepare not in prepare_place_text:
+        err(f"Alpha 6.6 Gradle-side PMTiles index preparation is missing: {required_place_prepare}")
 # Java/source guardrails.
 java_files = list((ROOT / "app/src/main/java").rglob("*.java"))
 if not java_files:
@@ -546,7 +575,13 @@ for required_source in (
     "CoordinateParser",
     "addControl(controls, \"GPS\"",
     "addControl(controls, \"Save GPS\"",
-    "addControl(controls, \"Coords\"",
+    "addControl(controls, \"Find\"",
+    "PlaceIndexRepository",
+    "PlaceSearchEngine",
+    "rockmap_place_index.tsv.gz",
+    "PLACE_SEARCH_LAYER",
+    "showFindSearch",
+    "setMinZoom(6.5f)",
     "addControl(controls, \"Minerals\"",
     "addControl(controls, \"Markers\"",
     "Save coordinate marker",
@@ -888,4 +923,4 @@ if errors:
         print(" -", item)
     sys.exit(1)
 
-print(f"RockMap Alpha 6.3 historic-mine overlay source preflight passed ({file_count} files checked).")
+print(f"RockMap Alpha 6.6 offline place-search source preflight passed ({file_count} files checked).")

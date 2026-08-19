@@ -1,0 +1,16 @@
+RockMap offline basemap search index
+
+The generated search index is derived exclusively from the immutable Colorado PMTiles
+basemap already used by RockMap:
+
+  release: rockmap-basemap-alpha2-20260722-z14
+  asset:   colorado-base-protomaps-20260722-z14.pmtiles
+
+That basemap was built from Protomaps/OpenStreetMap data. Basemap attribution remains:
+Protomaps © OpenStreetMap contributors. OpenStreetMap data is available under the Open
+Database License (ODbL): https://www.openstreetmap.org/copyright
+
+The generated rockmap_place_index.tsv.gz is a compact derivative search index containing
+only names, feature classes, representative coordinates, aliases, and ranking/context
+fields already present in RockMap's basemap overview tiles. No second statewide geocoder
+or separate Colorado map dataset is bundled. The generated binary is created by the normal Gradle build and is not tracked in the source patch.

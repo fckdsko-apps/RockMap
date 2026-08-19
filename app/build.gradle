@@ -2,17 +2,20 @@ plugins {
     id 'com.android.application'
 }
 
-def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.5')
+def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.6')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
-// Alpha 6.5 adds APK-side selected-area mineral inventories and source-weighted evidence
-// heatmaps. It deliberately reuses the verified immutable Alpha 6.2.1 data release.
+// Alpha 6.6 adds a compact APK-bundled search index derived from the same immutable
+// Colorado PMTiles basemap RockMap already renders. It deliberately reuses the verified
+// immutable Alpha 6.2.1 map/mineral data release and does not add a second map dataset.
 def dataReleaseTag = 'rockmap-minerals-alpha6-2-1-20260815-test1'
 def manifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/releases/download/${dataReleaseTag}/manifest.json" : ''
 def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
 def signingProps = new Properties()
 def signingReady = false
 def generatedOfflineGlyphAssetsDir = layout.buildDirectory.dir('generated/rockmapOfflineGlyphAssets').get().asFile
+def generatedOfflinePlaceAssetsDir = layout.buildDirectory.dir('generated/rockmapOfflinePlaceAssets').get().asFile
+def offlinePlaceIndexFile = new File(generatedOfflinePlaceAssetsDir, 'rockmap_place_index.tsv.gz')
 
 if (signingDirPath) {
     def signingPropsFile = file("${signingDirPath}/signing.properties")
@@ -46,6 +49,7 @@ android {
     sourceSets {
         main {
             assets.srcDir generatedOfflineGlyphAssetsDir
+            assets.srcDir generatedOfflinePlaceAssetsDir
         }
     }
 
@@ -96,7 +100,7 @@ dependencies {
 }
 
 tasks.register('prepareOfflineGlyphs', Exec) {
-    description = 'Fetch and verify pinned offline glyph/font assets retained for Alpha 6.5.'
+    description = 'Fetch and verify pinned offline glyph/font assets retained for Alpha 6.6.'
     group = 'build setup'
     inputs.file(rootProject.file('scripts/prepare_offline_glyphs.py'))
     outputs.dir(generatedOfflineGlyphAssetsDir)
@@ -104,6 +108,33 @@ tasks.register('prepareOfflineGlyphs', Exec) {
             '--output', generatedOfflineGlyphAssetsDir.absolutePath
 }
 
+tasks.register('prepareOfflinePlaceIndex', Exec) {
+    description = 'Derive the Alpha 6.6 offline Find index from RockMap's existing Colorado PMTiles.'
+    group = 'build setup'
+    inputs.files(
+            rootProject.file('scripts/prepare_place_index.py'),
+            rootProject.file('scripts/build_place_index.py'))
+    outputs.file(offlinePlaceIndexFile)
+    commandLine 'python3', rootProject.file('scripts/prepare_place_index.py').absolutePath,
+            '--output-dir', generatedOfflinePlaceAssetsDir.absolutePath
+}
+
+tasks.register('verifyOfflinePlaceIndex') {
+    description = 'Fail closed if the generated Alpha 6.6 offline Find index is missing or unreasonable.'
+    group = 'verification'
+    dependsOn tasks.named('prepareOfflinePlaceIndex')
+    doLast {
+        if (!offlinePlaceIndexFile.isFile()) {
+            throw new GradleException('Missing generated Alpha 6.6 offline basemap search index.')
+        }
+        long bytes = offlinePlaceIndexFile.length()
+        if (bytes < 10_000L || bytes > 12L * 1024L * 1024L) {
+            throw new GradleException("Alpha 6.6 offline place index has unsafe/unexpected size: ${bytes} bytes")
+        }
+    }
+}
+
 tasks.named('preBuild').configure {
     dependsOn tasks.named('prepareOfflineGlyphs')
+    dependsOn tasks.named('verifyOfflinePlaceIndex')
 }

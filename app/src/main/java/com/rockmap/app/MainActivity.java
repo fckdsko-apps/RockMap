@@ -47,6 +47,9 @@ import com.rockmap.app.minerals.MineralOverlayController;
 import com.rockmap.app.minerals.MineralRecord;
 import com.rockmap.app.minerals.MineralSearchEngine;
 import com.rockmap.app.offline.OfflineDataManager;
+import com.rockmap.app.places.PlaceIndexRepository;
+import com.rockmap.app.places.PlaceRecord;
+import com.rockmap.app.places.PlaceSearchEngine;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
@@ -54,9 +57,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.maplibre.android.MapLibre;
+import org.maplibre.android.camera.CameraUpdateFactory;
 import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.maps.MapView;
 import org.maplibre.android.style.layers.Layer;
+import org.maplibre.android.style.layers.CircleLayer;
+import org.maplibre.android.style.sources.GeoJsonSource;
 import org.maplibre.geojson.Feature;
 
 import java.io.ByteArrayOutputStream;
@@ -82,17 +88,22 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int MINERAL_LIST_PAGE = 100;
     private static final double HISTORIC_MINE_NEARBY_METERS = 100.0;
     private static final int HISTORIC_MINE_NEARBY_LIMIT = 8;
+    private static final String PLACE_SEARCH_SOURCE = "rockmap-place-search-source";
+    private static final String PLACE_SEARCH_LAYER = "rockmap-place-search-layer";
+    private static final int PLACE_SEARCH_LIMIT = 30;
 
     private MapView mapView;
     private MapController mapController;
     private LocationRepository locationRepository;
     private WaypointRepository waypointRepository;
     private OfflineDataManager offlineDataManager;
+    private PlaceIndexRepository placeIndexRepository;
     private MineralIndexRepository mineralIndexRepository;
     private MineralOverlayController mineralOverlayController;
     private HistoricMineOverlayController historicMineOverlayController;
     private MineralSearchEngine.SearchResult activeMineralSearchResult;
     private MineralAreaAnalyzer.AnalysisResult activeMineralAreaAnalysis;
+    private PlaceRecord activePlaceTarget;
     private List<Feature> pendingOverlayTapLand = new ArrayList<>();
     private String activeMineralScopeLabel = "All Colorado";
     private boolean historicMinesRequestedVisible;
@@ -108,6 +119,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         MapLibre.getInstance(this);
         offlineDataManager = new OfflineDataManager(this);
+        placeIndexRepository = new PlaceIndexRepository(this);
         waypointRepository = new WaypointRepository(this);
         locationRepository = new LocationRepository(this, this);
 
@@ -136,7 +148,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         controls.setBackgroundColor(Color.argb(235, 255, 255, 255));
         addControl(controls, "GPS", v -> locate());
         addControl(controls, "Save GPS", v -> saveLocation());
-        addControl(controls, "Coords", v -> showCoordinateSearch());
+        addControl(controls, "Find", v -> showFindSearch());
         addControl(controls, "Minerals", v -> showMineralSearch());
         addControl(controls, "Layers", v -> showLayers());
         addControl(controls, "Markers", v -> showSaved());
@@ -1021,6 +1033,187 @@ public final class MainActivity extends Activity implements LocationRepository.L
         });
     }
 
+    private void showFindSearch() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView help = new TextView(this);
+        help.setText("Search a compact offline index derived from RockMap’s own Colorado basemap. It covers towns/cities, prominent peaks and landmarks, lakes/reservoirs, rivers/streams, major named roads, and any trails/paths that are present in the overview map tiles. It intentionally does not index every tiny local road or trail. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, US 24. You can also enter latitude/longitude coordinates here.\n\nSource: RockMap’s Protomaps / OpenStreetMap basemap.");
+        help.setTextSize(13f);
+        help.setTextColor(Color.rgb(65, 65, 65));
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+
+        EditText input = new EditText(this);
+        input.setHint("Place, landmark, road, or coordinates");
+        input.setSingleLine(true);
+        box.addView(input);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("Find on map")
+                .setView(box)
+                .setPositiveButton("Find", null)
+                .setNegativeButton("Close", null);
+        if (activePlaceTarget != null) {
+            builder.setNeutralButton("Clear pin", (d, w) -> clearPlaceSearchTarget());
+        }
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String query = input.getText().toString().trim();
+                    if (query.length() < 2) {
+                        input.setError("Enter at least 2 characters.");
+                        return;
+                    }
+                    if (looksLikeCoordinates(query)) {
+                        try {
+                            CoordinateParser.Result result = CoordinateParser.parse(query);
+                            dialog.dismiss();
+                            clearPlaceSearchTarget();
+                            showCoordinateResult(result);
+                        } catch (IllegalArgumentException ex) {
+                            input.setError(ex.getMessage());
+                        }
+                        return;
+                    }
+
+                    Button find = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    find.setEnabled(false);
+                    find.setText("Searching…");
+                    placeIndexRepository.search(query, PLACE_SEARCH_LIMIT, new PlaceIndexRepository.Callback() {
+                        @Override public void onResult(List<PlaceSearchEngine.Match> matches) {
+                            find.setEnabled(true);
+                            find.setText("Find");
+                            dialog.dismiss();
+                            showPlaceSearchResults(query, matches);
+                        }
+
+                        @Override public void onError(String message) {
+                            find.setEnabled(true);
+                            find.setText("Find");
+                            input.setError(message == null ? "Offline place search failed." : message);
+                        }
+                    });
+                }));
+        dialog.show();
+        input.requestFocus();
+    }
+
+    private boolean looksLikeCoordinates(String raw) {
+        if (raw == null) return false;
+        String text = raw.trim();
+        if (text.contains("°") || text.contains("′") || text.contains("″")) return true;
+        if (text.matches("(?i).*[0-9]\\s*[NS]\\b.*")
+                || text.matches("(?i).*[0-9]\\s*[EW]\\b.*")) return true;
+        return text.matches("^[+-]?\\d{1,2}(?:\\.\\d+)?\\s*[, ]\\s*[+-]?\\d{1,3}(?:\\.\\d+)?$");
+    }
+
+    private void showPlaceSearchResults(String query, List<PlaceSearchEngine.Match> matches) {
+        if (matches == null || matches.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("No offline place matches")
+                    .setMessage("No indexed RockMap basemap feature matched “" + query
+                            + "”. Try fewer words, an abbreviation, or a different spelling.")
+                    .setPositiveButton("Search again", (d, w) -> showFindSearch())
+                    .setNegativeButton("Close", null)
+                    .show();
+            return;
+        }
+
+        String[] labels = new String[matches.size()];
+        for (int i = 0; i < matches.size(); i++) {
+            PlaceRecord record = matches.get(i).record;
+            labels[i] = record.name + "\n" + record.kind
+                    + (record.context.isEmpty() ? "" : " · " + record.context);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Find: " + query)
+                .setItems(labels, (dialog, which) -> showPlaceTarget(matches.get(which).record))
+                .setPositiveButton("Search again", (d, w) -> showFindSearch())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showPlaceTarget(PlaceRecord record) {
+        if (record == null) return;
+        activePlaceTarget = record;
+        renderPlaceSearchTarget(true);
+        showMessage("Showing " + record.name + " — " + record.kind + ".");
+    }
+
+    private void renderPlaceSearchTarget(boolean centerCamera) {
+        PlaceRecord record = activePlaceTarget;
+        if (record == null || mapView == null) return;
+        mapView.getMapAsync(mapLibreMap -> {
+            mapLibreMap.getStyle(loadedStyle -> {
+                String geoJson = placeTargetGeoJson(record);
+                GeoJsonSource source = loadedStyle.getSourceAs(PLACE_SEARCH_SOURCE);
+                if (source == null) {
+                    source = new GeoJsonSource(PLACE_SEARCH_SOURCE, geoJson);
+                    loadedStyle.addSource(source);
+                } else {
+                    source.setGeoJson(geoJson);
+                }
+                if (loadedStyle.getLayer(PLACE_SEARCH_LAYER) == null) {
+                    CircleLayer target = new CircleLayer(PLACE_SEARCH_LAYER, PLACE_SEARCH_SOURCE);
+                    target.setProperties(
+                            org.maplibre.android.style.layers.PropertyFactory.circleColor(Color.rgb(255, 210, 30)),
+                            org.maplibre.android.style.layers.PropertyFactory.circleRadius(9f),
+                            org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor(Color.BLACK),
+                            org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth(3f));
+                    loadedStyle.addLayer(target);
+                }
+            });
+            if (centerCamera) {
+                mapLibreMap.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                        new LatLng(record.latitude, record.longitude), placeTargetZoom(record.kind)));
+            }
+        });
+    }
+
+    private String placeTargetGeoJson(PlaceRecord record) {
+        try {
+            JSONObject geometry = new JSONObject();
+            geometry.put("type", "Point");
+            geometry.put("coordinates", new JSONArray().put(record.longitude).put(record.latitude));
+            JSONObject properties = new JSONObject();
+            properties.put("name", record.name);
+            properties.put("kind", record.kind);
+            JSONObject feature = new JSONObject();
+            feature.put("type", "Feature");
+            feature.put("geometry", geometry);
+            feature.put("properties", properties);
+            JSONObject collection = new JSONObject();
+            collection.put("type", "FeatureCollection");
+            collection.put("features", new JSONArray().put(feature));
+            return collection.toString();
+        } catch (JSONException ex) {
+            return "{\"type\":\"FeatureCollection\",\"features\":[]}";
+        }
+    }
+
+    private double placeTargetZoom(String kind) {
+        if (kind == null) return 12.0;
+        String lower = kind.toLowerCase(Locale.US);
+        if (lower.contains("city")) return 10.0;
+        if (lower.contains("town") || lower.contains("village") || lower.contains("hamlet")) return 11.0;
+        if (lower.contains("road") || lower.contains("trail") || lower.contains("route") || lower.contains("track")) return 12.0;
+        if (lower.contains("peak") || lower.contains("pass") || lower.contains("landmark")) return 12.5;
+        return 12.0;
+    }
+
+    private void clearPlaceSearchTarget() {
+        activePlaceTarget = null;
+        if (mapView == null) return;
+        mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(loadedStyle -> {
+            GeoJsonSource source = loadedStyle.getSourceAs(PLACE_SEARCH_SOURCE);
+            if (source != null) {
+                source.setGeoJson("{\"type\":\"FeatureCollection\",\"features\":[]}");
+            }
+        }));
+    }
+
     private void showCoordinateSearch() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -1068,7 +1261,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setMessage(result.formatDecimal()
                         + "\n\nRockMap centered the map here. Save it to place a persistent marker with a name and notes.")
                 .setPositiveButton("Save marker", (d, w) -> showManualMarkerDialog(result))
-                .setNeutralButton("Search again", (d, w) -> showCoordinateSearch())
+                .setNeutralButton("Find again", (d, w) -> showFindSearch())
                 .setNegativeButton("Close", null)
                 .show();
     }
@@ -1539,6 +1732,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             : "not installed")
                         + "\nArea mineral analysis: " + (mineralIndexRepository.isAvailable()
                             ? "available offline" : "unavailable — mineral index not active")
+                        + "\nOffline Find: bundled Colorado basemap search index"
+                            + (placeIndexRepository.getRecordCount() > 0
+                            ? " — " + placeIndexRepository.getRecordCount() + " records loaded"
+                            : " — loads on first search")
                         + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
                             ? (historicMineOverlayController.isLoaded()
                                 ? historicMineOverlayController.getRecordCount() + " mapped records loaded"
@@ -1785,11 +1982,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         // The bundled Protomaps style already contains named peak labels, but its inherited
         // zoom-10 floor hides useful regional landmarks such as Mount Antero. Prominent peaks
-        // are already ranked by the basemap; expose that existing offline layer from zoom 8.
+        // are already ranked by the basemap; expose that existing offline layer from zoom 6.5.
         mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(loadedStyle -> {
             Layer peakLabels = loadedStyle.getLayer(MapController.LABEL_PEAK);
-            if (peakLabels != null) peakLabels.setMinZoom(8f);
+            if (peakLabels != null) peakLabels.setMinZoom(6.5f);
         }));
+
+        if (activePlaceTarget != null) renderPlaceSearchTarget(false);
 
         if (mineralOverlayController != null) {
             mineralOverlayController.refreshStyle();
@@ -1985,6 +2184,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override protected void onDestroy() {
         clearUpdateObserver();
+        placeIndexRepository.close();
         waypointRepository.close();
         mapView.onDestroy();
         super.onDestroy();
