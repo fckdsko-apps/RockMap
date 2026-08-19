@@ -15,16 +15,21 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.zip.GZIPInputStream;
 
-/** Loads the compact search index bundled in the APK; no statewide device scan is performed. */
+/**
+ * Loads the compact search index bundled in the APK; no statewide device scan is performed.
+ *
+ * The build generator writes rockmap_place_index.tsv.gz. Android's resource packager treats
+ * .gz assets specially: it expands the gzip payload and stores it in the APK under the base
+ * filename, so the runtime asset is rockmap_place_index.tsv and is already plain UTF-8 text.
+ */
 public final class PlaceIndexRepository implements AutoCloseable {
     public interface Callback {
         void onResult(List<PlaceSearchEngine.Match> matches);
         void onError(String message);
     }
 
-    private static final String ASSET = "rockmap_place_index.tsv.gz";
+    private static final String ASSET = "rockmap_place_index.tsv";
     static final String INDEX_HEADER = "# RockMap place index v3";
     private static final int MAX_RECORDS = 100_000;
     private static final long MAX_DECOMPRESSED_CHARS = 40_000_000L;
@@ -95,9 +100,8 @@ public final class PlaceIndexRepository implements AutoCloseable {
         ArrayList<PlaceRecord> records = new ArrayList<>();
         long chars = 0L;
         try (InputStream raw = context.getAssets().open(ASSET);
-             GZIPInputStream gzip = new GZIPInputStream(raw, 64 * 1024);
              BufferedReader reader = new BufferedReader(
-                     new InputStreamReader(gzip, StandardCharsets.UTF_8), 64 * 1024)) {
+                     new InputStreamReader(raw, StandardCharsets.UTF_8), 64 * 1024)) {
             String header = reader.readLine();
             if (!INDEX_HEADER.equals(header)) {
                 throw new IOException("unsupported place-index header");
