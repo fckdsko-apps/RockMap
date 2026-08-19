@@ -109,7 +109,7 @@ tasks.register('prepareOfflineGlyphs', Exec) {
 }
 
 tasks.register('prepareOfflinePlaceIndex', Exec) {
-    description = 'Derive the Alpha 6.6 offline Find index from RockMap's existing Colorado PMTiles.'
+    description = "Derive the Alpha 6.6 offline Find index from RockMap's existing Colorado PMTiles."
     group = 'build setup'
     inputs.files(
             rootProject.file('scripts/prepare_place_index.py'),
