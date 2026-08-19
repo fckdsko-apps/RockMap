@@ -75,8 +75,10 @@ required_files = [
     "app/src/main/java/com/rockmap/app/places/PlaceRecord.java",
     "app/src/main/java/com/rockmap/app/places/PlaceSearchEngine.java",
     "app/src/main/java/com/rockmap/app/places/PlaceIndexRepository.java",
+    "app/src/main/java/com/rockmap/app/places/PlaceIndexWorker.java",
+    "app/src/main/java/com/rockmap/app/places/PmtilesPlaceIndexer.java",
     "app/src/test/java/com/rockmap/app/places/PlaceSearchEngineTest.java",
-    "scripts/build_place_index.py",
+    "app/src/test/java/com/rockmap/app/places/PmtilesPlaceIndexerTest.java",
     "scripts/prepare_place_index.py",
     "docs/ALPHA6_6_OFFLINE_PLACE_SEARCH.md",
     "app/src/main/assets/rockmap-place-index-NOTICE.txt",
@@ -479,36 +481,46 @@ for required_gradle in (
     "tasks.register('prepareOfflineGlyphs', Exec)",
     "scripts/prepare_offline_glyphs.py",
     "dependsOn tasks.named('prepareOfflineGlyphs')",
-    "generatedOfflinePlaceAssetsDir",
-    "assets.srcDir generatedOfflinePlaceAssetsDir",
-    "offlinePlaceIndexFile",
-    "tasks.register('prepareOfflinePlaceIndex', Exec)",
-    "scripts/prepare_place_index.py",
-    "tasks.register('verifyOfflinePlaceIndex')",
-    "dependsOn tasks.named('prepareOfflinePlaceIndex')",
-    "dependsOn tasks.named('verifyOfflinePlaceIndex')",
 ):
     if required_gradle not in all_gradle:
-        err(f"Alpha 6.6 must retain the proven generated offline asset wiring: {required_gradle}")
+        err(f"Alpha 6.6 must retain the proven generated offline glyph wiring: {required_gradle}")
+
+for forbidden_place_build in (
+    "generatedOfflinePlaceAssetsDir",
+    "offlinePlaceIndexFile",
+    "prepareOfflinePlaceIndex",
+    "verifyOfflinePlaceIndex",
+):
+    if forbidden_place_build in all_gradle:
+        err(f"Alpha 6.6 Find must not generate or bundle a Colorado place index during Gradle/CI: {forbidden_place_build}")
 
 prepare_place_text = read("scripts/prepare_place_index.py")
-for required_place_prepare in (
-    'BASE_RELEASE_TAG = "rockmap-basemap-alpha2-20260722-z14"',
-    'BASE_NAME = "colorado-base-protomaps-20260722-z14.pmtiles"',
-    'SEARCH_MINZOOM = 9',
-    'SEARCH_MAXZOOM = 12',
-    'MAX_SUBSET_BYTES = 120_000_000',
-    'PMTILES_ARCHIVE_SHA256',
-    'TIPPECANOE_COMMIT',
-    'fckdsko-apps/RockMap',
-):
-    if required_place_prepare not in prepare_place_text:
-        err(f"Alpha 6.6 Gradle-side PMTiles index preparation is missing: {required_place_prepare}")
+for forbidden_place_prepare in ("urllib", "subprocess", "tippecanoe", "go-pmtiles", "releases/download"):
+    if forbidden_place_prepare in prepare_place_text:
+        err(f"Legacy Alpha 6.6 place helper must remain network/build-data free: {forbidden_place_prepare}")
+if "generated on-device" not in prepare_place_text or "no network" not in prepare_place_text.lower():
+    err("Legacy Alpha 6.6 place helper must explicitly state that search is generated on-device with no network I/O.")
 # Java/source guardrails.
 java_files = list((ROOT / "app/src/main/java").rglob("*.java"))
 if not java_files:
     err("No application Java sources found.")
 java_text = "\n".join(p.read_text(encoding="utf-8") for p in java_files)
+for required_local_find in (
+    "# RockMap local place index v2",
+    "SEARCH_ZOOM = 13",
+    "SEARCH_LAYERS",
+    "PlaceIndexWorker",
+    "enqueueIfNeeded",
+    "enqueueReplacing",
+    "isCurrentIndex",
+    "RandomAccessFile",
+    "places",
+    "pois",
+    "water",
+    "Preparing offline search from the installed basemap",
+):
+    if required_local_find not in java_text:
+        err(f"Alpha 6.6 on-device PMTiles Find implementation is missing: {required_local_find}")
 for forbidden_source in (
     "fallbackToDestructiveMigration(",
     "java.nio.file.Files",

@@ -48,6 +48,7 @@ import com.rockmap.app.minerals.MineralRecord;
 import com.rockmap.app.minerals.MineralSearchEngine;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
+import com.rockmap.app.places.PlaceIndexWorker;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -1039,7 +1040,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search a compact offline index derived from RockMap’s own Colorado basemap. It covers towns/cities, prominent peaks and landmarks, lakes/reservoirs, rivers/streams, major named roads, and any trails/paths that are present in the overview map tiles. It intentionally does not index every tiny local road or trail. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, US 24. You can also enter latitude/longitude coordinates here.\n\nSource: RockMap’s Protomaps / OpenStreetMap basemap.");
+        help.setText("Search names directly from RockMap’s installed offline basemap. On a fresh install, RockMap prepares this local search index automatically from the map already on the device—no second map download or online geocoder.\n\nAlpha 6.6 indexes towns/cities/localities, peaks and selected landmarks, lakes/reservoirs, and named rivers/streams/creeks. Roads and trails still display normally on the map but are not indexed in this first local-search version. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes. You can also enter latitude/longitude coordinates here.\n\nSource: RockMap’s installed Protomaps / OpenStreetMap basemap.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -1732,10 +1733,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             : "not installed")
                         + "\nArea mineral analysis: " + (mineralIndexRepository.isAvailable()
                             ? "available offline" : "unavailable — mineral index not active")
-                        + "\nOffline Find: bundled Colorado basemap search index"
+                        + "\nOffline Find: local index from installed basemap"
                             + (placeIndexRepository.getRecordCount() > 0
                             ? " — " + placeIndexRepository.getRecordCount() + " records loaded"
-                            : " — loads on first search")
+                            : placeIndexRepository.isReady()
+                                ? " — ready; loads when searched"
+                                : " — preparing automatically in the background")
                         + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
                             ? (historicMineOverlayController.isLoaded()
                                 ? historicMineOverlayController.getRecordCount() + " mapped records loaded"
@@ -1771,8 +1774,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     historicMineOverlayController.clear();
                     historicMinesRequestedVisible = false;
                     historicMinesLoading = false;
+                    PlaceIndexWorker.enqueueReplacing(MainActivity.this);
                     mapController.reloadStyle();
-                    showMessage("Offline data downloaded. RockMap is validating the installed map now.");
+                    showMessage("Offline data downloaded. RockMap is validating the installed map and preparing offline search now.");
                 } else {
                     showMessage(offlineDataManager.getLastUpdateStatus());
                 }

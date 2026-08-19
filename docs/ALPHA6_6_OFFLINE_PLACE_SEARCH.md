@@ -1,95 +1,70 @@
-# RockMap Alpha 6.6 — offline basemap search
+# RockMap Alpha 6.6 — on-device offline place search
 
-Alpha 6.6 adds an offline **Find** tool without adding a second Colorado map dataset.
-GPS, land status, mining claims, mineral evidence, historic mines, saved markers, and
-coordinate search remain separate and unchanged. The Alpha 6.2.1 cumulative map/mineral
-data release remains unchanged.
+Alpha 6.6 adds **Find** without adding a second Colorado map or geocoder dataset.
 
-## What Find searches
+## Data source
 
-The searchable index is generated from the same immutable Colorado Protomaps PMTiles
-basemap RockMap already renders (`rockmap-basemap-alpha2-20260722-z14`). RockMap extracts
-only named features from the basemap's overview tiles and stores a compact text index in
-the APK. The phone does not contact an online geocoder when Find is used.
+The searchable names come from the same PMTiles basemap RockMap already renders and stores
+in the app's private `files/maps` directory. Search does not contact Google, Nominatim,
+Geofabrik, GNIS, or any other online geocoder/data service.
 
-The compact index is intentionally not a complete copy of every vector feature at every
-zoom. It targets overview tiles through zoom 11 and therefore prioritizes:
+The APK build does not extract Colorado PMTiles and does not generate or bundle a Colorado
+place index. The real index is built on the Android device from the installed basemap.
 
-- cities, towns, villages, and named localities;
-- prominent peaks, passes, viewpoints, parks, campgrounds, and selected landmarks;
-- named lakes and reservoirs;
-- named rivers, streams, and creeks present in overview tiles;
-- highways and major named roads;
-- named paths/trails only when they are already present in those overview tiles.
+## Fresh install / update behavior
 
-A tiny forest road or local trail that only appears in RockMap at deep zoom may still be
-visible on the map but absent from Find. That is an intentional size/build-time tradeoff,
-not evidence that the feature is absent from the underlying PMTiles.
+- When RockMap starts, it checks the active basemap SHA-256.
+- If the matching local place index is missing, WorkManager queues a background,
+  network-free index build.
+- If the basemap has not finished installing yet, the worker retries later.
+- Opening **Find** while an index is missing queues an immediate build and reports
+  `Preparing offline search from the installed basemap…` rather than using stale data.
+- When a different basemap SHA-256 becomes active, the old index is rejected and rebuilt.
 
-Basemap attribution remains Protomaps © OpenStreetMap contributors. OpenStreetMap data is
-available under the ODbL. The search index is derived from those existing RockMap bytes;
-no Geofabrik, Google, Nominatim, or other second statewide map/geocoder dataset is bundled.
+There is no manual indexing step for a fresh device.
 
-## Forgiving matching
+## What is indexed
 
-Find is not an exact database lookup. It supports:
+To keep the one-time phone scan bounded, Alpha 6.6 scans only source zoom **13** and only the
+existing Protomaps `places`, `pois`, and `water` layers. This covers the use case requested
+for regional map lookup while avoiding an all-road/all-trail index.
 
-- case, punctuation, and accent normalization;
-- partial names and prefixes;
-- common abbreviations such as `mt`, `mtn`, `rd`, `hwy`, and `trl`;
-- road-reference aliases when those references exist in the basemap;
-- small spelling mistakes using conservative edit-distance matching.
+Expected searchable classes include:
 
-Exact matches rank above partial and fuzzy matches. RockMap shows a ranked result list
-before moving the map; fuzzy search never silently chooses a destination.
+- cities, towns, villages, hamlets, and named localities;
+- peaks such as Mount Antero, mountain passes, viewpoints, selected landmarks, parks,
+  campgrounds/trailheads, and selected historic features;
+- named lakes, reservoirs, rivers, streams/creeks, canals, and other named water features.
 
-## Map behavior
+Roads and trails continue to render normally from the basemap but are not promised as
+searchable in this Alpha 6.6 index.
 
-Tap **Find**, enter a name such as `Mount Antero`, `mtn antr`, `Buena Vista`, `Twin Lakes`,
-or `US 24`, then tap a result. RockMap centers the map and places a temporary yellow
-search marker at the representative coordinate stored in the index. The marker is not a
-saved waypoint and can be cleared from Find. Latitude/longitude input still works through
-the same Find box.
+## Matching
 
-Long roads and waterways are tiled geometries rather than single points. The builder
-deduplicates repeated tile fragments and keeps a small number of representative search
-targets for long linear features instead of preserving every fragment.
+The existing PlaceSearchEngine remains responsible for forgiving matching: case and
+punctuation normalization, common abbreviations such as `mt`/`mtn`, partial names, and
+conservative typo tolerance. Exact matches still outrank fuzzy matches.
 
-Alpha 6.6 also carries forward the pending Alpha 6.5 peak-label polish: the existing
-offline peak-label layer is exposed from zoom 6.5 so prominent mountain names become
-visible at a more useful regional view.
+## Safety and failure behavior
 
-## Build-time index contract
+The indexer validates PMTiles v3, MVT tile type, supported compression, archive bounds,
+directory ranges, tile sizes, feature counts, output size, and known sanity records. It
+fails closed rather than silently producing a partial index. The current immutable RockMap
+basemap is PMTiles v3 with gzip internal/tile compression and max zoom 14.
 
-The existing APK workflow does not need to change. During the normal Gradle `preBuild`,
-`prepareOfflinePlaceIndex` range-reads RockMap's own immutable PMTiles release, extracts only
-Colorado overview tiles from zoom 9 through zoom 11, and decodes only the `places`, `pois`,
-`water`, and `roads` source layers. Within one workflow run the generated file is reused by
-subsequent Gradle tasks from the normal `app/build` directory.
+A Find result is a locator only. It is not routing, trail-open status, road drivability,
+land ownership, mining-claim status, or collecting permission.
 
-The Gradle-side generator rejects the PMTiles overview subset if it exceeds 80 MB and rejects
-the final index if it is malformed, has fewer than 500 records, exceeds 12 MiB compressed,
-is missing Denver/Buena Vista/Mount Antero, or lacks peak, water, or named-road coverage.
-No `.github` workflow replacement is required.
+## Device acceptance test
 
-The generated binary is not committed to source.
-
-## Acceptance test
-
-1. **Do not uninstall** the existing RockMap app; install Alpha 6.6 over it.
-2. Confirm existing saved locations and installed offline map data remain present.
-3. In airplane mode, tap **Find** and search `Mount Antero`; choose the Peak result and
-   confirm the map jumps there with a temporary yellow marker.
-4. Search `mtn antr` and `mount antro`; confirm Mount Antero still ranks at or near the top.
-5. Search `Buena Vista`; confirm the town/locality result centers correctly.
-6. Search a named lake/reservoir or river visible in RockMap and confirm it is selectable.
-7. Search a major named road/reference visible at regional zoom and confirm it is selectable.
-8. If a tiny trail visible only at deep zoom is not searchable, treat that as the intended
-   compact-index limitation rather than a failed map-data load.
-9. Enter a latitude/longitude pair in Find and confirm the existing coordinate workflow
-   still centers correctly.
-10. Confirm GPS, land status, claims, mineral area analysis/heatmaps, historic mines,
-    Layers, and saved markers still behave as before.
-
-A search result is a navigation/reference aid, not evidence that a road or trail is open,
-drivable, legal to access, or safe. Land/claim/collecting legality remains separate.
+1. Install Alpha 6.6 over the existing app; do not uninstall first.
+2. Leave the existing map/data pack in place.
+3. Open Find shortly after launch. If indexing is still running, confirm the app reports
+   that offline search is being prepared instead of failing or using the network.
+4. Search `Mount Antero`, `mtn antr`, and `mount antro`.
+5. Search `Buena Vista` and `Denver`.
+6. Search a named lake/reservoir and a named river/creek visible on the basemap.
+7. Switch to airplane mode and repeat the searches.
+8. Confirm the result centers the map and leaves the temporary yellow target marker.
+9. Confirm GPS, land status, claims, minerals/heatmaps, historic mines, and saved markers
+   remain unchanged.
