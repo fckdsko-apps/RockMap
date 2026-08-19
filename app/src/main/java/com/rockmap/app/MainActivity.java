@@ -11,6 +11,8 @@ import android.location.Location;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -54,6 +56,7 @@ import org.json.JSONObject;
 import org.maplibre.android.MapLibre;
 import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.maps.MapView;
+import org.maplibre.android.style.layers.Layer;
 import org.maplibre.geojson.Feature;
 
 import java.io.ByteArrayOutputStream;
@@ -332,36 +335,68 @@ public final class MainActivity extends Activity implements LocationRepository.L
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(4), dp(18), 0);
+        box.setFocusableInTouchMode(true);
 
         TextView summary = new TextView(this);
         summary.setText(result.recordsInArea + " installed evidence records fall inside the selected rectangle; "
                 + result.recordsWithExplicitMineralTerms + " contain explicit mineral/material or commodity terms. "
-                + result.minerals.size() + " distinct terms are listed below.\n\n"
+                + result.minerals.size() + " unique mineral/material/commodity terms are listed below.\n\n"
                 + "Tap a mineral to map its evidence density. Counts are source records, not specimen counts or a probability of finding the mineral.");
         summary.setTextSize(12.5f);
         summary.setTextColor(Color.rgb(65, 65, 65));
-        summary.setPadding(0, 0, 0, dp(8));
+        summary.setPadding(0, 0, 0, dp(6));
         box.addView(summary);
 
-        String[] labels = new String[result.minerals.size()];
-        for (int i = 0; i < result.minerals.size(); i++) {
-            MineralAreaAnalyzer.MineralSummary item = result.minerals.get(i);
-            StringBuilder label = new StringBuilder(item.displayName)
-                    .append("\n").append(item.recordCount)
-                    .append(item.recordCount == 1 ? " evidence record" : " evidence records");
-            if (item.materialRecordCount > 0) {
-                label.append(" · ").append(item.materialRecordCount).append(" explicit mineral/material");
-            }
-            if (item.commodityOnlyRecordCount > 0) {
-                label.append(" · ").append(item.commodityOnlyRecordCount).append(" commodity-only");
-            }
-            labels[i] = label.toString();
-        }
+        EditText filter = new EditText(this);
+        filter.setHint("Filter minerals (for example: aquamarine)");
+        filter.setSingleLine(true);
+        box.addView(filter);
+
+        LinearLayout listControls = new LinearLayout(this);
+        listControls.setOrientation(LinearLayout.HORIZONTAL);
+        listControls.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView listStatus = new TextView(this);
+        listStatus.setTextSize(11.5f);
+        listStatus.setTextColor(Color.rgb(75, 75, 75));
+        listControls.addView(listStatus, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button sort = smallActionButton("Sort: evidence");
+        listControls.addView(sort, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        box.addView(listControls);
+
+        ArrayList<MineralAreaAnalyzer.MineralSummary> displayed = new ArrayList<>();
+        ArrayList<String> labels = new ArrayList<>();
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_list_item_1, labels);
+        adapter.setNotifyOnChange(false);
 
         ListView list = new ListView(this);
-        list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+        list.setAdapter(adapter);
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(430)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(360)));
+
+        boolean[] alphabetical = new boolean[]{false};
+        Runnable refreshList = () -> refreshMineralAreaList(
+                result, filter.getText().toString(), alphabetical[0],
+                displayed, adapter, listStatus);
+        refreshList.run();
+
+        filter.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                refreshList.run();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        sort.setOnClickListener(v -> {
+            alphabetical[0] = !alphabetical[0];
+            sort.setText(alphabetical[0] ? "Sort: A–Z" : "Sort: evidence");
+            refreshList.run();
+        });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Minerals in selected area")
@@ -371,11 +406,64 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .setNegativeButton("Close", null)
                 .create();
         list.setOnItemClickListener((parent, view, position, id) -> {
-            MineralAreaAnalyzer.MineralSummary item = result.minerals.get(position);
+            if (position < 0 || position >= displayed.size()) return;
+            MineralAreaAnalyzer.MineralSummary item = displayed.get(position);
             dialog.dismiss();
             showMineralAreaHeatmap(item, result);
         });
+        box.requestFocus();
         dialog.show();
+    }
+
+    private void refreshMineralAreaList(
+            MineralAreaAnalyzer.AnalysisResult result,
+            String filterText,
+            boolean alphabetical,
+            ArrayList<MineralAreaAnalyzer.MineralSummary> displayed,
+            ArrayAdapter<String> adapter,
+            TextView listStatus) {
+        String query = filterText == null ? "" : filterText.trim().toLowerCase(Locale.US);
+        displayed.clear();
+        for (MineralAreaAnalyzer.MineralSummary item : result.minerals) {
+            String name = item.displayName == null ? "" : item.displayName;
+            String key = item.key == null ? "" : item.key;
+            if (query.isEmpty()
+                    || name.toLowerCase(Locale.US).contains(query)
+                    || key.toLowerCase(Locale.US).contains(query)) {
+                displayed.add(item);
+            }
+        }
+
+        if (alphabetical) {
+            displayed.sort((left, right) -> {
+                String leftName = left.displayName == null ? "" : left.displayName;
+                String rightName = right.displayName == null ? "" : right.displayName;
+                int insensitive = leftName.compareToIgnoreCase(rightName);
+                return insensitive != 0 ? insensitive : leftName.compareTo(rightName);
+            });
+        }
+
+        adapter.clear();
+        for (MineralAreaAnalyzer.MineralSummary item : displayed) {
+            adapter.add(mineralAreaLabel(item));
+        }
+        adapter.notifyDataSetChanged();
+
+        listStatus.setText("Showing " + displayed.size() + " of " + result.minerals.size()
+                + (alphabetical ? " · A–Z" : " · evidence count"));
+    }
+
+    private String mineralAreaLabel(MineralAreaAnalyzer.MineralSummary item) {
+        StringBuilder label = new StringBuilder(item.displayName)
+                .append("\n").append(item.recordCount)
+                .append(item.recordCount == 1 ? " evidence record" : " evidence records");
+        if (item.materialRecordCount > 0) {
+            label.append(" · ").append(item.materialRecordCount).append(" explicit mineral/material");
+        }
+        if (item.commodityOnlyRecordCount > 0) {
+            label.append(" · ").append(item.commodityOnlyRecordCount).append(" commodity-only");
+        }
+        return label.toString();
     }
 
     private void showMineralAreaHeatmap(MineralAreaAnalyzer.MineralSummary item,
@@ -1694,6 +1782,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
         safetyBanner.setBackgroundColor(verified
                 ? Color.rgb(30, 100, 55) : Color.rgb(150, 35, 25));
         safetyBanner.setVisibility(View.VISIBLE);
+
+        // The bundled Protomaps style already contains named peak labels, but its inherited
+        // zoom-10 floor hides useful regional landmarks such as Mount Antero. Prominent peaks
+        // are already ranked by the basemap; expose that existing offline layer from zoom 8.
+        mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(loadedStyle -> {
+            Layer peakLabels = loadedStyle.getLayer(MapController.LABEL_PEAK);
+            if (peakLabels != null) peakLabels.setMinZoom(8f);
+        }));
+
         if (mineralOverlayController != null) {
             mineralOverlayController.refreshStyle();
         }
