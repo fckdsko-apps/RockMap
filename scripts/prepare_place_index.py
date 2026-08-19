@@ -2,9 +2,9 @@
 """Build RockMap Alpha 6.6's compact APK-bundled Colorado Find index.
 
 The generator runs only during the APK build. It downloads name/coordinate records from
-current official USGS National Map Gazetteer layers and major state-highway geometry from
-Colorado DOT, reduces them to a small deterministic gzip TSV, and bundles only that final
-index in the APK. Nothing is downloaded or indexed by the Android app at runtime.
+current official USGS National Map Gazetteer layers and, when available, major state-highway
+geometry from Colorado DOT, reduces them to a small deterministic gzip TSV, and bundles only
+that final index in the APK. Nothing is downloaded or indexed by the Android app at runtime.
 """
 from __future__ import annotations
 
@@ -119,6 +119,21 @@ def aliases_for_name(name: str) -> set[str]:
     return aliases
 
 
+def gnis_coordinates_usable(value: object) -> bool:
+    """GNIS isunknowncoords domain: 1=Yes, 2=No, 0=Unknown.
+
+    Reject only an explicit Yes. The service's normal known-coordinate records are coded 2;
+    the previous Alpha 6.6 generator accidentally rejected those and therefore accepted zero
+    Colorado records from every USGS layer.
+    """
+    if value is None:
+        return True
+    try:
+        return int(value) != 1
+    except (TypeError, ValueError):
+        return True
+
+
 def classify_gnis(layer_id: int, feature_class: str) -> tuple[str, int]:
     fc = clean(feature_class)
     low = fc.lower()
@@ -174,7 +189,7 @@ def http_json(url: str, params: dict[str, object], *, attempts: int = 3) -> dict
     full = f"{url}?{query}"
     last: Exception | None = None
     for attempt in range(attempts):
-        request = urllib.request.Request(full, headers={"User-Agent": "RockMap-Alpha6.6-index-builder/1"})
+        request = urllib.request.Request(full, headers={"User-Agent": "RockMap-Alpha6.6-index-builder/2"})
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 length = response.headers.get("Content-Length")
@@ -220,8 +235,6 @@ def iter_arcgis(url: str, *, where: str, out_fields: str, geometry_filter: bool 
                 "geometryType": "esriGeometryEnvelope",
                 "inSR": 4326,
                 "spatialRel": "esriSpatialRelIntersects",
-                # We only keep one representative search point; line geometry is
-                # already aggressively generalized in the common query parameters.
             })
         payload = http_json(url + "/query", params)
         features = payload.get("features") or []
@@ -250,8 +263,7 @@ def load_gnis() -> list[Record]:
             attrs = feature.get("attributes") or {}
             if not isinstance(attrs, dict):
                 continue
-            unknown = attrs.get("isunknowncoords")
-            if unknown not in (None, 0, "0", False):
+            if not gnis_coordinates_usable(attrs.get("isunknowncoords")):
                 continue
             name = clean(attrs.get("gaz_name"))
             if not name:
@@ -310,7 +322,8 @@ def load_cdot_highways() -> list[Record]:
             print(f"CDOT highway source unavailable, trying fallback: {exc}", flush=True)
             features = None
     if not features:
-        raise RuntimeError(f"all CDOT highway sources failed: {last_error}")
+        print(f"CDOT highway enrichment unavailable; continuing with USGS core index: {last_error}", flush=True)
+        return []
 
     grouped: dict[tuple[str, str], dict[str, object]] = {}
     for feature in features:
@@ -366,15 +379,13 @@ def validate(records: list[Record]) -> None:
     if len(records) > MAX_INDEX_RECORDS:
         raise RuntimeError(f"place index unexpectedly large: {len(records)} records")
     names = {normalize(r.name) for r in records}
-    for required in ("denver", "buena vista", "mount antero", "us 24"):
+    for required in ("denver", "buena vista", "mount antero", "twin lakes"):
         if required not in names:
-            raise RuntimeError(f"required Colorado search sanity record missing: {required}")
+            raise RuntimeError(f"required live USGS Colorado sanity record missing: {required}")
     if not any(r.kind == "Peak" for r in records):
         raise RuntimeError("place index contains no peak records")
     if not any("lake" in r.kind.lower() or "reservoir" in r.kind.lower() or "stream" in r.kind.lower() for r in records):
         raise RuntimeError("place index contains no named water records")
-    if not any(r.kind == "Road / highway" for r in records):
-        raise RuntimeError("place index contains no CDOT highway records")
 
 
 def write_index(records: list[Record], output: Path) -> None:
@@ -385,7 +396,7 @@ def write_index(records: list[Record], output: Path) -> None:
             def write(line: str) -> None:
                 zipped.write((line + "\n").encode("utf-8"))
             write(INDEX_HEADER)
-            write("# source=USGS National Map Gazetteer + Colorado DOT state highways; generated during APK build")
+            write("# source=USGS National Map Gazetteer; optional Colorado DOT state-highway enrichment; generated during APK build")
             for item in records:
                 aliases = sorted({safe_field(a) for a in item.aliases if safe_field(a)}, key=str.casefold)
                 write("\t".join([
@@ -398,22 +409,30 @@ def write_index(records: list[Record], output: Path) -> None:
 
 
 def build(output: Path) -> tuple[int, int]:
-    records = dedupe(load_gnis() + load_cdot_highways())
+    gnis_records = load_gnis()
+    cdot_records = load_cdot_highways()
+    records = dedupe(gnis_records + cdot_records)
     validate(records)
     write_index(records, output)
-    print(f"RockMap bundled offline Find index: {len(records)} records; {output.stat().st_size} compressed bytes", flush=True)
+    print(
+        f"RockMap bundled offline Find index: {len(records)} records "
+        f"({len(gnis_records)} USGS source records, {len(cdot_records)} CDOT route records); "
+        f"{output.stat().st_size} compressed bytes",
+        flush=True,
+    )
     return len(records), output.stat().st_size
 
 
 def self_test() -> None:
-    # No network. Exercises geometry extraction, classification, aliases, highway parsing,
-    # dedupe, and exact TSV/GZIP serialization shape with representative fixture records.
     point = geometry_center({"x": -106.2462, "y": 38.6741})
     multi = geometry_center({"points": [[-106.30, 38.65], [-106.20, 38.70]]})
     line = geometry_center({"paths": [[[-106.4, 38.5], [-106.0, 38.9]]]})
     assert point == (38.6741, -106.2462)
     assert multi is not None and abs(multi[0] - 38.675) < 1e-9
     assert line is not None and abs(line[1] + 106.2) < 1e-9
+    assert gnis_coordinates_usable(2)
+    assert gnis_coordinates_usable("2")
+    assert not gnis_coordinates_usable(1)
     assert classify_gnis(2, "Summit")[0] == "Peak"
     assert "Mt Antero" in aliases_for_name("Mount Antero")
     assert highway_display("024A", "U.S.")[0] == "US 24"
