@@ -1,17 +1,16 @@
-RockMap on-device offline basemap search index
+RockMap bundled offline Find index
 
-RockMap's searchable place index is generated on the Android device from the Colorado
-PMTiles basemap already installed in RockMap's private app storage. Find does not bundle
-or download a second statewide map/geocoder dataset.
+The compact rockmap_place_index.tsv.gz asset is generated during the APK build from
+public geographic-name data exposed by the U.S. Geological Survey National Map Gazetteer
+and from Colorado Department of Transportation state-highway data.
 
-The active basemap is derived from Protomaps/OpenStreetMap data. Basemap attribution
-remains: Protomaps © OpenStreetMap contributors. OpenStreetMap data is available under
-the Open Database License (ODbL):
-https://www.openstreetmap.org/copyright
+Only the compact search derivative is bundled in the APK: names, feature categories,
+representative coordinates, aliases, and small ranking/context fields. The source GIS
+layers and their geometries are not bundled as a second map dataset.
 
-Alpha 6.6 scans source zoom 13 from the installed PMTiles and indexes named populated
-places, selected landmarks/peaks, and named water features. The resulting compact index
-is stored privately on the device and is automatically rebuilt when the active basemap
-SHA-256 changes.
+USGS National Map / GNIS geographic names data are public domain. Colorado highway
+records are from Colorado DOT. RockMap's rendered basemap remains the separately installed
+Protomaps/OpenStreetMap PMTiles data and retains its existing attribution and licensing.
 
-No Colorado place-index binary is generated or bundled by the APK build.
+Offline Find is a locator. A result does not establish a route, trailhead, road condition,
+access permission, land ownership, collecting legality, or field safety.

@@ -48,7 +48,6 @@ import com.rockmap.app.minerals.MineralRecord;
 import com.rockmap.app.minerals.MineralSearchEngine;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
-import com.rockmap.app.places.PlaceIndexWorker;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -1040,7 +1039,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search names directly from RockMap’s installed offline basemap. On a fresh install, RockMap prepares this local search index automatically from the map already on the device—no second map download or online geocoder.\n\nAlpha 6.6 indexes towns/cities/localities, peaks and selected landmarks, lakes/reservoirs, and named rivers/streams/creeks. Roads and trails still display normally on the map but are not indexed in this first local-search version. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes. You can also enter latitude/longitude coordinates here.\n\nSource: RockMap’s installed Protomaps / OpenStreetMap basemap.");
+        help.setText("Search Colorado names instantly from RockMap’s bundled offline index. No online geocoder and no first-run statewide scan.\n\nThe index covers cities/towns/localities, peaks and landforms, named lakes/reservoirs/rivers/streams, transportation features exposed by the USGS National Map Gazetteer, and major CDOT state highways. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, US 24. You can also enter latitude/longitude coordinates here.\n\nSources: USGS National Map Gazetteer and Colorado DOT. A result is a locator, not routing or access guidance.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -1733,12 +1732,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             : "not installed")
                         + "\nArea mineral analysis: " + (mineralIndexRepository.isAvailable()
                             ? "available offline" : "unavailable — mineral index not active")
-                        + "\nOffline Find: local index from installed basemap"
+                        + "\nOffline Find: bundled Colorado search index"
                             + (placeIndexRepository.getRecordCount() > 0
                             ? " — " + placeIndexRepository.getRecordCount() + " records loaded"
                             : placeIndexRepository.isReady()
                                 ? " — ready; loads when searched"
-                                : " — preparing automatically in the background")
+                                : " — unavailable in this APK")
                         + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
                             ? (historicMineOverlayController.isLoaded()
                                 ? historicMineOverlayController.getRecordCount() + " mapped records loaded"
@@ -1774,9 +1773,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     historicMineOverlayController.clear();
                     historicMinesRequestedVisible = false;
                     historicMinesLoading = false;
-                    PlaceIndexWorker.enqueueReplacing(MainActivity.this);
                     mapController.reloadStyle();
-                    showMessage("Offline data downloaded. RockMap is validating the installed map and preparing offline search now.");
+                    showMessage("Offline data downloaded. RockMap is validating the installed map now; bundled offline Find remains ready.");
                 } else {
                     showMessage(offlineDataManager.getLastUpdateStatus());
                 }

@@ -485,42 +485,67 @@ for required_gradle in (
     if required_gradle not in all_gradle:
         err(f"Alpha 6.6 must retain the proven generated offline glyph wiring: {required_gradle}")
 
-for forbidden_place_build in (
+for required_place_build in (
     "generatedOfflinePlaceAssetsDir",
+    "assets.srcDir generatedOfflinePlaceAssetsDir",
     "offlinePlaceIndexFile",
-    "prepareOfflinePlaceIndex",
-    "verifyOfflinePlaceIndex",
+    "tasks.register('prepareOfflinePlaceIndex', Exec)",
+    "scripts/prepare_place_index.py",
+    "tasks.register('verifyOfflinePlaceIndex')",
+    "dependsOn tasks.named('verifyOfflinePlaceIndex')",
 ):
-    if forbidden_place_build in all_gradle:
-        err(f"Alpha 6.6 Find must not generate or bundle a Colorado place index during Gradle/CI: {forbidden_place_build}")
+    if required_place_build not in all_gradle:
+        err(f"Alpha 6.6 bundled Find asset wiring is missing: {required_place_build}")
 
 prepare_place_text = read("scripts/prepare_place_index.py")
-for forbidden_place_prepare in ("urllib", "subprocess", "tippecanoe", "go-pmtiles", "releases/download"):
-    if forbidden_place_prepare in prepare_place_text:
-        err(f"Legacy Alpha 6.6 place helper must remain network/build-data free: {forbidden_place_prepare}")
-if "generated on-device" not in prepare_place_text or "no network" not in prepare_place_text.lower():
-    err("Legacy Alpha 6.6 place helper must explicitly state that search is generated on-device with no network I/O.")
+for required_place_prepare in (
+    "# RockMap place index v3",
+    "cartowfs.nationalmap.gov",
+    "dtdapps.coloradodot.info",
+    "USGS National Map Gazetteer",
+    "CDOT",
+    "Mount Antero",
+    "Buena Vista",
+    "MIN_INDEX_BYTES = 20_000",
+    "MAX_INDEX_BYTES = 8 * 1024 * 1024",
+    "--self-test",
+):
+    if required_place_prepare not in prepare_place_text:
+        err(f"Alpha 6.6 bundled Find generator is missing: {required_place_prepare}")
+try:
+    place_prepare_module = runpy.run_path(str(ROOT / "scripts/prepare_place_index.py"))
+    place_prepare_module["self_test"]()
+except Exception as exc:
+    err(f"Alpha 6.6 bundled Find generator self-test failed: {exc}")
+
+# The rejected prototype scanned ~20,000 z13 PMTiles positions on Android and took over
+# 12 minutes in device testing. Keep that architecture out of the runtime app.
+pmtiles_indexer_text = read("app/src/main/java/com/rockmap/app/places/PmtilesPlaceIndexer.java")
+worker_text = read("app/src/main/java/com/rockmap/app/places/PlaceIndexWorker.java")
+repository_text = read("app/src/main/java/com/rockmap/app/places/PlaceIndexRepository.java")
+for forbidden_local_scan in (
+    "SEARCH_ZOOM",
+    "MAX_TILES_TO_SCAN",
+    "RandomAccessFile",
+    "enumerateTiles",
+    "PmtilesPlaceIndexer.build",
+):
+    if forbidden_local_scan in pmtiles_indexer_text + "\n" + worker_text + "\n" + repository_text:
+        err(f"Alpha 6.6 must not restore the slow on-device statewide PMTiles scan: {forbidden_local_scan}")
+for required_bundled_find in (
+    "# RockMap place index v3",
+    "context.getAssets().open(ASSET)",
+    "PlaceIndexWorker.cancelLegacy",
+    "cancelUniqueWork",
+    "Result.success()",
+):
+    if required_bundled_find not in repository_text + "\n" + worker_text:
+        err(f"Alpha 6.6 bundled Find runtime guard is missing: {required_bundled_find}")
 # Java/source guardrails.
 java_files = list((ROOT / "app/src/main/java").rglob("*.java"))
 if not java_files:
     err("No application Java sources found.")
 java_text = "\n".join(p.read_text(encoding="utf-8") for p in java_files)
-for required_local_find in (
-    "# RockMap local place index v2",
-    "SEARCH_ZOOM = 13",
-    "SEARCH_LAYERS",
-    "PlaceIndexWorker",
-    "enqueueIfNeeded",
-    "enqueueReplacing",
-    "isCurrentIndex",
-    "RandomAccessFile",
-    "places",
-    "pois",
-    "water",
-    "Preparing offline search from the installed basemap",
-):
-    if required_local_find not in java_text:
-        err(f"Alpha 6.6 on-device PMTiles Find implementation is missing: {required_local_find}")
 for forbidden_source in (
     "fallbackToDestructiveMigration(",
     "java.nio.file.Files",
