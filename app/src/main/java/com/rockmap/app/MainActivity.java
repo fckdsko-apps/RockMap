@@ -1121,18 +1121,113 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
 
-        String[] labels = new String[matches.size()];
-        for (int i = 0; i < matches.size(); i++) {
-            PlaceRecord record = matches.get(i).record;
-            labels[i] = record.name + "\n" + record.kind
-                    + (record.context.isEmpty() ? "" : " · " + record.context);
-        }
-        new AlertDialog.Builder(this)
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(4), 0, dp(4), 0);
+
+        TextView instruction = new TextView(this);
+        instruction.setText(matches.size() + (matches.size() == 1 ? " match" : " matches")
+                + " · Tap a result to view it on the map.");
+        instruction.setTextSize(12.5f);
+        instruction.setTextColor(Color.rgb(75, 75, 75));
+        instruction.setPadding(dp(16), dp(2), dp(16), dp(8));
+        box.addView(instruction);
+
+        ArrayAdapter<PlaceSearchEngine.Match> adapter =
+                new ArrayAdapter<PlaceSearchEngine.Match>(
+                        this, android.R.layout.simple_list_item_1, matches) {
+                    @Override
+                    public View getView(int position, View convertView, ViewGroup parent) {
+                        PlaceSearchEngine.Match match = getItem(position);
+                        PlaceRecord record = match == null ? null : match.record;
+
+                        LinearLayout row = new LinearLayout(MainActivity.this);
+                        row.setOrientation(LinearLayout.HORIZONTAL);
+                        row.setGravity(Gravity.CENTER_VERTICAL);
+                        row.setPadding(dp(16), dp(10), dp(12), dp(10));
+                        row.setMinimumHeight(dp(72));
+
+                        android.util.TypedValue selectable = new android.util.TypedValue();
+                        if (MainActivity.this.getTheme().resolveAttribute(
+                                android.R.attr.selectableItemBackground, selectable, true)
+                                && selectable.resourceId != 0) {
+                            row.setBackgroundResource(selectable.resourceId);
+                        }
+
+                        LinearLayout textColumn = new LinearLayout(MainActivity.this);
+                        textColumn.setOrientation(LinearLayout.VERTICAL);
+
+                        TextView name = new TextView(MainActivity.this);
+                        name.setText(record == null ? "Unknown place" : record.name);
+                        name.setTextSize(16f);
+                        name.setTextColor(Color.rgb(30, 30, 30));
+                        name.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                        textColumn.addView(name);
+
+                        TextView details = new TextView(MainActivity.this);
+                        String kind = record == null || record.kind == null ? "" : record.kind.trim();
+                        String context = record == null || record.context == null
+                                ? "" : record.context.trim();
+                        String detailText;
+                        if (kind.isEmpty()) {
+                            detailText = context;
+                        } else if (context.isEmpty()) {
+                            detailText = kind;
+                        } else {
+                            detailText = kind + " · " + context;
+                        }
+                        details.setText(detailText);
+                        details.setTextSize(12.5f);
+                        details.setTextColor(Color.rgb(85, 85, 85));
+                        details.setPadding(0, dp(2), 0, 0);
+                        textColumn.addView(details);
+
+                        TextView action = new TextView(MainActivity.this);
+                        action.setText("View on map");
+                        action.setTextSize(12f);
+                        action.setTextColor(Color.rgb(35, 90, 155));
+                        action.setPadding(0, dp(3), 0, 0);
+                        textColumn.addView(action);
+
+                        row.addView(textColumn, new LinearLayout.LayoutParams(
+                                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                        TextView chevron = new TextView(MainActivity.this);
+                        chevron.setText("›");
+                        chevron.setTextSize(28f);
+                        chevron.setTextColor(Color.rgb(95, 95, 95));
+                        chevron.setGravity(Gravity.CENTER);
+                        row.addView(chevron, new LinearLayout.LayoutParams(
+                                dp(32), ViewGroup.LayoutParams.MATCH_PARENT));
+
+                        if (record != null) {
+                            row.setContentDescription(record.name + ". "
+                                    + detailText + ". View on map.");
+                        }
+                        return row;
+                    }
+                };
+
+        ListView list = new ListView(this);
+        list.setAdapter(adapter);
+        int listHeightDp = Math.min(420, Math.max(96, matches.size() * 84));
+        box.addView(list, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeightDp)));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Find: " + query)
-                .setItems(labels, (dialog, which) -> showPlaceTarget(matches.get(which).record))
+                .setView(box)
                 .setPositiveButton("Search again", (d, w) -> showFindSearch())
                 .setNegativeButton("Close", null)
-                .show();
+                .create();
+
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            if (position < 0 || position >= matches.size()) return;
+            dialog.dismiss();
+            showPlaceTarget(matches.get(position).record);
+        });
+
+        dialog.show();
     }
 
     private void showPlaceTarget(PlaceRecord record) {
