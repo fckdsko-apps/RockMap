@@ -103,6 +103,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final String PLACE_SEARCH_SOURCE = "rockmap-place-search-source";
     private static final String PLACE_SEARCH_LAYER = "rockmap-place-search-layer";
     private static final int PLACE_SEARCH_LIMIT = 30;
+    private static final int LOCATION_ACTION_NONE = 0;
+    private static final int LOCATION_ACTION_CENTER = 1;
+    private static final int LOCATION_ACTION_SAVE = 2;
 
     private MapView mapView;
     private MapController mapController;
@@ -125,6 +128,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private Observer<WorkInfo> updateObserver;
     private boolean started;
     private long pendingTripExportId = -1L;
+    private int pendingLocationAction = LOCATION_ACTION_NONE;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -227,23 +231,31 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void locate() {
+        pendingLocationAction = LOCATION_ACTION_CENTER;
         if (!ensureLocationPermission(false)) return;
+        pendingLocationAction = LOCATION_ACTION_NONE;
+
         Location latest = locationRepository.getLatest();
         if (locationRepository.isRecent(latest)) {
-            mapController.centerOn(latest);
+            centerOnGpsFix(latest);
             return;
         }
-        locationRepository.requestCurrent(location -> {
-            mapController.updateCurrentLocation(location);
-            mapController.centerOn(location);
-        }, this::showMessage);
+        locationRepository.requestCurrent(this::centerOnGpsFix, this::showMessage);
+    }
+
+    private void centerOnGpsFix(Location location) {
+        if (location == null || mapView == null || mapController == null) return;
+        mapController.updateCurrentLocation(location);
+        mapView.getMapAsync(mapLibreMap -> mapLibreMap.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(
+                        new LatLng(location.getLatitude(), location.getLongitude()), 16.0)));
     }
 
     private void showMineralSearch() {
         if (!mineralIndexRepository.isAvailable()) {
             new AlertDialog.Builder(this)
                     .setTitle("Mineral data not installed")
-                    .setMessage("The USGS MRDS mineral index is not active yet. Open Data and choose Check for update. Existing basemap, land status, claims, and saved markers are preserved while mineral-search data is added.")
+                    .setMessage("Mineral-search data is not active yet. Open Data and choose Check for update. Existing maps, markers and trips are preserved.")
                     .setPositiveButton("Data", (d, w) -> showData())
                     .setNegativeButton("Close", null)
                     .show();
@@ -252,93 +264,97 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(4), dp(20), 0);
+        box.setPadding(dp(20), dp(4), dp(20), dp(6));
 
-        TextView help = new TextView(this);
-        help.setText("Search installed Colorado mineral evidence by mineral, gemstone, deposit, or rock.\n\nExamples: amazonite, aquamarine, fluorite, rhodochrosite, topaz, telluride, pegmatite, gold.\n\nResults are research evidence, not a probability of finding specimens. Each result shows its source and reliability; dense map results cluster until you zoom in.\n\nSources include USGS MRDS / MAS-MILS and reviewed CGS / USFS evidence sets.");
-        help.setTextSize(13f);
-        help.setTextColor(Color.rgb(65, 65, 65));
-        help.setPadding(0, 0, 0, dp(8));
-        box.addView(help);
+        TextView intro = helperText("Search installed Colorado mineral evidence. Results are research leads, not predictions of what you will find on the ground.");
+        intro.setPadding(0, 0, 0, dp(6));
+        box.addView(intro);
+
+        TextView scopeTitle = sectionLabel("Search area");
+        scopeTitle.setPadding(0, dp(2), 0, dp(2));
+        box.addView(scopeTitle);
+
+        RadioGroup scope = new RadioGroup(this);
+        scope.setOrientation(RadioGroup.HORIZONTAL);
+        RadioButton allColorado = new RadioButton(this);
+        allColorado.setId(View.generateViewId());
+        allColorado.setText("All Colorado");
+        scope.addView(allColorado, new RadioGroup.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        RadioButton mapArea = new RadioButton(this);
+        mapArea.setId(View.generateViewId());
+        mapArea.setText("Visible map");
+        scope.addView(mapArea, new RadioGroup.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        scope.check(allColorado.getId());
+        box.addView(scope);
+
+        TextView scopeHelp = helperText("Visible map searches only the area currently shown behind this window. Pan and zoom first.");
+        scopeHelp.setPadding(0, 0, 0, dp(6));
+        box.addView(scopeHelp);
 
         EditText input = new EditText(this);
         input.setHint("Mineral, gemstone, deposit, or rock");
         input.setSingleLine(true);
         box.addView(input);
 
-        TextView scopeTitle = new TextView(this);
-        scopeTitle.setText("Search area");
-        scopeTitle.setTextSize(14.5f);
-        scopeTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        scopeTitle.setPadding(0, dp(10), 0, dp(2));
-        box.addView(scopeTitle);
+        Button searchButton = smallActionButton("Search minerals");
+        box.addView(searchButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        RadioGroup scope = new RadioGroup(this);
-        scope.setOrientation(RadioGroup.VERTICAL);
-        RadioButton allColorado = new RadioButton(this);
-        allColorado.setId(View.generateViewId());
-        allColorado.setText("All Colorado");
-        scope.addView(allColorado);
-        RadioButton mapArea = new RadioButton(this);
-        mapArea.setId(View.generateViewId());
-        mapArea.setText("Current map area");
-        scope.addView(mapArea);
-        scope.check(allColorado.getId());
-        box.addView(scope);
+        TextView examples = helperText("Examples: amazonite, aquamarine, fluorite, rhodochrosite, topaz, telluride, pegmatite, gold.");
+        examples.setPadding(0, dp(2), 0, dp(6));
+        box.addView(examples);
 
-        TextView scopeHelp = new TextView(this);
-        scopeHelp.setText("Current map area uses whatever part of the map is visible behind this dialog. Pan and zoom first, then search—no county or district name required.");
-        scopeHelp.setTextSize(11.5f);
-        scopeHelp.setTextColor(Color.rgb(85, 85, 85));
-        scopeHelp.setPadding(0, 0, 0, dp(8));
-        box.addView(scopeHelp);
+        TextView analyzeTitle = sectionLabel("Analyze visible area");
+        analyzeTitle.setPadding(0, dp(8), 0, dp(2));
+        box.addView(analyzeTitle);
+
+        TextView analyzeHelp = helperText("See which minerals and materials appear in installed evidence records inside the current map view, then choose one to display an evidence-density heatmap. This summarizes mapped records; it does not predict field finds.");
+        analyzeHelp.setPadding(0, 0, 0, dp(4));
+        box.addView(analyzeHelp);
 
         Button analyzeArea = smallActionButton("Analyze visible area");
         box.addView(analyzeArea, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView analyzeHelp = new TextView(this);
-        analyzeHelp.setText("Alpha 6.5: inventory the explicit minerals/materials in the map rectangle behind this dialog, then choose one to show a source-weighted evidence-density heatmap. This is documented evidence, not a probability of finding specimens.");
-        analyzeHelp.setTextSize(11.5f);
-        analyzeHelp.setTextColor(Color.rgb(85, 85, 85));
-        analyzeHelp.setPadding(0, dp(2), 0, dp(4));
-        box.addView(analyzeHelp);
 
-        ScrollView mineralSearchScroll = new ScrollView(this);
-        mineralSearchScroll.addView(box);
+        TextView sources = helperText("Sources include USGS, Colorado Geological Survey, and U.S. Forest Service evidence sets.");
+        sources.setTextSize(11.5f);
+        sources.setPadding(0, dp(3), 0, 0);
+        box.addView(sources);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Search minerals")
-                .setView(mineralSearchScroll)
-                .setPositiveButton("Search", null)
+                .setTitle("Minerals")
+                .setView(box)
                 .setNeutralButton("Clear minerals", (d, w) -> clearMinerals())
                 .setNegativeButton("Close", null)
                 .create();
 
-        dialog.setOnShowListener(ignored -> {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String query = input.getText().toString().trim();
-                if (query.length() < 2) {
-                    input.setError("Enter at least 2 characters.");
-                    return;
-                }
-                Button find = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-                find.setEnabled(false);
-                find.setText("Searching…");
-                if (mapArea.isChecked()) {
-                    mineralOverlayController.getVisibleBounds(bounds -> runMineralSearch(
-                            query, bounds, "Current map area", dialog, input, find));
-                } else {
-                    runMineralSearch(query, null, "All Colorado", dialog, input, find);
-                }
-            });
-
-            analyzeArea.setOnClickListener(v -> {
-                analyzeArea.setEnabled(false);
-                analyzeArea.setText("Analyzing…");
-                mineralOverlayController.getVisibleBounds(bounds ->
-                        runMineralAreaAnalysis(bounds, dialog, analyzeArea));
-            });
+        searchButton.setOnClickListener(v -> {
+            String query = input.getText().toString().trim();
+            if (query.length() < 2) {
+                input.setError("Enter at least 2 characters.");
+                return;
+            }
+            searchButton.setEnabled(false);
+            searchButton.setText("Searching…");
+            if (mapArea.isChecked()) {
+                mineralOverlayController.getVisibleBounds(bounds -> runMineralSearch(
+                        query, bounds, "Visible map", dialog, input, searchButton));
+            } else {
+                runMineralSearch(query, null, "All Colorado", dialog, input, searchButton);
+            }
         });
+
+        analyzeArea.setOnClickListener(v -> {
+            analyzeArea.setEnabled(false);
+            analyzeArea.setText("Analyzing…");
+            mineralOverlayController.getVisibleBounds(bounds ->
+                    runMineralAreaAnalysis(bounds, dialog, analyzeArea));
+        });
+
         dialog.show();
+        input.requestFocus();
     }
 
     private void runMineralAreaAnalysis(MineralSearchEngine.Bounds bounds,
@@ -558,7 +574,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
             @Override public void onError(String message) {
                 find.setEnabled(true);
-                find.setText("Search");
+                find.setText("Search minerals");
                 input.setError(message == null ? "Mineral search failed." : message);
             }
         });
@@ -677,8 +693,25 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private int dialogListHeight(int preferredDp) {
         int screenHeight = getResources().getDisplayMetrics().heightPixels;
-        int cap = Math.max(dp(140), Math.round(screenHeight * 0.38f));
+        int cap = Math.max(dp(120), Math.round(screenHeight * 0.33f));
         return Math.min(dp(preferredDp), cap);
+    }
+
+    private int dialogBodyHeight(int preferredDp) {
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int cap = Math.max(dp(150), Math.round(screenHeight * 0.48f));
+        return Math.min(dp(preferredDp), cap);
+    }
+
+    private View boundedScrollableContent(View content, int preferredDp) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(content);
+        LinearLayout holder = new LinearLayout(this);
+        holder.setOrientation(LinearLayout.VERTICAL);
+        holder.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogBodyHeight(preferredDp)));
+        return holder;
     }
 
     private static final class ActionListItem {
@@ -863,15 +896,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         appendMineralSource(text, record);
         text.append("\n\nA mapped occurrence is a research lead, not proof of current ownership, access, claim status, or permission to collect.");
 
-        ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
-        scroll.addView(body);
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(record.name)
-                .setView(scroll)
+                .setView(boundedScrollableContent(body, 430))
                 .setPositiveButton("Save marker", (d, w) ->
                         saveMineralMarker(record, hit.reason, result, landAtMarker))
                 .setNegativeButton("Close", null);
@@ -1031,15 +1062,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .append("Do not enter abandoned openings or workings. RockMap does not determine access, ")
                 .append("ownership, claim validity, or collecting permission.");
 
-        ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
-        scroll.addView(body);
 
         new AlertDialog.Builder(this)
                 .setTitle(HistoricMineCatalog.displayName(record))
-                .setView(scroll)
+                .setView(boundedScrollableContent(body, 430))
                 .setPositiveButton("Save / note",
                         (d, w) -> showHistoricMineSaveDialog(record, landAtMine, nearby))
                 .setNeutralButton("Center",
@@ -1128,7 +1157,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         EditText observations = new EditText(this);
         observations.setHint("Field observations (optional)");
-        observations.setMinLines(4);
+        observations.setMinLines(3);
+        observations.setMaxLines(5);
         box.addView(observations);
 
         new AlertDialog.Builder(this)
@@ -1219,7 +1249,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
-        box.addView(help);
+        box.addView(boundedScrollableContent(help, 190));
 
         EditText input = new EditText(this);
         input.setHint("Town, peak, lake, or coordinates");
@@ -1425,7 +1455,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         list.setAdapter(adapter);
         int listHeightDp = Math.min(420, Math.max(96, supported.size() * 84));
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeightDp)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(listHeightDp)));
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Find: " + query)
@@ -1607,6 +1637,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText notes = new EditText(this);
         notes.setHint("Notes (optional)");
         notes.setMinLines(3);
+        notes.setMaxLines(5);
         box.addView(notes);
 
         new AlertDialog.Builder(this)
@@ -1632,7 +1663,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void saveLocation() {
+        pendingLocationAction = LOCATION_ACTION_SAVE;
         if (!ensureLocationPermission(true)) return;
+        pendingLocationAction = LOCATION_ACTION_NONE;
         if (!locationRepository.hasFinePermission()) {
             new AlertDialog.Builder(this)
                     .setTitle("Precise location required")
@@ -1664,6 +1697,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText notes = new EditText(this);
         notes.setHint("Notes (optional)");
         notes.setMinLines(2);
+        notes.setMaxLines(5);
         box.addView(notes);
 
         String warning = location.hasAccuracy() && location.getAccuracy() > 50f
@@ -1772,11 +1806,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (claimsAvailable) addMiningClaimsLegend(box);
         if (historicMinesAvailable) addHistoricMinesLegend(box);
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(box);
         new AlertDialog.Builder(this)
                 .setTitle("Layers")
-                .setView(scroll)
+                .setView(boundedScrollableContent(box, 480))
                 .setPositiveButton("Apply", (d, w) -> {
                     mapController.setLandVisible(landAvailable && land.isChecked());
                     mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
@@ -2009,6 +2041,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText notes = new EditText(this);
         notes.setHint("Trip notes (optional)");
         notes.setMinLines(3);
+        notes.setMaxLines(5);
         box.addView(notes);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2062,6 +2095,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         notes.setHint("Trip notes (optional)");
         notes.setText(trip.notes);
         notes.setMinLines(3);
+        notes.setMaxLines(5);
         box.addView(notes);
 
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2106,7 +2140,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             summary.setTextSize(12.5f);
             summary.setTextColor(Color.rgb(65, 65, 65));
             summary.setPadding(dp(8), 0, dp(8), dp(3));
-            box.addView(summary);
+            box.addView(boundedScrollableContent(summary, 130));
             if (!items.isEmpty()) {
                 TextView listHint = helperText("Tap a stop for map, reorder, or remove options.");
                 listHint.setPadding(dp(8), 0, dp(8), dp(6));
@@ -2123,9 +2157,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
             }
             ListView list = new ListView(this);
             list.setAdapter(actionListAdapter(labels));
-            int listHeight = items.isEmpty() ? 72 : Math.min(360, Math.max(90, items.size() * 72));
+            int preferredListDp = items.isEmpty() ? 72 : Math.min(360, Math.max(90, items.size() * 72));
             box.addView(list, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeight)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(preferredListDp)));
 
             if (items.isEmpty()) {
                 TextView empty = new TextView(this);
@@ -2224,7 +2258,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         body.setText(text.toString());
         body.setTextSize(13f);
         body.setPadding(0, 0, 0, dp(8));
-        box.addView(body);
+        box.addView(boundedScrollableContent(body, 220));
 
         LinearLayout mapRow = new LinearLayout(this);
         mapRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -2438,6 +2472,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText notes = new EditText(this);
         notes.setHint("Notes (optional)");
         notes.setMinLines(3);
+        notes.setMaxLines(5);
         box.addView(notes);
 
         new AlertDialog.Builder(this)
@@ -2672,15 +2707,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 DateFormat.getDateTimeInstance().format(new Date(waypoint.capturedAt)),
                 waypoint.notes == null || waypoint.notes.trim().isEmpty() ? "" : "\n\n" + waypoint.notes);
 
-        ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(bodyText);
-        scroll.addView(body);
 
         new AlertDialog.Builder(this)
                 .setTitle(waypoint.name)
-                .setView(scroll)
+                .setView(boundedScrollableContent(body, 400))
                 .setPositiveButton("Show on map", (d, w) -> mapController.centerOn(waypoint))
                 .setNeutralButton("Edit", (d, w) -> editWaypoint(waypoint))
                 .setNegativeButton("Delete", (d, w) -> confirmDelete(waypoint))
@@ -2697,6 +2730,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText notes = new EditText(this);
         notes.setText(waypoint.notes);
         notes.setMinLines(2);
+        notes.setMaxLines(5);
         box.addView(notes);
         new AlertDialog.Builder(this)
                 .setTitle("Edit saved location")
@@ -2729,7 +2763,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView summary = helperText(dataSummaryText());
         summary.setTextSize(13f);
         summary.setPadding(0, 0, 0, dp(8));
-        box.addView(summary);
+        box.addView(boundedScrollableContent(summary, 250));
 
         Button diagnostics = smallActionButton("Technical diagnostics");
         box.addView(diagnostics, new LinearLayout.LayoutParams(
@@ -2774,18 +2808,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     + "\n\n" + mapController.describeLandDiagnostics()
                     + "\n\n" + mapController.describeClaimsDiagnostics());
 
-        ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
         body.setText(diagnostics);
         body.setTextSize(12.5f);
         body.setTextColor(Color.rgb(55, 55, 55));
         body.setTextIsSelectable(true);
         body.setPadding(dp(18), dp(8), dp(18), dp(8));
-        scroll.addView(body);
 
         new AlertDialog.Builder(this)
                 .setTitle("Technical diagnostics")
-                .setView(scroll)
+                .setView(boundedScrollableContent(body, 440))
                 .setPositiveButton("Close", null)
                 .show();
     }
@@ -3051,8 +3083,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         String title = precise ? "Allow precise location?" : "Allow location?";
         String message = precise
-                ? "RockMap uses precise location only while the app is open so you can create a field waypoint at your current GPS position. The waypoint is stored on this device and is not sent to RockMap servers. RockMap does not request background location. Android system backup may include saved markers and trips if device backup is enabled."
-                : "RockMap uses location only while the app is open to show your current position on the map. Approximate location is sufficient for this feature. Your location is not sent to RockMap servers, and RockMap does not request background location.";
+                ? "RockMap uses precise location only while the app is open so you can save a field waypoint at your current GPS position. The waypoint stays on this device unless you export it. RockMap does not request background location."
+                : "RockMap uses location only while the app is open to show your current position on the map. Approximate location is sufficient for GPS viewing. Your location is not sent to RockMap servers.";
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
@@ -3068,7 +3100,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         }, LOCATION_PERMISSION_REQUEST);
                     }
                 })
-                .setNegativeButton("Not now", null)
+                .setNegativeButton("Not now", (d, w) ->
+                        pendingLocationAction = LOCATION_ACTION_NONE)
                 .show();
         return false;
     }
@@ -3077,15 +3110,33 @@ public final class MainActivity extends Activity implements LocationRepository.L
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != LOCATION_PERMISSION_REQUEST) return;
-        if (locationRepository.hasCoarsePermission() || locationRepository.hasFinePermission()) {
-            if (started) locationRepository.start();
-            if (locationRepository.hasFinePermission()) {
-                showMessage("Location permission granted. Tap GPS or Save GPS again to continue.");
-            } else {
-                showMessage("Approximate location granted. GPS viewing can work; Save GPS requires precise location.");
-            }
-        } else {
+
+        int requestedAction = pendingLocationAction;
+        pendingLocationAction = LOCATION_ACTION_NONE;
+        boolean coarse = locationRepository.hasCoarsePermission();
+        boolean fine = locationRepository.hasFinePermission();
+
+        if (!coarse && !fine) {
             showMessage("Location permission denied. Offline maps remain available, but GPS features are disabled.");
+            return;
+        }
+
+        if (started) locationRepository.start();
+        if (requestedAction == LOCATION_ACTION_CENTER) {
+            mapView.post(this::locate);
+            return;
+        }
+        if (requestedAction == LOCATION_ACTION_SAVE) {
+            if (fine) {
+                mapView.post(this::saveLocation);
+            } else {
+                new AlertDialog.Builder(this)
+                        .setTitle("Precise location required")
+                        .setMessage("Approximate location is enough for GPS viewing, but Save GPS requires Android's precise-location permission.")
+                        .setPositiveButton("App settings", (d, w) -> openAppSettings())
+                        .setNegativeButton("Close", null)
+                        .show();
+            }
         }
     }
 
@@ -3216,14 +3267,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
         text.append("\nBLM Surface Management Agency data is management/status mapping, not a parcel survey or surveyed legal boundary. The claim overlay contains BLM MLRS records selected from the Not Closed dataset; it is not a surveyed claim-boundary product, and BLM says some cases may have no geospatial representation. RockMap does not determine whether collecting is legal at a location.");
 
-        ScrollView scroll = new ScrollView(this);
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
-        scroll.addView(body);
         new AlertDialog.Builder(this)
                 .setTitle("Location information")
-                .setView(scroll)
+                .setView(boundedScrollableContent(body, 440))
                 .setPositiveButton("Save marker", (d, w) -> showManualMarkerDialog(
                         new CoordinateParser.Result(
                                 coordinate.getLatitude(), coordinate.getLongitude())))

@@ -6,6 +6,7 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -30,9 +31,9 @@ public final class PrivacySafetyActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(18), dp(18), dp(18), dp(14));
+        root.setPadding(dp(16), dp(16), dp(16), dp(12));
 
-        TextView title = heading("Safety, sources & privacy", 22f);
+        TextView title = heading("Safety, sources & privacy", 21f);
         title.setPadding(0, 0, 0, dp(8));
         root.addView(title);
 
@@ -40,55 +41,19 @@ public final class PrivacySafetyActivity extends Activity {
         content.setOrientation(LinearLayout.VERTICAL);
 
         TextView safetyHeading = heading("Safety & data limitations", 17f);
-        safetyHeading.setPadding(0, dp(6), 0, dp(6));
+        safetyHeading.setPadding(0, dp(4), 0, dp(6));
         content.addView(safetyHeading);
-
-        TextView safety = body(readAsset("safety_data_limitations.txt", 250_000));
-        content.addView(safety);
+        content.addView(body(readAsset("safety_data_limitations.txt", 250_000)));
 
         TextView privacyHeading = heading("Privacy policy", 17f);
-        privacyHeading.setPadding(0, dp(18), 0, dp(6));
+        privacyHeading.setPadding(0, dp(16), 0, dp(6));
         content.addView(privacyHeading);
-
-        TextView privacy = body(readAsset("privacy_policy.txt", 250_000));
-        content.addView(privacy);
+        content.addView(body(readAsset("privacy_policy.txt", 250_000)));
 
         TextView ackHeading = heading("Local safety acknowledgment", 17f);
-        ackHeading.setPadding(0, dp(18), 0, dp(6));
+        ackHeading.setPadding(0, dp(16), 0, dp(6));
         content.addView(ackHeading);
-
-        SafetyAcknowledgement.Status status = SafetyAcknowledgement.getStatus(this);
-        TextView ack = body(formatStatus(status));
-        content.addView(ack);
-
-        Button reminder = button("Show safety notice again next launch");
-        reminder.setOnClickListener(v -> {
-            SafetyAcknowledgement.enableReminder(this);
-            Toast.makeText(this, "Safety reminder enabled for the next RockMap launch.", Toast.LENGTH_LONG).show();
-            recreate();
-        });
-        content.addView(reminder);
-
-        Button permissions = button("Manage app permissions");
-        permissions.setOnClickListener(v -> {
-            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:" + getPackageName()));
-            startActivity(intent);
-        });
-        content.addView(permissions);
-
-        if (BuildConfig.PRIVACY_POLICY_URL != null
-                && !BuildConfig.PRIVACY_POLICY_URL.trim().isEmpty()) {
-            Button online = button("Open public privacy policy");
-            online.setOnClickListener(v -> {
-                try {
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.PRIVACY_POLICY_URL)));
-                } catch (RuntimeException ex) {
-                    Toast.makeText(this, "Could not open the public privacy policy.", Toast.LENGTH_LONG).show();
-                }
-            });
-            content.addView(online);
-        }
+        content.addView(body(formatStatus(SafetyAcknowledgement.getStatus(this))));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -96,11 +61,67 @@ public final class PrivacySafetyActivity extends Activity {
         root.addView(scroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
+        LinearLayout rowOne = new LinearLayout(this);
+        rowOne.setOrientation(LinearLayout.HORIZONTAL);
+        rowOne.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button reminder = button("Show notice next launch");
+        reminder.setOnClickListener(v -> {
+            SafetyAcknowledgement.enableReminder(this);
+            Toast.makeText(this, "Safety reminder enabled for the next RockMap launch.", Toast.LENGTH_LONG).show();
+            recreate();
+        });
+        rowOne.addView(reminder, actionParams());
+
+        Button permissions = button("Permissions");
+        permissions.setOnClickListener(v -> {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        });
+        rowOne.addView(permissions, actionParams());
+        root.addView(rowOne);
+
+        LinearLayout rowTwo = new LinearLayout(this);
+        rowTwo.setOrientation(LinearLayout.HORIZONTAL);
+        rowTwo.setGravity(Gravity.CENTER_VERTICAL);
+
+        if (BuildConfig.PRIVACY_POLICY_URL != null
+                && !BuildConfig.PRIVACY_POLICY_URL.trim().isEmpty()) {
+            Button online = button("Public privacy policy");
+            online.setOnClickListener(v -> {
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.PRIVACY_POLICY_URL)));
+                } catch (RuntimeException ex) {
+                    Toast.makeText(this, "Could not open the public privacy policy.", Toast.LENGTH_LONG).show();
+                }
+            });
+            rowTwo.addView(online, actionParams());
+        }
+
         Button close = button("Close");
         close.setOnClickListener(v -> finish());
-        root.addView(close);
+        rowTwo.addView(close, actionParams());
+        root.addView(rowTwo);
+
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(
+                    dp(16) + insets.getSystemWindowInsetLeft(),
+                    dp(16) + insets.getSystemWindowInsetTop(),
+                    dp(16) + insets.getSystemWindowInsetRight(),
+                    dp(12) + insets.getSystemWindowInsetBottom());
+            return insets;
+        });
 
         setContentView(root);
+        root.requestApplyInsets();
+    }
+
+    private LinearLayout.LayoutParams actionParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        params.setMargins(dp(2), dp(2), dp(2), dp(2));
+        return params;
     }
 
     private String formatStatus(SafetyAcknowledgement.Status status) {
@@ -141,12 +162,10 @@ public final class PrivacySafetyActivity extends Activity {
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setTextSize(13f);
+        button.setTextSize(12.5f);
         button.setMinHeight(dp(48));
         button.setMinimumHeight(dp(48));
         button.setContentDescription(label);
-        button.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return button;
     }
 
