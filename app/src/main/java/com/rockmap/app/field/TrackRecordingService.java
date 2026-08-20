@@ -153,8 +153,11 @@ public final class TrackRecordingService extends Service implements LocationList
     }
 
     private void notifyState(String text) {
-        NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        manager.notify(NOTIFICATION_ID, notification(text));
+        if (trackId <= 0L) return;
+        // This is the foreground-service notification itself, not an independent app
+        // notification. Re-post it through Service.startForeground() so track recording
+        // does not need Android 13's POST_NOTIFICATIONS runtime permission.
+        startForeground(NOTIFICATION_ID, notification(text));
     }
 
     @Override public void onDestroy() {

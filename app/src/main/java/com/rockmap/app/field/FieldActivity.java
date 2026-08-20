@@ -81,7 +81,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title("Tracks"));
         FieldDatabase.Track active=db.getActiveTrack();
         if(active==null){
-            root.addView(help("Track recording uses the GPS provider and a visible Android foreground-service notification. RockMap does not request background-location permission."));
+            root.addView(help("Track recording uses the GPS provider and an Android foreground service. RockMap does not request background-location permission. Android may show the recording indicator in the notification drawer or foreground-services task UI, depending on your notification settings."));
             root.addView(action("Start new track", "Begins recording after a precise-location check.", v->startNewTrack()));
         }else{
             List<GeoMath.Point> points=db.getTrackPoints(active.id);
@@ -106,8 +106,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void startNewTrack(){
         runWithPreciseLocation(()->{
             EditText input=new EditText(this); input.setHint("Track name"); input.setText("Field track — "+DateFormat.getDateTimeInstance(DateFormat.SHORT,DateFormat.SHORT).format(new Date())); input.setSingleLine(true);
-            new AlertDialog.Builder(this).setTitle("Start track recording").setMessage("Recording can continue while you use the RockMap map or lock the screen. A persistent Android notification remains visible until you stop the track.").setView(input)
+            new AlertDialog.Builder(this).setTitle("Start track recording").setMessage("Recording can continue while you use the RockMap map or lock the screen. Android keeps a foreground-service indicator active until you stop the track; where it appears depends on your notification settings.").setView(input)
                     .setPositiveButton("Start",(d,w)->{
+                        // Permission can be changed while this confirmation dialog is open.
+                        // Re-check at the exact point where the location foreground service starts.
+                        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED){
+                            toast("Precise location is required to start track recording.");
+                            return;
+                        }
                         long id=db.createTrack(input.getText().toString().trim(),System.currentTimeMillis());
                         Intent service=new Intent(this,TrackRecordingService.class).setAction(TrackRecordingService.ACTION_START).putExtra(TrackRecordingService.EXTRA_TRACK_ID,id);
                         if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.O)startForegroundService(service); else startService(service);
@@ -273,7 +279,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void runWithPreciseLocation(Runnable action){
         if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED){action.run();return;}
         pendingLocationAction=action;
-        new AlertDialog.Builder(this).setTitle("Precise location required").setMessage("This field action needs a precise GPS fix. RockMap does not request Android background-location permission. Track recording continues only after you explicitly start it and remains visible as a foreground-service notification.")
+        new AlertDialog.Builder(this).setTitle("Precise location required").setMessage("This field action needs a precise GPS fix. RockMap does not request Android background-location permission. Track recording continues only after you explicitly start it and runs as a visible Android foreground service.")
                 .setPositiveButton("Continue",(d,w)->requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION,Manifest.permission.ACCESS_COARSE_LOCATION},REQ_LOCATION)).setNegativeButton("Cancel",(d,w)->pendingLocationAction=null).show();
     }
     @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] results){super.onRequestPermissionsResult(requestCode,permissions,results);if(requestCode!=REQ_LOCATION)return;Runnable pending=pendingLocationAction;pendingLocationAction=null;if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED){if(started)locationRepository.start();if(pending!=null)pending.run();}else toast("Precise location was not granted.");}
