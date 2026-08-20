@@ -1039,14 +1039,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search Colorado names instantly from RockMap’s bundled offline index. No online geocoder and no first-run statewide scan.\n\nThe index covers cities/towns/localities, peaks and landforms, named lakes/reservoirs/rivers/streams, transportation features exposed by the USGS National Map Gazetteer, and major CDOT state highways. Exact spelling is not required.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, US 24. You can also enter latitude/longitude coordinates here.\n\nSources: USGS National Map Gazetteer and Colorado DOT. A result is a locator, not routing or access guidance.");
+        help.setText("Offline Find is a convenience locator, not a complete geocoder. It works best for Colorado cities/towns/localities, peaks and mountain features, and named lakes/reservoirs.\n\nRoads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, and general landmarks are not included as dependable name-search categories.\n\nName search is imperfect. A result may get you close, but RockMap does not guarantee that the result is complete or that its source coordinate is the exact spot you intended.\n\nFor the most accurate result, find the GPS latitude/longitude for the location you want and paste those coordinates here.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
         box.addView(help);
 
         EditText input = new EditText(this);
-        input.setHint("Place, landmark, road, or coordinates");
+        input.setHint("Town, peak, lake, or coordinates");
         input.setSingleLine(true);
         box.addView(input);
 
@@ -1110,11 +1110,22 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showPlaceSearchResults(String query, List<PlaceSearchEngine.Match> matches) {
-        if (matches == null || matches.isEmpty()) {
+        ArrayList<PlaceSearchEngine.Match> supported = new ArrayList<>();
+        if (matches != null) {
+            for (PlaceSearchEngine.Match match : matches) {
+                if (match != null && isSupportedFindResult(match.record)) {
+                    supported.add(match);
+                }
+            }
+        }
+
+        if (supported.isEmpty()) {
             new AlertDialog.Builder(this)
-                    .setTitle("No offline place matches")
-                    .setMessage("No indexed RockMap basemap feature matched “" + query
-                            + "”. Try fewer words, an abbreviation, or a different spelling.")
+                    .setTitle("No supported offline place match")
+                    .setMessage("RockMap did not find a dependable name-search result for “" + query
+                            + "”. Offline Find is best for cities/towns/localities, peaks and mountain features, and named lakes/reservoirs.\n\n"
+                            + "Roads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, and general landmarks are not included as dependable Find categories.\n\n"
+                            + "Name search is imperfect and may only get you close. For the most accurate result, find the GPS latitude/longitude for the location you want and paste those coordinates into Find.")
                     .setPositiveButton("Search again", (d, w) -> showFindSearch())
                     .setNegativeButton("Close", null)
                     .show();
@@ -1126,16 +1137,23 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(4), 0, dp(4), 0);
 
         TextView instruction = new TextView(this);
-        instruction.setText(matches.size() + (matches.size() == 1 ? " match" : " matches")
+        instruction.setText(supported.size() + (supported.size() == 1 ? " match" : " matches")
                 + " · Tap a result to view it on the map.");
         instruction.setTextSize(12.5f);
         instruction.setTextColor(Color.rgb(75, 75, 75));
-        instruction.setPadding(dp(16), dp(2), dp(16), dp(8));
+        instruction.setPadding(dp(16), dp(2), dp(16), dp(4));
         box.addView(instruction);
+
+        TextView disclaimer = new TextView(this);
+        disclaimer.setText("Offline name search is approximate. A result may get you close, but it does not guarantee an exact location. For precision, use known GPS coordinates.");
+        disclaimer.setTextSize(11.5f);
+        disclaimer.setTextColor(Color.rgb(90, 75, 45));
+        disclaimer.setPadding(dp(16), 0, dp(16), dp(8));
+        box.addView(disclaimer);
 
         ArrayAdapter<PlaceSearchEngine.Match> adapter =
                 new ArrayAdapter<PlaceSearchEngine.Match>(
-                        this, android.R.layout.simple_list_item_1, matches) {
+                        this, android.R.layout.simple_list_item_1, supported) {
                     @Override
                     public View getView(int position, View convertView, ViewGroup parent) {
                         PlaceSearchEngine.Match match = getItem(position);
@@ -1210,7 +1228,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         ListView list = new ListView(this);
         list.setAdapter(adapter);
-        int listHeightDp = Math.min(420, Math.max(96, matches.size() * 84));
+        int listHeightDp = Math.min(420, Math.max(96, supported.size() * 84));
         box.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeightDp)));
 
@@ -1222,12 +1240,27 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 .create();
 
         list.setOnItemClickListener((parent, view, position, id) -> {
-            if (position < 0 || position >= matches.size()) return;
+            if (position < 0 || position >= supported.size()) return;
             dialog.dismiss();
-            showPlaceTarget(matches.get(position).record);
+            showPlaceTarget(supported.get(position).record);
         });
 
         dialog.show();
+    }
+
+    private boolean isSupportedFindResult(PlaceRecord record) {
+        if (record == null || record.kind == null) return false;
+        String kind = record.kind.trim().toLowerCase(Locale.US);
+        return kind.equals("place")
+                || kind.equals("peak")
+                || kind.equals("mountain pass / gap")
+                || kind.equals("ridge")
+                || kind.equals("mountain range")
+                || kind.equals("valley")
+                || kind.equals("basin")
+                || kind.equals("lake")
+                || kind.equals("reservoir")
+                || kind.equals("lake / reservoir");
     }
 
     private void showPlaceTarget(PlaceRecord record) {
