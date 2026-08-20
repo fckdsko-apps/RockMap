@@ -1,6 +1,6 @@
 # RockMap Privacy Policy
 
-**Last updated: August 19, 2026**
+**Last updated: August 20, 2026**
 
 RockMap is an offline-first Android field-map and research application. This policy explains how RockMap accesses, uses, stores, and shares user data.
 
@@ -14,22 +14,25 @@ Do not include sensitive personal information in a public issue. If RockMap is d
 
 ## Location data
 
-RockMap can access approximate or precise device location while the app is in use.
+RockMap can access approximate or precise device location when the user invokes GPS features.
 
 - Approximate location can be used to show the user's current position on the map.
-- Precise location is used when the user chooses to save a field waypoint from device GPS.
-- RockMap does **not** request background location permission.
-- RockMap does **not** send the user's GPS position, saved waypoints, trip coordinates, or notes to RockMap-operated servers.
+- Precise location is used when the user chooses to save a field waypoint or richer field record from device GPS.
+- If the user explicitly starts **Track Recording**, RockMap runs a visible Android location foreground service so the track can continue while the user returns to the RockMap map or temporarily places the app in the background. Android displays a persistent track-recording notification until the user stops the track.
+- RockMap does **not** request Android `ACCESS_BACKGROUND_LOCATION` permission.
+- RockMap does **not** send the user's GPS position, recorded tracks, saved waypoints, field records, trip coordinates, sample notes, or measurements to RockMap-operated servers.
 
 Location access is optional. Offline maps and non-GPS features remain available when location permission is denied.
 
-## Saved markers, trips, notes, and imported files
+## Saved markers, field records, tracks, areas, trips, notes, photos, and imported files
 
-Saved locations, trip plans, trip stops, names, notes, and related coordinates are stored locally in RockMap's private app storage. RockMap does not operate an account system or RockMap cloud-sync service for this information.
+Saved locations, field records, recorded track points, saved polygon areas, sample identifiers, trip plans, trip stops, names, notes, and related coordinates are stored locally in RockMap's private app storage. RockMap does not operate an account system or RockMap cloud-sync service for this information.
 
-When the user explicitly exports data, Android's system document picker lets the user choose where to save the file. When the user explicitly imports a supported file, RockMap reads the selected file to add locations to local app storage. RockMap does not automatically upload exported or imported content to RockMap-operated servers.
+If the user attaches a photo to a field record, RockMap stores the Android document URI selected by the user and retains read access when the selected provider permits it. The original photo remains managed by the storage/photo provider selected by the user; RockMap does not automatically upload it.
 
-If the user chooses a cloud-storage or sharing provider in Android's document/share UI, that provider receives the selected file under the provider's own terms and privacy practices.
+When the user explicitly exports data, Android's system document picker lets the user choose where to save the file. When the user explicitly imports a supported **GPX, KML, GeoJSON, or RockMap file**, RockMap reads the selected file to add supported locations, tracks, or polygon areas to local app storage. Imports are additive and do not automatically delete existing RockMap data. RockMap does not automatically upload exported or imported content to RockMap-operated servers.
+
+If the user chooses a cloud-storage or sharing provider in Android's document/share UI, that provider receives or serves the selected file under the provider's own terms and privacy practices.
 
 ## Local safety acknowledgment token
 
@@ -40,7 +43,7 @@ RockMap stores a randomly generated local acknowledgment token together with the
 - is stored in RockMap's private app preferences on the device;
 - is not an account token or authentication credential;
 - is not sent to RockMap-operated servers;
-- is not used for advertising, analytics, profiling, or cross-app tracking; and
+- is not used for advertising, analytics, profiling, or cross-app tracking;
 - is excluded from Android cloud backup and device transfer so it remains local to the current app installation/device context; and
 - is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
 
@@ -48,7 +51,7 @@ If the safety disclosure materially changes, RockMap can increment the disclosur
 
 ## Android backup and device transfer
 
-RockMap allows Android's standard backup and device-transfer systems to include the local database containing saved markers and trips. Depending on the user's device, account, and backup settings, this may cause that data to be stored or transferred by the Android platform or backup provider. Downloadable offline map files and the local safety-acknowledgment preferences are excluded from Android backup/device transfer.
+RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, and field data. Depending on the user's device, account, and backup settings, this may cause that data to be stored or transferred by the Android platform or backup provider. Downloadable offline map files and the local safety-acknowledgment preferences are excluded from Android backup/device transfer.
 
 RockMap does not receive or control copies held by the Android backup provider.
 
@@ -58,7 +61,7 @@ RockMap is designed to work offline, but the user can choose to check for and do
 
 Update requests use HTTPS. RockMap verifies downloaded data before activation. The update host and its infrastructure, including GitHub when GitHub-hosted releases are used, may receive ordinary network information such as IP address, request time, and standard HTTP request metadata under that provider's own privacy practices.
 
-RockMap does not include advertising SDKs or analytics SDKs in the current release and does not use update requests to transmit saved markers, trips, notes, acknowledgment tokens, or GPS coordinates.
+RockMap does not include advertising SDKs or analytics SDKs in the current release and does not use update requests to transmit saved markers, field records, tracks, trips, notes, acknowledgment tokens, photos, or GPS coordinates.
 
 ## Public map and research sources
 
@@ -68,7 +71,7 @@ These datasets describe places and resources; RockMap does not upload user locat
 
 ## Data sharing and sale
 
-RockMap does not sell user data. RockMap does not share saved location or trip data with third parties except when the user explicitly exports/shares a file or when Android's backup/device-transfer functionality processes eligible local app data according to the user's device and account settings. Network providers may process ordinary connection metadata during user-requested update checks/downloads.
+RockMap does not sell user data. RockMap does not share saved location, field, track, sample, or trip data with third parties except when the user explicitly exports/shares a file, selects a file/photo through an external provider, or when Android's backup/device-transfer functionality processes eligible local app data according to the user's device and account settings. Network providers may process ordinary connection metadata during user-requested update checks/downloads.
 
 ## Data security
 
@@ -76,7 +79,7 @@ RockMap stores working data in Android app-private storage. Network update URLs 
 
 ## Data retention and deletion
 
-Saved markers and trips remain on the device until the user deletes them in RockMap, clears RockMap app data, or uninstalls the app. The local safety acknowledgment remains until RockMap app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever the user chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention/deletion rules.
+Saved markers, field records, tracks, polygon areas, and trips remain on the device until the user deletes them in RockMap, clears RockMap app data, or uninstalls the app. Attached-photo references remain until the associated field record is changed/deleted or app data is cleared; the original selected photo is controlled by its storage provider. The local safety acknowledgment remains until RockMap app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever the user chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention/deletion rules.
 
 RockMap has no server-side user accounts and therefore no RockMap account data to delete from a RockMap server.
 
