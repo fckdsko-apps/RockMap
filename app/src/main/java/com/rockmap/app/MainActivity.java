@@ -158,8 +158,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
         root.addView(safetyBanner, bannerParams);
 
         LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER);
+        // Two visible rows keep all eight map actions discoverable while preserving
+        // comfortable touch targets on phone-width screens. addControl() groups four
+        // buttons per row when its parent is vertical.
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setGravity(Gravity.CENTER_HORIZONTAL);
         controls.setPadding(dp(6), dp(6), dp(6), dp(6));
         controls.setBackgroundColor(Color.argb(235, 255, 255, 255));
         addControl(controls, "GPS", v -> locate());
@@ -196,17 +199,37 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void addControl(LinearLayout row, String text, View.OnClickListener listener) {
+        LinearLayout targetRow = row;
+        if (row.getOrientation() == LinearLayout.VERTICAL) {
+            View last = row.getChildCount() == 0 ? null : row.getChildAt(row.getChildCount() - 1);
+            if (!(last instanceof LinearLayout) || ((LinearLayout) last).getChildCount() >= 4) {
+                LinearLayout newRow = new LinearLayout(this);
+                newRow.setOrientation(LinearLayout.HORIZONTAL);
+                newRow.setGravity(Gravity.CENTER);
+                row.addView(newRow, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                targetRow = newRow;
+            } else {
+                targetRow = (LinearLayout) last;
+            }
+        }
+
         Button button = new Button(this);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextSize(9.5f);
+        button.setTextSize(11.5f);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setPadding(0, 0, 0, 0);
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setPadding(dp(4), 0, dp(4), 0);
+        button.setGravity(Gravity.CENTER);
+        button.setContentDescription(text);
         button.setOnClickListener(listener);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        row.addView(button, params);
+        params.setMargins(dp(2), dp(1), dp(2), dp(1));
+        targetRow.addView(button, params);
     }
 
     private void locate() {
@@ -238,7 +261,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search Colorado mineral evidence from USGS MRDS + MAS/MILS, CGS radioactive occurrences, nonmetallic mines, USFS abandoned-mine inventory, historic districts, and official gemstone/locality references.\n\nExamples: amazonite, aquamarine, fluorite, rhodochrosite, topaz, telluride, pegmatite, gold.\n\nEach result identifies its evidence type, source, and source-specific reliability. Dense results are clustered until you zoom in.");
+        help.setText("Search installed Colorado mineral evidence by mineral, gemstone, deposit, or rock.\n\nExamples: amazonite, aquamarine, fluorite, rhodochrosite, topaz, telluride, pegmatite, gold.\n\nResults are research evidence, not a probability of finding specimens. Each result shows its source and reliability; dense map results cluster until you zoom in.\n\nSources include USGS MRDS / MAS-MILS and reviewed CGS / USFS evidence sets.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -251,8 +274,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         TextView scopeTitle = new TextView(this);
         scopeTitle.setText("Search area");
-        scopeTitle.setTextSize(14f);
-        scopeTitle.setPadding(0, dp(10), 0, 0);
+        scopeTitle.setTextSize(14.5f);
+        scopeTitle.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        scopeTitle.setPadding(0, dp(10), 0, dp(2));
         box.addView(scopeTitle);
 
         RadioGroup scope = new RadioGroup(this);
@@ -397,9 +421,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(listControls);
 
         ArrayList<MineralAreaAnalyzer.MineralSummary> displayed = new ArrayList<>();
-        ArrayList<String> labels = new ArrayList<>();
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(
-                this, android.R.layout.simple_list_item_1, labels);
+        ArrayList<ActionListItem> labels = new ArrayList<>();
+        ArrayAdapter<ActionListItem> adapter = actionListAdapter(labels);
         adapter.setNotifyOnChange(false);
 
         ListView list = new ListView(this);
@@ -430,9 +453,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Minerals in selected area")
                 .setView(box)
-                .setPositiveButton("Close & pan", null)
+                .setPositiveButton("View map", null)
                 .setNeutralButton("Clear", (d, w) -> clearMinerals())
-                .setNegativeButton("Close", null)
                 .create();
         list.setOnItemClickListener((parent, view, position, id) -> {
             if (position < 0 || position >= displayed.size()) return;
@@ -449,7 +471,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             String filterText,
             boolean alphabetical,
             ArrayList<MineralAreaAnalyzer.MineralSummary> displayed,
-            ArrayAdapter<String> adapter,
+            ArrayAdapter<ActionListItem> adapter,
             TextView listStatus) {
         String query = filterText == null ? "" : filterText.trim().toLowerCase(Locale.US);
         displayed.clear();
@@ -474,7 +496,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         adapter.clear();
         for (MineralAreaAnalyzer.MineralSummary item : displayed) {
-            adapter.add(mineralAreaLabel(item));
+            adapter.add(new ActionListItem(item.displayName, mineralAreaDetail(item), "MAP"));
         }
         adapter.notifyDataSetChanged();
 
@@ -482,9 +504,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 + (alphabetical ? " · A–Z" : " · evidence count"));
     }
 
-    private String mineralAreaLabel(MineralAreaAnalyzer.MineralSummary item) {
-        StringBuilder label = new StringBuilder(item.displayName)
-                .append("\n").append(item.recordCount)
+    private String mineralAreaDetail(MineralAreaAnalyzer.MineralSummary item) {
+        StringBuilder label = new StringBuilder().append(item.recordCount)
                 .append(item.recordCount == 1 ? " evidence record" : " evidence records");
         if (item.materialRecordCount > 0) {
             label.append(" · ").append(item.materialRecordCount).append(" explicit mineral/material");
@@ -580,22 +601,24 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (!result.aliasNote.isEmpty()) summaryText.append(result.aliasNote).append("\n\n");
         summaryText.append(result.totalMatches).append(" matches in ").append(activeMineralScopeLabel).append(". ")
                 .append("All ").append(result.hits.size()).append(" are available on the map; dense areas are clustered and expand as you zoom. ")
-                .append("The list is showing ").append(shown).append(" at a time so the screen stays manageable.");
+                .append("Tap a result row for details and its map location. The list is showing ")
+                .append(shown).append(" at a time.");
         summary.setText(summaryText.toString());
         summary.setTextSize(12.5f);
         summary.setTextColor(Color.rgb(65, 65, 65));
         summary.setPadding(0, 0, 0, dp(8));
         box.addView(summary);
 
-        String[] labels = new String[shown];
+        ArrayList<ActionListItem> labels = new ArrayList<>();
         for (int i = 0; i < shown; i++) {
             MineralSearchEngine.Hit hit = result.hits.get(i);
-            labels[i] = hit.record.name + "\n" + hit.reason
+            String detail = hit.reason
                     + (hit.record.evidenceType.isEmpty() ? "" : "\n" + hit.record.evidenceType)
                     + "\n" + String.format(Locale.US, "%.5f, %.5f", hit.record.latitude, hit.record.longitude);
+            labels.add(new ActionListItem(hit.record.name, detail, "VIEW"));
         }
         ListView list = new ListView(this);
-        list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+        list.setAdapter(actionListAdapter(labels));
         box.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(390)));
 
@@ -647,11 +670,152 @@ public final class MainActivity extends Activity implements LocationRepository.L
         Button button = new Button(this);
         button.setText(label);
         button.setAllCaps(false);
-        button.setTextSize(11f);
+        button.setTextSize(12f);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setPadding(dp(2), 0, dp(2), 0);
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setPadding(dp(8), 0, dp(8), 0);
+        button.setGravity(Gravity.CENTER);
+        button.setContentDescription(label);
         return button;
+    }
+
+    private static final class ActionListItem {
+        final String title;
+        final String subtitle;
+        final String action;
+
+        ActionListItem(String title, String subtitle, String action) {
+            this.title = title == null ? "" : title;
+            this.subtitle = subtitle == null ? "" : subtitle;
+            this.action = action == null ? "OPEN" : action;
+        }
+
+        @Override public String toString() {
+            return title;
+        }
+    }
+
+    private void applySelectableBackground(View view) {
+        android.util.TypedValue selectable = new android.util.TypedValue();
+        if (getTheme().resolveAttribute(android.R.attr.selectableItemBackground, selectable, true)
+                && selectable.resourceId != 0) {
+            view.setBackgroundResource(selectable.resourceId);
+        }
+    }
+
+    private ArrayAdapter<ActionListItem> actionListAdapter(List<ActionListItem> items) {
+        return new ArrayAdapter<ActionListItem>(this, android.R.layout.simple_list_item_1, items) {
+            @Override public View getView(int position, View convertView, ViewGroup parent) {
+                ActionListItem item = getItem(position);
+                LinearLayout row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(16), dp(10), dp(12), dp(10));
+                row.setMinimumHeight(dp(64));
+                applySelectableBackground(row);
+
+                LinearLayout text = new LinearLayout(MainActivity.this);
+                text.setOrientation(LinearLayout.VERTICAL);
+
+                TextView title = new TextView(MainActivity.this);
+                title.setText(item == null || item.title.isEmpty() ? "Unnamed item" : item.title);
+                title.setTextSize(15.5f);
+                title.setTextColor(Color.rgb(30, 30, 30));
+                title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                text.addView(title);
+
+                if (item != null && !item.subtitle.trim().isEmpty()) {
+                    TextView subtitle = new TextView(MainActivity.this);
+                    subtitle.setText(item.subtitle.trim());
+                    subtitle.setTextSize(12.5f);
+                    subtitle.setTextColor(Color.rgb(80, 80, 80));
+                    subtitle.setPadding(0, dp(3), dp(6), 0);
+                    subtitle.setMaxLines(5);
+                    text.addView(subtitle);
+                }
+
+                row.addView(text, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+                TextView action = new TextView(MainActivity.this);
+                String actionLabel = item == null ? "OPEN" : item.action;
+                action.setText(actionLabel + "  ›");
+                action.setTextSize(11.5f);
+                action.setTextColor(Color.rgb(35, 90, 155));
+                action.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                action.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+                action.setMinWidth(dp(66));
+                action.setMinHeight(dp(48));
+                row.addView(action, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+                if (item != null) {
+                    row.setContentDescription(item.title
+                            + (item.subtitle.trim().isEmpty() ? "" : ". " + item.subtitle.trim())
+                            + ". " + actionLabel.toLowerCase(Locale.US) + ".");
+                }
+                return row;
+            }
+        };
+    }
+
+    private TextView helperText(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(12.5f);
+        view.setTextColor(Color.rgb(72, 72, 72));
+        view.setPadding(dp(4), 0, dp(4), dp(8));
+        return view;
+    }
+
+    private TextView sectionLabel(String text) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(14.5f);
+        view.setTextColor(Color.rgb(35, 35, 35));
+        view.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        view.setPadding(0, dp(10), 0, dp(4));
+        return view;
+    }
+
+    private AlertDialog showActionListDialog(
+            String title, String intro, List<ActionListItem> rows,
+            String positiveLabel, android.content.DialogInterface.OnClickListener positiveAction,
+            String neutralLabel, android.content.DialogInterface.OnClickListener neutralAction,
+            String negativeLabel, android.content.DialogInterface.OnClickListener negativeAction,
+            java.util.function.IntConsumer onSelect) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(4), dp(2), dp(4), 0);
+        if (intro != null && !intro.trim().isEmpty()) {
+            TextView introText = helperText(intro.trim());
+            introText.setPadding(dp(16), dp(2), dp(16), dp(8));
+            box.addView(introText);
+        }
+
+        ListView list = new ListView(this);
+        list.setAdapter(actionListAdapter(rows));
+        int estimatedRow = 96;
+        int listHeight = Math.min(430, Math.max(72, rows.size() * estimatedRow));
+        box.addView(list, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeight)));
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box);
+        if (positiveLabel != null) builder.setPositiveButton(positiveLabel, positiveAction);
+        if (neutralLabel != null) builder.setNeutralButton(neutralLabel, neutralAction);
+        if (negativeLabel != null) builder.setNegativeButton(negativeLabel, negativeAction);
+        AlertDialog dialog = builder.create();
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            if (position < 0 || position >= rows.size()) return;
+            dialog.dismiss();
+            if (onSelect != null) onSelect.accept(position);
+        });
+        dialog.show();
+        return dialog;
     }
 
     private void showMineralDetail(MineralSearchEngine.Hit hit,
@@ -822,27 +986,22 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showHistoricMineSelector(List<MineralRecord> records, List<Feature> land) {
         int shown = Math.min(50, records.size());
-        String[] labels = new String[shown];
+        ArrayList<ActionListItem> rows = new ArrayList<>();
         for (int i = 0; i < shown; i++) {
             MineralRecord record = records.get(i);
-            labels[i] = HistoricMineCatalog.displayName(record)
-                    + "\n" + HistoricMineCatalog.typeLabel(record)
+            String detail = HistoricMineCatalog.typeLabel(record)
                     + "\n" + (record.sourceTitle.isEmpty() ? record.sourceCode : record.sourceTitle)
                     + "\n" + String.format(Locale.US, "%.6f, %.6f",
                     record.latitude, record.longitude);
+            rows.add(new ActionListItem(HistoricMineCatalog.displayName(record), detail, "VIEW"));
         }
-
-        AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle(records.size() + " mine records at this tap")
-                .setItems(labels, (dialog, which) -> showHistoricMineDetail(records.get(which), land))
-                .setNegativeButton("Close", null);
-        if (records.size() > shown) {
-            builder.setMessage("Showing the first " + shown
-                    + " overlapping/nearby rendered records. Zoom in to separate additional points.");
-        } else {
-            builder.setMessage("More than one source record overlaps this tap. Choose the one you want to inspect.");
-        }
-        builder.show();
+        String intro = records.size() > shown
+                ? "Showing the first " + shown + " overlapping/nearby rendered records. Zoom in to separate additional points. Tap a row for details."
+                : "More than one source record overlaps this tap. Tap the record you want to inspect.";
+        showActionListDialog(
+                records.size() + " mine records at this tap", intro, rows,
+                null, null, null, null, "Close", null,
+                which -> showHistoricMineDetail(records.get(which), land));
     }
 
     private void showHistoricMineDetail(MineralRecord record, List<Feature> landAtMine) {
@@ -1056,7 +1215,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Offline Find is a convenience locator, not a complete geocoder. It works best for Colorado cities/towns/localities, peaks and mountain features, and named lakes/reservoirs.\n\nRoads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, and general landmarks are not included as dependable name-search categories.\n\nName search is imperfect. A result may get you close, but RockMap does not guarantee that the result is complete or that its source coordinate is the exact spot you intended.\n\nFor the most accurate result, find the GPS latitude/longitude for the location you want and paste those coordinates here.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
+        help.setText("Search offline for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs — or paste latitude/longitude.\n\nFor the most accurate location, use known GPS coordinates. Name search is approximate and may only get you close.\n\nNot dependable by name: roads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, or general landmarks.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -1232,25 +1391,27 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         rightActions.setGravity(Gravity.CENTER);
 
                         Button addToTrip = smallActionButton("+ Trip");
-                        addToTrip.setTextSize(10f);
+                        addToTrip.setTextSize(11f);
                         addToTrip.setFocusable(false);
                         addToTrip.setEnabled(record != null);
                         addToTrip.setOnClickListener(v -> {
                             if (record != null) showTripPickerForPlace(record);
                         });
                         rightActions.addView(addToTrip, new LinearLayout.LayoutParams(
-                                dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
+                                dp(76), ViewGroup.LayoutParams.WRAP_CONTENT));
 
                         TextView chevron = new TextView(MainActivity.this);
-                        chevron.setText("›");
-                        chevron.setTextSize(24f);
-                        chevron.setTextColor(Color.rgb(95, 95, 95));
+                        chevron.setText("VIEW  ›");
+                        chevron.setTextSize(11.5f);
+                        chevron.setTextColor(Color.rgb(35, 90, 155));
+                        chevron.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
                         chevron.setGravity(Gravity.CENTER);
+                        chevron.setMinHeight(dp(36));
                         rightActions.addView(chevron, new LinearLayout.LayoutParams(
-                                dp(32), dp(28)));
+                                dp(76), dp(36)));
 
                         row.addView(rightActions, new LinearLayout.LayoutParams(
-                                dp(62), ViewGroup.LayoutParams.MATCH_PARENT));
+                                dp(82), ViewGroup.LayoutParams.MATCH_PARENT));
 
                         if (record != null) {
                             row.setContentDescription(record.name + ". "
@@ -1541,6 +1702,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         boolean claimsAvailable = mapController.hasClaimsAvailable();
         boolean historicMinesAvailable = mineralIndexRepository.hasExpandedEvidence();
 
+        box.addView(sectionLabel("Visible map layers"));
+        box.addView(helperText("Check what you want shown on the map, then tap Apply."));
+
         CheckBox land = checkbox(landAvailable
                         ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
                 landAvailable && mapController.isLandVisible());
@@ -1600,6 +1764,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
             box.addView(clearMineralsButton);
         }
 
+        if (heatmapAvailable || landAvailable || claimsAvailable || historicMinesAvailable) {
+            box.addView(sectionLabel("Legend & safety notes"));
+        }
         if (heatmapAvailable) addMineralHeatmapLegend(box);
         if (landAvailable) addLandStatusLegend(box);
         if (claimsAvailable) addMiningClaimsLegend(box);
@@ -1770,26 +1937,47 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private CheckBox checkbox(String label, boolean checked) {
         CheckBox box = new CheckBox(this);
         box.setText(label);
+        box.setTextSize(13f);
         box.setChecked(checked);
+        box.setMinHeight(dp(48));
+        box.setMinimumHeight(dp(48));
         box.setPadding(0, dp(4), 0, dp(4));
         return box;
     }
 
     private void showTrips() {
         tripRepository.getSummaries(summaries -> {
-            AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                    .setTitle("Trips")
-                    .setPositiveButton("New trip", (d, w) -> showCreateTripDialog(null))
-                    .setNegativeButton("Close", null);
             if (summaries.isEmpty()) {
-                builder.setMessage("No trips yet. Create one, then add Find results, GPS coordinates, or saved markers to it.");
-            } else {
-                String[] labels = new String[summaries.size()];
-                for (int i = 0; i < summaries.size(); i++) labels[i] = tripSummaryLabel(summaries.get(i));
-                builder.setItems(labels, (dialog, which) -> showTripDetail(summaries.get(which).toEntity()));
+                new AlertDialog.Builder(this)
+                        .setTitle("Trips")
+                        .setMessage("No trips yet. Create one, then add Find results, GPS coordinates, or saved markers to it.")
+                        .setPositiveButton("New trip", (d, w) -> showCreateTripDialog(null))
+                        .setNegativeButton("Close", null)
+                        .show();
+                return;
             }
-            builder.show();
+            ArrayList<ActionListItem> rows = new ArrayList<>();
+            for (TripSummary summary : summaries) {
+                rows.add(new ActionListItem(
+                        summary.name == null || summary.name.trim().isEmpty() ? "Untitled trip" : summary.name.trim(),
+                        tripSummaryDetail(summary), "OPEN"));
+            }
+            showActionListDialog(
+                    "Trips", "Tap a trip to open its saved stops and planning tools.", rows,
+                    "New trip", (d, w) -> showCreateTripDialog(null),
+                    null, null, "Close", null,
+                    which -> showTripDetail(summaries.get(which).toEntity()));
         });
+    }
+
+    private String tripSummaryDetail(TripSummary summary) {
+        StringBuilder out = new StringBuilder();
+        if (summary.plannedDate != null && !summary.plannedDate.trim().isEmpty()) {
+            out.append(summary.plannedDate.trim()).append(" · ");
+        }
+        out.append(summary.itemCount)
+                .append(summary.itemCount == 1 ? " saved stop" : " saved stops");
+        return out.toString();
     }
 
     private String tripSummaryLabel(TripSummary summary) {
@@ -1917,13 +2105,24 @@ public final class MainActivity extends Activity implements LocationRepository.L
             summary.setText(summaryText.toString());
             summary.setTextSize(12.5f);
             summary.setTextColor(Color.rgb(65, 65, 65));
-            summary.setPadding(dp(8), 0, dp(8), dp(6));
+            summary.setPadding(dp(8), 0, dp(8), dp(3));
             box.addView(summary);
+            if (!items.isEmpty()) {
+                TextView listHint = helperText("Tap a stop for map, reorder, or remove options.");
+                listHint.setPadding(dp(8), 0, dp(8), dp(6));
+                box.addView(listHint);
+            }
 
-            String[] labels = new String[items.size()];
-            for (int i = 0; i < items.size(); i++) labels[i] = tripItemLabel(items.get(i), i);
+            ArrayList<ActionListItem> labels = new ArrayList<>();
+            for (int i = 0; i < items.size(); i++) {
+                TripItemEntity item = items.get(i);
+                labels.add(new ActionListItem(
+                        (i + 1) + ". " + (item.name == null || item.name.trim().isEmpty()
+                                ? "Unnamed stop" : item.name.trim()),
+                        compactTripItemDetail(item), "DETAILS"));
+            }
             ListView list = new ListView(this);
-            list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+            list.setAdapter(actionListAdapter(labels));
             int listHeight = items.isEmpty() ? 72 : Math.min(360, Math.max(90, items.size() * 72));
             box.addView(list, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeight)));
@@ -1950,6 +2149,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             Button export = smallActionButton("Export");
             Button edit = smallActionButton("Edit trip");
             Button delete = smallActionButton("Delete");
+            delete.setTextColor(Color.rgb(155, 35, 35));
             manageRow.addView(export, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             manageRow.addView(edit, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             manageRow.addView(delete, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -2037,6 +2237,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(mapRow);
 
         Button remove = smallActionButton("Remove from trip");
+        remove.setTextColor(Color.rgb(155, 35, 35));
         box.addView(remove, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -2093,16 +2294,19 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         .show();
                 return;
             }
-            String[] labels = new String[summaries.size()];
-            for (int i = 0; i < summaries.size(); i++) labels[i] = tripSummaryLabel(summaries.get(i));
-            new AlertDialog.Builder(this)
-                    .setTitle("Add " + record.name + " to trip")
-                    .setItems(labels, (d, which) ->
-                            addPlaceToTrip(summaries.get(which).toEntity(), record, false))
-                    .setPositiveButton("New trip", (d, w) ->
-                            showCreateTripDialog(trip -> addPlaceToTrip(trip, record, false)))
-                    .setNegativeButton("Cancel", null)
-                    .show();
+            ArrayList<ActionListItem> rows = new ArrayList<>();
+            for (TripSummary summary : summaries) {
+                rows.add(new ActionListItem(
+                        summary.name == null || summary.name.trim().isEmpty() ? "Untitled trip" : summary.name.trim(),
+                        tripSummaryDetail(summary), "ADD"));
+            }
+            showActionListDialog(
+                    "Add " + record.name + " to trip",
+                    "Tap the trip that should receive this place.", rows,
+                    "New trip", (d, w) ->
+                            showCreateTripDialog(trip -> addPlaceToTrip(trip, record, false)),
+                    null, null, "Cancel", null,
+                    which -> addPlaceToTrip(summaries.get(which).toEntity(), record, false));
         });
     }
 
@@ -2201,19 +2405,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
 
-        String[] labels = new String[supported.size()];
-        for (int i = 0; i < supported.size(); i++) {
-            PlaceRecord record = supported.get(i).record;
-            labels[i] = record.name + "\n" + record.kind
-                    + (record.context == null || record.context.isEmpty() ? "" : " · " + record.context)
-                    + "\nTap to add to " + trip.name;
+        ArrayList<ActionListItem> rows = new ArrayList<>();
+        for (PlaceSearchEngine.Match match : supported) {
+            PlaceRecord record = match.record;
+            String detail = record.kind
+                    + (record.context == null || record.context.isEmpty() ? "" : " · " + record.context);
+            rows.add(new ActionListItem(record.name, detail, "ADD"));
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Add: " + query)
-                .setItems(labels, (d, which) -> addPlaceToTrip(trip, supported.get(which).record, true))
-                .setPositiveButton("Search again", (d, w) -> showTripFindSearch(trip))
-                .setNegativeButton("Trip", (d, w) -> showTripDetail(trip))
-                .show();
+        showActionListDialog(
+                "Add: " + query, "Tap a place to add it to " + trip.name + ".", rows,
+                "Search again", (d, w) -> showTripFindSearch(trip),
+                null, null, "Trip", (d, w) -> showTripDetail(trip),
+                which -> addPlaceToTrip(trip, supported.get(which).record, true));
     }
 
     private void showAddCoordinateToTrip(TripEntity trip, CoordinateParser.Result result) {
@@ -2270,14 +2473,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         .show();
                 return;
             }
-            String[] labels = new String[items.size()];
-            for (int i = 0; i < items.size(); i++) {
-                WaypointEntity w = items.get(i);
-                labels[i] = w.name + "\n" + String.format(Locale.US, "%.5f, %.5f", w.latitude, w.longitude);
+            ArrayList<ActionListItem> rows = new ArrayList<>();
+            for (WaypointEntity w : items) {
+                rows.add(new ActionListItem(
+                        w.name, String.format(Locale.US, "%.5f, %.5f", w.latitude, w.longitude), "ADD"));
             }
-            new AlertDialog.Builder(this)
-                    .setTitle("Add saved marker to " + trip.name)
-                    .setItems(labels, (d, which) -> {
+            showActionListDialog(
+                    "Add saved marker to " + trip.name,
+                    "Tap the saved location you want to add.", rows,
+                    null, null, null, null, "Trip", (d, w) -> showTripDetail(trip),
+                    which -> {
                         WaypointEntity w = items.get(which);
                         long now = System.currentTimeMillis();
                         TripItemEntity item = new TripItemEntity(
@@ -2288,9 +2493,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             showMessage(w.name + " added to " + trip.name + ".");
                             showTripDetail(trip);
                         });
-                    })
-                    .setNegativeButton("Trip", (d, w) -> showTripDetail(trip))
-                    .show();
+                    });
         });
     }
 
@@ -2305,22 +2508,34 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showTripExportPicker(TripEntity trip) {
-        String[] formats = {
-                "CSV — spreadsheet / easy editing\nKeeps stop order, names, coordinates, type/context, notes, source references, and trip details in columns.",
-                "RockMap XML — readable full trip file\nKeeps trip details plus stop order, coordinates, notes, type/context, and RockMap source references.",
-                "GPX — GPS / mapping apps\nKeeps coordinates, stop names, type/context/notes, and trip description. RockMap source references are not preserved.",
-                "GeoJSON — GIS / mapping software\nKeeps full trip/stop planning metadata and point geometry, including RockMap source references."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle("Export " + trip.name)
-                .setItems(formats, (d, which) -> {
+        ArrayList<ActionListItem> rows = new ArrayList<>();
+        rows.add(new ActionListItem(
+                "CSV — spreadsheet / easy editing",
+                "Keeps stop order, names, coordinates, type/context, notes, source references, and trip details in columns.",
+                "SAVE"));
+        rows.add(new ActionListItem(
+                "RockMap XML — readable full trip file",
+                "Keeps trip details plus stop order, coordinates, notes, type/context, and RockMap source references.",
+                "SAVE"));
+        rows.add(new ActionListItem(
+                "GPX — GPS / mapping apps",
+                "Keeps coordinates, stop names, type/context/notes, and trip description. RockMap source references are not preserved.",
+                "SAVE"));
+        rows.add(new ActionListItem(
+                "GeoJSON — GIS / mapping software",
+                "Keeps full trip/stop planning metadata and point geometry, including RockMap source references.",
+                "SAVE"));
+        showActionListDialog(
+                "Export " + trip.name,
+                "Choose a file format. Each row below is tappable; the description tells you what that format preserves.",
+                rows, null, null, null, null,
+                "Back", (d, w) -> showTripDetail(trip),
+                which -> {
                     if (which == 0) beginTripExport(trip, EXPORT_TRIP_CSV_REQUEST);
                     else if (which == 1) beginTripExport(trip, EXPORT_TRIP_XML_REQUEST);
                     else if (which == 2) beginTripExport(trip, EXPORT_TRIP_GPX_REQUEST);
                     else beginTripExport(trip, EXPORT_TRIP_GEOJSON_REQUEST);
-                })
-                .setNegativeButton("Back", (d, w) -> showTripDetail(trip))
-                .show();
+                });
     }
 
     private void beginTripExport(TripEntity trip, int requestCode) {
@@ -2397,22 +2612,28 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showSaved() {
         waypointRepository.getAll(items -> {
-            AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                    .setTitle("Saved locations")
-                    .setPositiveButton("Export", (dialog, which) -> beginWaypointExport())
-                    .setNeutralButton("Import", (dialog, which) -> beginWaypointImport())
-                    .setNegativeButton("Close", null);
             if (items.isEmpty()) {
-                builder.setMessage("No saved locations yet. You can import a RockMap GeoJSON backup.");
-            } else {
-                String[] labels = new String[items.size()];
-                for (int i = 0; i < items.size(); i++) {
-                    WaypointEntity w = items.get(i);
-                    labels[i] = w.name + "\n" + String.format(Locale.US, "%.5f, %.5f", w.latitude, w.longitude);
-                }
-                builder.setItems(labels, (dialog, which) -> showWaypoint(items.get(which)));
+                new AlertDialog.Builder(this)
+                        .setTitle("Saved locations")
+                        .setMessage("No saved locations yet. You can import a RockMap GeoJSON backup.")
+                        .setPositiveButton("Export backup", (d, w) -> beginWaypointExport())
+                        .setNeutralButton("Import backup", (d, w) -> beginWaypointImport())
+                        .setNegativeButton("Close", null)
+                        .show();
+                return;
             }
-            builder.show();
+            ArrayList<ActionListItem> rows = new ArrayList<>();
+            for (WaypointEntity waypoint : items) {
+                rows.add(new ActionListItem(
+                        waypoint.name,
+                        String.format(Locale.US, "%.5f, %.5f", waypoint.latitude, waypoint.longitude),
+                        "OPEN"));
+            }
+            showActionListDialog(
+                    "Saved locations", "Tap a saved location to view, edit, map, or delete it.", rows,
+                    "Export backup", (d, w) -> beginWaypointExport(),
+                    "Import backup", (d, w) -> beginWaypointImport(),
+                    "Close", null, which -> showWaypoint(items.get(which)));
         });
     }
 
