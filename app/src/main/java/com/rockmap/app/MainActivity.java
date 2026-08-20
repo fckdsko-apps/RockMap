@@ -50,6 +50,11 @@ import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
+import com.rockmap.app.trips.TripEntity;
+import com.rockmap.app.trips.TripExport;
+import com.rockmap.app.trips.TripItemEntity;
+import com.rockmap.app.trips.TripRepository;
+import com.rockmap.app.trips.TripSummary;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
@@ -80,6 +85,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int LOCATION_PERMISSION_REQUEST = 501;
     private static final int EXPORT_WAYPOINTS_REQUEST = 502;
     private static final int IMPORT_WAYPOINTS_REQUEST = 503;
+    private static final int EXPORT_TRIP_GEOJSON_REQUEST = 504;
+    private static final int EXPORT_TRIP_GPX_REQUEST = 505;
+    private static final int EXPORT_TRIP_CSV_REQUEST = 506;
+    private static final String STATE_PENDING_TRIP_EXPORT_ID = "pendingTripExportId";
     private static final int MAX_IMPORT_BYTES = 5_000_000;
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
     private static final float MANUAL_COORDINATE_ACCURACY = -2f;
@@ -96,6 +105,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private MapController mapController;
     private LocationRepository locationRepository;
     private WaypointRepository waypointRepository;
+    private TripRepository tripRepository;
     private OfflineDataManager offlineDataManager;
     private PlaceIndexRepository placeIndexRepository;
     private MineralIndexRepository mineralIndexRepository;
@@ -112,15 +122,20 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private LiveData<WorkInfo> updateLiveData;
     private Observer<WorkInfo> updateObserver;
     private boolean started;
+    private long pendingTripExportId = -1L;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null) {
+            pendingTripExportId = savedInstanceState.getLong(STATE_PENDING_TRIP_EXPORT_ID, -1L);
+        }
 
         MapLibre.getInstance(this);
         offlineDataManager = new OfflineDataManager(this);
         placeIndexRepository = new PlaceIndexRepository(this);
         waypointRepository = new WaypointRepository(this);
+        tripRepository = new TripRepository(this);
         locationRepository = new LocationRepository(this, this);
 
         FrameLayout root = new FrameLayout(this);
@@ -152,6 +167,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         addControl(controls, "Minerals", v -> showMineralSearch());
         addControl(controls, "Layers", v -> showLayers());
         addControl(controls, "Markers", v -> showSaved());
+        addControl(controls, "Trips", v -> showTrips());
         addControl(controls, "Data", v -> showData());
         FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
@@ -1138,7 +1154,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         TextView instruction = new TextView(this);
         instruction.setText(supported.size() + (supported.size() == 1 ? " match" : " matches")
-                + " · Tap a result to view it on the map.");
+                + " · Tap a result to view it, or + Trip to save it.");
         instruction.setTextSize(12.5f);
         instruction.setTextColor(Color.rgb(75, 75, 75));
         instruction.setPadding(dp(16), dp(2), dp(16), dp(4));
@@ -1210,17 +1226,34 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         row.addView(textColumn, new LinearLayout.LayoutParams(
                                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
+                        LinearLayout rightActions = new LinearLayout(MainActivity.this);
+                        rightActions.setOrientation(LinearLayout.VERTICAL);
+                        rightActions.setGravity(Gravity.CENTER);
+
+                        Button addToTrip = smallActionButton("+ Trip");
+                        addToTrip.setTextSize(10f);
+                        addToTrip.setFocusable(false);
+                        addToTrip.setEnabled(record != null);
+                        addToTrip.setOnClickListener(v -> {
+                            if (record != null) showTripPickerForPlace(record);
+                        });
+                        rightActions.addView(addToTrip, new LinearLayout.LayoutParams(
+                                dp(58), ViewGroup.LayoutParams.WRAP_CONTENT));
+
                         TextView chevron = new TextView(MainActivity.this);
                         chevron.setText("›");
-                        chevron.setTextSize(28f);
+                        chevron.setTextSize(24f);
                         chevron.setTextColor(Color.rgb(95, 95, 95));
                         chevron.setGravity(Gravity.CENTER);
-                        row.addView(chevron, new LinearLayout.LayoutParams(
-                                dp(32), ViewGroup.LayoutParams.MATCH_PARENT));
+                        rightActions.addView(chevron, new LinearLayout.LayoutParams(
+                                dp(32), dp(28)));
+
+                        row.addView(rightActions, new LinearLayout.LayoutParams(
+                                dp(62), ViewGroup.LayoutParams.MATCH_PARENT));
 
                         if (record != null) {
                             row.setContentDescription(record.name + ". "
-                                    + detailText + ". View on map.");
+                                    + detailText + ". View on map or add to trip.");
                         }
                         return row;
                     }
@@ -1741,6 +1774,618 @@ public final class MainActivity extends Activity implements LocationRepository.L
         return box;
     }
 
+    private void showTrips() {
+        tripRepository.getSummaries(summaries -> {
+            AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                    .setTitle("Trips")
+                    .setPositiveButton("New trip", (d, w) -> showCreateTripDialog(null))
+                    .setNegativeButton("Close", null);
+            if (summaries.isEmpty()) {
+                builder.setMessage("No trips yet. Create one, then add Find results, GPS coordinates, or saved markers to it.");
+            } else {
+                String[] labels = new String[summaries.size()];
+                for (int i = 0; i < summaries.size(); i++) labels[i] = tripSummaryLabel(summaries.get(i));
+                builder.setItems(labels, (dialog, which) -> showTripDetail(summaries.get(which).toEntity()));
+            }
+            builder.show();
+        });
+    }
+
+    private String tripSummaryLabel(TripSummary summary) {
+        StringBuilder out = new StringBuilder(summary.name == null || summary.name.trim().isEmpty()
+                ? "Untitled trip" : summary.name.trim());
+        if (summary.plannedDate != null && !summary.plannedDate.trim().isEmpty()) {
+            out.append("\n").append(summary.plannedDate.trim());
+        }
+        out.append("\n").append(summary.itemCount)
+                .append(summary.itemCount == 1 ? " saved stop" : " saved stops");
+        return out.toString();
+    }
+
+    private void showCreateTripDialog(java.util.function.Consumer<TripEntity> afterCreate) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        EditText name = new EditText(this);
+        name.setHint("Trip name");
+        name.setSingleLine(true);
+        box.addView(name);
+
+        EditText date = new EditText(this);
+        date.setHint("Date / timeframe (optional)");
+        date.setSingleLine(true);
+        box.addView(date);
+
+        EditText notes = new EditText(this);
+        notes.setHint("Trip notes (optional)");
+        notes.setMinLines(3);
+        box.addView(notes);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("New trip")
+                .setView(box)
+                .setPositiveButton("Create", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String tripName = boundedText(name.getText().toString().trim(), 500);
+                    if (tripName.isEmpty()) {
+                        name.setError("Enter a trip name.");
+                        return;
+                    }
+                    long now = System.currentTimeMillis();
+                    TripEntity trip = new TripEntity(
+                            tripName,
+                            boundedText(date.getText().toString().trim(), 500),
+                            boundedText(notes.getText().toString().trim(), 20_000),
+                            now, now);
+                    dialog.dismiss();
+                    tripRepository.create(trip, created -> {
+                        if (afterCreate != null) afterCreate.accept(created);
+                        else showTripDetail(created);
+                    });
+                }));
+        dialog.show();
+        name.requestFocus();
+    }
+
+    private void showEditTripDialog(TripEntity trip) {
+        if (trip == null) return;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        EditText name = new EditText(this);
+        name.setHint("Trip name");
+        name.setText(trip.name);
+        name.setSingleLine(true);
+        box.addView(name);
+
+        EditText date = new EditText(this);
+        date.setHint("Date / timeframe (optional)");
+        date.setText(trip.plannedDate);
+        date.setSingleLine(true);
+        box.addView(date);
+
+        EditText notes = new EditText(this);
+        notes.setHint("Trip notes (optional)");
+        notes.setText(trip.notes);
+        notes.setMinLines(3);
+        box.addView(notes);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Edit trip")
+                .setView(box)
+                .setPositiveButton("Save", null)
+                .setNegativeButton("Cancel", (d, w) -> showTripDetail(trip))
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String tripName = boundedText(name.getText().toString().trim(), 500);
+                    if (tripName.isEmpty()) {
+                        name.setError("Enter a trip name.");
+                        return;
+                    }
+                    trip.name = tripName;
+                    trip.plannedDate = boundedText(date.getText().toString().trim(), 500);
+                    trip.notes = boundedText(notes.getText().toString().trim(), 20_000);
+                    dialog.dismiss();
+                    tripRepository.update(trip, () -> showTripDetail(trip));
+                }));
+        dialog.show();
+    }
+
+    private void showTripDetail(TripEntity trip) {
+        if (trip == null) return;
+        tripRepository.getItems(trip.id, items -> {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(dp(12), dp(2), dp(12), dp(4));
+
+            TextView summary = new TextView(this);
+            StringBuilder summaryText = new StringBuilder();
+            if (trip.plannedDate != null && !trip.plannedDate.trim().isEmpty()) {
+                summaryText.append(trip.plannedDate.trim()).append("\n");
+            }
+            summaryText.append(items.size()).append(items.size() == 1 ? " saved stop" : " saved stops");
+            if (trip.notes != null && !trip.notes.trim().isEmpty()) {
+                summaryText.append("\n\n").append(trip.notes.trim());
+            }
+            summary.setText(summaryText.toString());
+            summary.setTextSize(12.5f);
+            summary.setTextColor(Color.rgb(65, 65, 65));
+            summary.setPadding(dp(8), 0, dp(8), dp(6));
+            box.addView(summary);
+
+            String[] labels = new String[items.size()];
+            for (int i = 0; i < items.size(); i++) labels[i] = tripItemLabel(items.get(i), i);
+            ListView list = new ListView(this);
+            list.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+            int listHeight = items.isEmpty() ? 72 : Math.min(360, Math.max(90, items.size() * 72));
+            box.addView(list, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeight)));
+
+            if (items.isEmpty()) {
+                TextView empty = new TextView(this);
+                empty.setText("No stops yet. Add a named place/coordinate or one of your saved markers.");
+                empty.setTextSize(12f);
+                empty.setTextColor(Color.rgb(85, 85, 85));
+                empty.setPadding(dp(8), 0, dp(8), dp(8));
+                box.addView(empty);
+            }
+
+            LinearLayout addRow = new LinearLayout(this);
+            addRow.setOrientation(LinearLayout.HORIZONTAL);
+            Button addPlace = smallActionButton("Add place / GPS");
+            Button addMarker = smallActionButton("Add saved marker");
+            addRow.addView(addPlace, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            addRow.addView(addMarker, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            box.addView(addRow);
+
+            LinearLayout manageRow = new LinearLayout(this);
+            manageRow.setOrientation(LinearLayout.HORIZONTAL);
+            Button export = smallActionButton("Export");
+            Button edit = smallActionButton("Edit trip");
+            Button delete = smallActionButton("Delete");
+            manageRow.addView(export, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            manageRow.addView(edit, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            manageRow.addView(delete, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            box.addView(manageRow);
+
+            AlertDialog dialog = new AlertDialog.Builder(this)
+                    .setTitle(trip.name)
+                    .setView(box)
+                    .setNegativeButton("Close", null)
+                    .create();
+
+            list.setOnItemClickListener((parent, view, position, id) -> {
+                if (position < 0 || position >= items.size()) return;
+                showTripItemDetail(trip, items.get(position), position, items.size(), dialog);
+            });
+            addPlace.setOnClickListener(v -> {
+                dialog.dismiss();
+                showTripFindSearch(trip);
+            });
+            addMarker.setOnClickListener(v -> {
+                dialog.dismiss();
+                showAddSavedMarkerToTrip(trip);
+            });
+            export.setEnabled(!items.isEmpty());
+            export.setOnClickListener(v -> {
+                dialog.dismiss();
+                showTripExportPicker(trip);
+            });
+            edit.setOnClickListener(v -> {
+                dialog.dismiss();
+                showEditTripDialog(trip);
+            });
+            delete.setOnClickListener(v -> {
+                dialog.dismiss();
+                confirmDeleteTrip(trip);
+            });
+            dialog.show();
+        });
+    }
+
+    private String tripItemLabel(TripItemEntity item, int index) {
+        StringBuilder label = new StringBuilder()
+                .append(index + 1).append(". ")
+                .append(item.name == null || item.name.trim().isEmpty() ? "Unnamed stop" : item.name.trim());
+        String detail = compactTripItemDetail(item);
+        if (!detail.isEmpty()) label.append("\n").append(detail);
+        return label.toString();
+    }
+
+    private String compactTripItemDetail(TripItemEntity item) {
+        String kind = item.kind == null ? "" : item.kind.trim();
+        String context = item.context == null ? "" : item.context.trim();
+        if (kind.isEmpty()) return context;
+        if (context.isEmpty()) return kind;
+        return kind + " · " + context;
+    }
+
+    private void showTripItemDetail(TripEntity trip, TripItemEntity item,
+                                    int position, int total, AlertDialog parentDialog) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView body = new TextView(this);
+        StringBuilder text = new StringBuilder();
+        String detail = compactTripItemDetail(item);
+        if (!detail.isEmpty()) text.append(detail).append("\n");
+        text.append(String.format(Locale.US, "%.6f, %.6f", item.latitude, item.longitude));
+        if (item.notes != null && !item.notes.trim().isEmpty()) {
+            text.append("\n\n").append(item.notes.trim());
+        }
+        body.setText(text.toString());
+        body.setTextSize(13f);
+        body.setPadding(0, 0, 0, dp(8));
+        box.addView(body);
+
+        LinearLayout mapRow = new LinearLayout(this);
+        mapRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button showMap = smallActionButton("Show on map");
+        Button up = smallActionButton("Move up");
+        Button down = smallActionButton("Move down");
+        mapRow.addView(showMap, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        mapRow.addView(up, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        mapRow.addView(down, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(mapRow);
+
+        Button remove = smallActionButton("Remove from trip");
+        box.addView(remove, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog itemDialog = new AlertDialog.Builder(this)
+                .setTitle(item.name)
+                .setView(box)
+                .setNegativeButton("Close", null)
+                .create();
+
+        up.setEnabled(position > 0);
+        down.setEnabled(position + 1 < total);
+        showMap.setOnClickListener(v -> {
+            itemDialog.dismiss();
+            if (parentDialog != null) parentDialog.dismiss();
+            Location target = new Location("trip-item");
+            target.setLatitude(item.latitude);
+            target.setLongitude(item.longitude);
+            mapController.centerOn(target);
+        });
+        up.setOnClickListener(v -> {
+            itemDialog.dismiss();
+            if (parentDialog != null) parentDialog.dismiss();
+            tripRepository.moveItem(trip.id, item.id, -1, moved -> showTripDetail(trip));
+        });
+        down.setOnClickListener(v -> {
+            itemDialog.dismiss();
+            if (parentDialog != null) parentDialog.dismiss();
+            tripRepository.moveItem(trip.id, item.id, 1, moved -> showTripDetail(trip));
+        });
+        remove.setOnClickListener(v -> {
+            itemDialog.dismiss();
+            if (parentDialog != null) parentDialog.dismiss();
+            new AlertDialog.Builder(this)
+                    .setTitle("Remove stop from trip?")
+                    .setMessage(item.name + " will be removed from " + trip.name + ". The original saved marker or RockMap source data is not deleted.")
+                    .setPositiveButton("Remove", (d, w) ->
+                            tripRepository.deleteItem(item, () -> showTripDetail(trip)))
+                    .setNegativeButton("Cancel", (d, w) -> showTripDetail(trip))
+                    .show();
+        });
+        itemDialog.show();
+    }
+
+    private void showTripPickerForPlace(PlaceRecord record) {
+        if (record == null) return;
+        tripRepository.getSummaries(summaries -> {
+            if (summaries.isEmpty()) {
+                new AlertDialog.Builder(this)
+                        .setTitle("Create a trip first?")
+                        .setMessage("RockMap can create a trip and add " + record.name + " to it immediately.")
+                        .setPositiveButton("New trip", (d, w) ->
+                                showCreateTripDialog(trip -> addPlaceToTrip(trip, record, false)))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return;
+            }
+            String[] labels = new String[summaries.size()];
+            for (int i = 0; i < summaries.size(); i++) labels[i] = tripSummaryLabel(summaries.get(i));
+            new AlertDialog.Builder(this)
+                    .setTitle("Add " + record.name + " to trip")
+                    .setItems(labels, (d, which) ->
+                            addPlaceToTrip(summaries.get(which).toEntity(), record, false))
+                    .setPositiveButton("New trip", (d, w) ->
+                            showCreateTripDialog(trip -> addPlaceToTrip(trip, record, false)))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+    }
+
+    private void addPlaceToTrip(TripEntity trip, PlaceRecord record, boolean reopenTrip) {
+        long now = System.currentTimeMillis();
+        String ref = "place:" + record.name + ":" + String.format(
+                Locale.US, "%.6f,%.6f", record.latitude, record.longitude);
+        TripItemEntity item = new TripItemEntity(
+                trip.id, boundedText(record.name, 500), boundedText(record.kind, 500),
+                boundedText(record.context, 2_000), record.latitude, record.longitude, "",
+                "place", boundedText(ref, 2_000), 0, now);
+        tripRepository.addItem(item, added -> {
+            showMessage(record.name + " added to " + trip.name + ".");
+            if (reopenTrip) showTripDetail(trip);
+        });
+    }
+
+    private void showTripFindSearch(TripEntity trip) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView help = new TextView(this);
+        help.setText("Add a stop to " + trip.name + ". Name search is best for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs. For the most accurate stop, paste known GPS latitude/longitude coordinates.");
+        help.setTextSize(13f);
+        help.setTextColor(Color.rgb(65, 65, 65));
+        help.setPadding(0, 0, 0, dp(8));
+        box.addView(help);
+
+        EditText input = new EditText(this);
+        input.setHint("Town, peak, lake, or coordinates");
+        input.setSingleLine(true);
+        box.addView(input);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Add stop")
+                .setView(box)
+                .setPositiveButton("Find", null)
+                .setNegativeButton("Back", (d, w) -> showTripDetail(trip))
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(v -> {
+                    String query = input.getText().toString().trim();
+                    if (query.length() < 2) {
+                        input.setError("Enter at least 2 characters.");
+                        return;
+                    }
+                    if (looksLikeCoordinates(query)) {
+                        try {
+                            CoordinateParser.Result result = CoordinateParser.parse(query);
+                            dialog.dismiss();
+                            showAddCoordinateToTrip(trip, result);
+                        } catch (IllegalArgumentException ex) {
+                            input.setError(ex.getMessage());
+                        }
+                        return;
+                    }
+                    Button find = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                    find.setEnabled(false);
+                    find.setText("Searching…");
+                    placeIndexRepository.search(query, PLACE_SEARCH_LIMIT, new PlaceIndexRepository.Callback() {
+                        @Override public void onResult(List<PlaceSearchEngine.Match> matches) {
+                            find.setEnabled(true);
+                            find.setText("Find");
+                            dialog.dismiss();
+                            showTripPlaceSearchResults(trip, query, matches);
+                        }
+
+                        @Override public void onError(String message) {
+                            find.setEnabled(true);
+                            find.setText("Find");
+                            input.setError(message == null ? "Offline place search failed." : message);
+                        }
+                    });
+                }));
+        dialog.show();
+        input.requestFocus();
+    }
+
+    private void showTripPlaceSearchResults(TripEntity trip, String query,
+                                            List<PlaceSearchEngine.Match> matches) {
+        ArrayList<PlaceSearchEngine.Match> supported = new ArrayList<>();
+        if (matches != null) {
+            for (PlaceSearchEngine.Match match : matches) {
+                if (match != null && isSupportedFindResult(match.record)) supported.add(match);
+            }
+        }
+        if (supported.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("No supported place match")
+                    .setMessage("RockMap did not find a dependable named-place result for “" + query
+                            + "”. For a precise trip stop, paste known GPS coordinates instead.")
+                    .setPositiveButton("Try again", (d, w) -> showTripFindSearch(trip))
+                    .setNegativeButton("Trip", (d, w) -> showTripDetail(trip))
+                    .show();
+            return;
+        }
+
+        String[] labels = new String[supported.size()];
+        for (int i = 0; i < supported.size(); i++) {
+            PlaceRecord record = supported.get(i).record;
+            labels[i] = record.name + "\n" + record.kind
+                    + (record.context == null || record.context.isEmpty() ? "" : " · " + record.context)
+                    + "\nTap to add to " + trip.name;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Add: " + query)
+                .setItems(labels, (d, which) -> addPlaceToTrip(trip, supported.get(which).record, true))
+                .setPositiveButton("Search again", (d, w) -> showTripFindSearch(trip))
+                .setNegativeButton("Trip", (d, w) -> showTripDetail(trip))
+                .show();
+    }
+
+    private void showAddCoordinateToTrip(TripEntity trip, CoordinateParser.Result result) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(4), dp(20), 0);
+
+        TextView coordinate = new TextView(this);
+        coordinate.setText(result.formatDecimal());
+        coordinate.setTextSize(13f);
+        coordinate.setPadding(0, 0, 0, dp(6));
+        box.addView(coordinate);
+
+        EditText name = new EditText(this);
+        name.setHint("Stop name");
+        name.setText("Coordinate stop");
+        box.addView(name);
+
+        EditText notes = new EditText(this);
+        notes.setHint("Notes (optional)");
+        notes.setMinLines(3);
+        box.addView(notes);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Add coordinate to " + trip.name)
+                .setView(box)
+                .setPositiveButton("Add", (d, w) -> {
+                    long now = System.currentTimeMillis();
+                    String enteredLabel = boundedText(name.getText().toString().trim(), 500);
+                    final String label = enteredLabel.isEmpty() ? "Coordinate stop" : enteredLabel;
+                    String ref = String.format(Locale.US, "coordinate:%.7f,%.7f",
+                            result.latitude, result.longitude);
+                    TripItemEntity item = new TripItemEntity(
+                            trip.id, label, "GPS coordinate", "User-supplied coordinates",
+                            result.latitude, result.longitude,
+                            boundedText(notes.getText().toString().trim(), 20_000),
+                            "coordinate", ref, 0, now);
+                    tripRepository.addItem(item, added -> {
+                        showMessage(label + " added to " + trip.name + ".");
+                        showTripDetail(trip);
+                    });
+                })
+                .setNegativeButton("Back", (d, w) -> showTripFindSearch(trip))
+                .show();
+    }
+
+    private void showAddSavedMarkerToTrip(TripEntity trip) {
+        waypointRepository.getAll(items -> {
+            if (items.isEmpty()) {
+                new AlertDialog.Builder(this)
+                        .setTitle("No saved markers")
+                        .setMessage("Save a GPS location or marker first, then add it to this trip.")
+                        .setPositiveButton("Trip", (d, w) -> showTripDetail(trip))
+                        .show();
+                return;
+            }
+            String[] labels = new String[items.size()];
+            for (int i = 0; i < items.size(); i++) {
+                WaypointEntity w = items.get(i);
+                labels[i] = w.name + "\n" + String.format(Locale.US, "%.5f, %.5f", w.latitude, w.longitude);
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Add saved marker to " + trip.name)
+                    .setItems(labels, (d, which) -> {
+                        WaypointEntity w = items.get(which);
+                        long now = System.currentTimeMillis();
+                        TripItemEntity item = new TripItemEntity(
+                                trip.id, boundedText(w.name, 500), "Saved marker", "RockMap saved location",
+                                w.latitude, w.longitude, boundedText(w.notes, 20_000),
+                                "waypoint", "waypoint:" + w.id, 0, now);
+                        tripRepository.addItem(item, added -> {
+                            showMessage(w.name + " added to " + trip.name + ".");
+                            showTripDetail(trip);
+                        });
+                    })
+                    .setNegativeButton("Trip", (d, w) -> showTripDetail(trip))
+                    .show();
+        });
+    }
+
+    private void confirmDeleteTrip(TripEntity trip) {
+        new AlertDialog.Builder(this)
+                .setTitle("Delete trip?")
+                .setMessage(trip.name + " and its trip list will be deleted. Original saved markers are not deleted.")
+                .setPositiveButton("Delete", (d, w) ->
+                        tripRepository.delete(trip, this::showTrips))
+                .setNegativeButton("Cancel", (d, w) -> showTripDetail(trip))
+                .show();
+    }
+
+    private void showTripExportPicker(TripEntity trip) {
+        String[] formats = {
+                "GeoJSON — full trip data",
+                "GPX — GPS / mapping apps",
+                "CSV — spreadsheet"
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Export " + trip.name)
+                .setItems(formats, (d, which) -> {
+                    if (which == 0) beginTripExport(trip, EXPORT_TRIP_GEOJSON_REQUEST);
+                    else if (which == 1) beginTripExport(trip, EXPORT_TRIP_GPX_REQUEST);
+                    else beginTripExport(trip, EXPORT_TRIP_CSV_REQUEST);
+                })
+                .setNegativeButton("Back", (d, w) -> showTripDetail(trip))
+                .show();
+    }
+
+    private void beginTripExport(TripEntity trip, int requestCode) {
+        pendingTripExportId = trip.id;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        String base = safeExportFilename(trip.name);
+        if (requestCode == EXPORT_TRIP_GPX_REQUEST) {
+            intent.setType("application/gpx+xml");
+            intent.putExtra(Intent.EXTRA_TITLE, base + ".gpx");
+        } else if (requestCode == EXPORT_TRIP_CSV_REQUEST) {
+            intent.setType("text/csv");
+            intent.putExtra(Intent.EXTRA_TITLE, base + ".csv");
+        } else {
+            intent.setType("application/geo+json");
+            intent.putExtra(Intent.EXTRA_TITLE, base + ".geojson");
+        }
+        startActivityForResult(intent, requestCode);
+    }
+
+    private void exportTrip(Uri uri, int requestCode) {
+        long tripId = pendingTripExportId;
+        pendingTripExportId = -1L;
+        if (tripId <= 0) {
+            showMessage("Trip export could not identify the selected trip.");
+            return;
+        }
+        tripRepository.getTrip(tripId, trip -> {
+            if (trip == null) {
+                showMessage("That trip no longer exists.");
+                return;
+            }
+            tripRepository.getItems(tripId, items -> {
+                String content;
+                String label;
+                if (requestCode == EXPORT_TRIP_GPX_REQUEST) {
+                    content = TripExport.gpx(trip, items);
+                    label = "GPX";
+                } else if (requestCode == EXPORT_TRIP_CSV_REQUEST) {
+                    content = TripExport.csv(trip, items);
+                    label = "CSV";
+                } else {
+                    content = TripExport.geoJson(trip, items);
+                    label = "GeoJSON";
+                }
+                try {
+                    ContentResolver resolver = getContentResolver();
+                    try (OutputStream output = resolver.openOutputStream(uri, "wt")) {
+                        if (output == null) throw new IOException("Android could not open the selected export file.");
+                        output.write(content.getBytes(StandardCharsets.UTF_8));
+                        output.flush();
+                    }
+                    showMessage("Exported " + trip.name + " as " + label + ".");
+                } catch (IOException ex) {
+                    showMessage("Trip export failed: " + ex.getMessage());
+                }
+            });
+        });
+    }
+
+    private String safeExportFilename(String value) {
+        String text = value == null ? "RockMap-Trip" : value.trim();
+        if (text.isEmpty()) text = "RockMap-Trip";
+        text = text.replaceAll("[^A-Za-z0-9._ -]+", "-").replaceAll("\\s+", "-");
+        if (text.length() > 80) text = text.substring(0, 80);
+        return text.isEmpty() ? "RockMap-Trip" : text;
+    }
+
     private void showSaved() {
         waypointRepository.getAll(items -> {
             AlertDialog.Builder builder = new AlertDialog.Builder(this)
@@ -1927,12 +2572,22 @@ public final class MainActivity extends Activity implements LocationRepository.L
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        boolean tripExportRequest = requestCode == EXPORT_TRIP_GEOJSON_REQUEST
+                || requestCode == EXPORT_TRIP_GPX_REQUEST
+                || requestCode == EXPORT_TRIP_CSV_REQUEST;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            if (tripExportRequest) pendingTripExportId = -1L;
+            return;
+        }
         Uri uri = data.getData();
         if (requestCode == EXPORT_WAYPOINTS_REQUEST) {
             exportWaypoints(uri);
         } else if (requestCode == IMPORT_WAYPOINTS_REQUEST) {
             importWaypoints(uri);
+        } else if (requestCode == EXPORT_TRIP_GEOJSON_REQUEST
+                || requestCode == EXPORT_TRIP_GPX_REQUEST
+                || requestCode == EXPORT_TRIP_CSV_REQUEST) {
+            exportTrip(uri, requestCode);
         }
     }
 
@@ -2308,6 +2963,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     @Override protected void onSaveInstanceState(Bundle outState) {
+        outState.putLong(STATE_PENDING_TRIP_EXPORT_ID, pendingTripExportId);
         super.onSaveInstanceState(outState);
         mapView.onSaveInstanceState(outState);
     }
@@ -2316,6 +2972,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         clearUpdateObserver();
         placeIndexRepository.close();
         waypointRepository.close();
+        tripRepository.close();
         mapView.onDestroy();
         super.onDestroy();
     }
