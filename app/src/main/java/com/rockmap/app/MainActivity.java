@@ -46,10 +46,12 @@ import com.rockmap.app.minerals.MineralIndexRepository;
 import com.rockmap.app.minerals.MineralOverlayController;
 import com.rockmap.app.minerals.MineralRecord;
 import com.rockmap.app.minerals.MineralSearchEngine;
+import com.rockmap.app.offline.DataUpdatePreviewer;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
+import com.rockmap.app.safety.SafetyAcknowledgement;
 import com.rockmap.app.trips.TripEntity;
 import com.rockmap.app.trips.TripExport;
 import com.rockmap.app.trips.TripItemEntity;
@@ -128,6 +130,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (!SafetyAcknowledgement.isAccessAllowed(this)) {
+            startActivity(new Intent(this, SafetyDisclosureActivity.class));
+            finish();
+            return;
+        }
         if (savedInstanceState != null) {
             pendingTripExportId = savedInstanceState.getLong(STATE_PENDING_TRIP_EXPORT_ID, -1L);
         }
@@ -233,7 +240,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void locate() {
-        if (!ensureLocationPermission()) return;
+        if (!ensureLocationPermission(false)) return;
         Location latest = locationRepository.getLatest();
         if (locationRepository.isRecent(latest)) {
             mapController.centerOn(latest);
@@ -1632,7 +1639,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void saveLocation() {
-        if (!ensureLocationPermission()) return;
+        if (!ensureLocationPermission(true)) return;
         if (!locationRepository.hasFinePermission()) {
             new AlertDialog.Builder(this)
                     .setTitle("Precise location required")
@@ -2723,9 +2730,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showData() {
         new AlertDialog.Builder(this)
-                .setTitle("Offline data")
+                .setTitle("Offline data & privacy")
                 .setMessage("App: RockMap " + BuildConfig.VERSION_NAME + "\n\n"
-                        + offlineDataManager.describeStatus()
+                        + userFacingOfflineStatus()
                         + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
                             ? (mineralIndexRepository.hasExpandedEvidence()
                                 ? "installed offline (MRDS + official localities + expanded USGS/CGS evidence)"
@@ -2751,8 +2758,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             + "\n\n" + mapController.describeLandDiagnostics()
                             + "\n\n" + mapController.describeClaimsDiagnostics()))
                 .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
+                .setNeutralButton("Safety & privacy", (d, w) ->
+                        startActivity(new Intent(this, PrivacySafetyActivity.class)))
                 .setNegativeButton("Close", null)
                 .show();
+    }
+
+    private String userFacingOfflineStatus() {
+        String status = offlineDataManager.describeStatus();
+        if (status == null) return "Offline data status unavailable.";
+        return status.replace(
+                "OFFLINE MAP: VERIFIED",
+                "OFFLINE MAP PACK: ACTIVE — FILE INTEGRITY CHECKED; REFERENCE ONLY");
     }
 
     private void startDataUpdate() {
@@ -2760,8 +2777,49 @@ public final class MainActivity extends Activity implements LocationRepository.L
             showMessage("This APK was not built from a configured public GitHub repository.");
             return;
         }
+        Toast.makeText(this, "Checking update size…", Toast.LENGTH_SHORT).show();
+        DataUpdatePreviewer.preview(this, BuildConfig.DATA_MANIFEST_URL, new DataUpdatePreviewer.Callback() {
+            @Override
+            public void onPreview(DataUpdatePreviewer.Preview preview) {
+                if (isFinishing() || isDestroyed()) return;
+                if (!preview.renderable) {
+                    showMessage(preview.message.isEmpty()
+                            ? "No downloadable RockMap data pack is currently published."
+                            : preview.message);
+                    return;
+                }
+                String version = preview.version.isEmpty() ? "available pack" : preview.version;
+                String estimated = formatBytes(preview.estimatedDownloadBytes);
+                String maximum = formatBytes(preview.totalPackBytes);
+                String message = "RockMap found " + version + ".\n\n"
+                        + "Estimated additional download: " + estimated
+                        + " across " + preview.estimatedDownloadFileCount
+                        + (preview.estimatedDownloadFileCount == 1 ? " file." : " files.")
+                        + "\nMaximum possible transfer for this pack: " + maximum + "."
+                        + "\n\nThe estimate is based on file sizes already present on this device. "
+                        + "If an existing same-size file fails RockMap's integrity check, it may be downloaded again, "
+                        + "but the transfer will not exceed the maximum shown above. Mobile-data charges may apply. "
+                        + "Downloads use HTTPS and are checked for declared file size and SHA-256 integrity before activation. "
+                        + "Your GPS position, saved markers, trips, and notes are not uploaded.";
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Download offline data?")
+                        .setMessage(message)
+                        .setPositiveButton("Download", (d, w) -> queueConfirmedDataUpdate())
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            }
+
+            @Override
+            public void onError(String message) {
+                if (isFinishing() || isDestroyed()) return;
+                showMessage("Could not check update size: " + message);
+            }
+        });
+    }
+
+    private void queueConfirmedDataUpdate() {
         androidx.work.OneTimeWorkRequest request = offlineDataManager.queueUpdate();
-        Toast.makeText(this, "Checking RockMap offline data…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Downloading and checking RockMap data integrity…", Toast.LENGTH_SHORT).show();
         clearUpdateObserver();
         updateLiveData = androidx.work.WorkManager.getInstance(this)
                 .getWorkInfoByIdLiveData(request.getId());
@@ -2777,13 +2835,21 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     historicMinesRequestedVisible = false;
                     historicMinesLoading = false;
                     mapController.reloadStyle();
-                    showMessage("Offline data downloaded. RockMap is validating the installed map now; bundled offline Find remains ready.");
+                    showMessage("Offline data downloaded and integrity-checked. Source accuracy is not guaranteed; bundled offline Find remains ready.");
                 } else {
                     showMessage(offlineDataManager.getLastUpdateStatus());
                 }
             }
         };
         updateLiveData.observeForever(updateObserver);
+    }
+
+    private String formatBytes(long bytes) {
+        if (bytes <= 0L) return "0 MB";
+        double mb = bytes / (1024d * 1024d);
+        if (mb < 0.1d) return String.format(Locale.US, "%.0f KB", bytes / 1024d);
+        if (mb < 10d) return String.format(Locale.US, "%.1f MB", mb);
+        return String.format(Locale.US, "%.0f MB", mb);
     }
 
     private void clearUpdateObserver() {
@@ -2945,16 +3011,34 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
     }
 
-    private boolean ensureLocationPermission() {
+    private boolean ensureLocationPermission(boolean precise) {
         boolean coarse = checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
         boolean fine = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
-        if (coarse || fine) return true;
-        requestPermissions(new String[]{
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-        }, LOCATION_PERMISSION_REQUEST);
+        if (precise ? fine : (coarse || fine)) return true;
+
+        String title = precise ? "Allow precise location?" : "Allow location?";
+        String message = precise
+                ? "RockMap uses precise location only while the app is open so you can create a field waypoint at your current GPS position. The waypoint is stored on this device and is not sent to RockMap servers. RockMap does not request background location. Android system backup may include saved markers and trips if device backup is enabled."
+                : "RockMap uses location only while the app is open to show your current position on the map. Approximate location is sufficient for this feature. Your location is not sent to RockMap servers, and RockMap does not request background location.";
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("Continue", (d, w) -> {
+                    if (precise) {
+                        requestPermissions(new String[]{
+                                Manifest.permission.ACCESS_FINE_LOCATION,
+                                Manifest.permission.ACCESS_COARSE_LOCATION
+                        }, LOCATION_PERMISSION_REQUEST);
+                    } else {
+                        requestPermissions(new String[]{
+                                Manifest.permission.ACCESS_COARSE_LOCATION
+                        }, LOCATION_PERMISSION_REQUEST);
+                    }
+                })
+                .setNegativeButton("Not now", null)
+                .show();
         return false;
     }
 
@@ -2962,10 +3046,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != LOCATION_PERMISSION_REQUEST) return;
-        if (locationRepository.hasCoarsePermission()) {
+        if (locationRepository.hasCoarsePermission() || locationRepository.hasFinePermission()) {
             if (started) locationRepository.start();
-            if (!locationRepository.hasFinePermission()) {
-                showMessage("Approximate location granted. Viewing can work, but RockMap will not save a field waypoint without precise location.");
+            if (locationRepository.hasFinePermission()) {
+                showMessage("Location permission granted. Tap GPS or Save GPS again to continue.");
+            } else {
+                showMessage("Approximate location granted. GPS viewing can work; Save GPS requires precise location.");
             }
         } else {
             showMessage("Location permission denied. Offline maps remain available, but GPS features are disabled.");
@@ -2991,10 +3077,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     @Override
     public void onMapSafetyState(boolean verified, String message) {
         safetyBanner.setText(verified
-                ? "OFFLINE MAP DATA VERIFIED"
-                : "TEST DATA — NOT VERIFIED FOR NAVIGATION");
+                ? "OFFLINE DATA PACK ACTIVE — REFERENCE ONLY"
+                : "TEST DATA — REFERENCE ONLY");
         safetyBanner.setBackgroundColor(verified
-                ? Color.rgb(30, 100, 55) : Color.rgb(150, 35, 25));
+                ? Color.rgb(45, 65, 80) : Color.rgb(150, 35, 25));
         safetyBanner.setVisibility(View.VISIBLE);
 
         // The bundled Protomaps style already contains named peak labels, but its inherited

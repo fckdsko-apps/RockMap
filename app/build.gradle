@@ -5,11 +5,12 @@ plugins {
 def versionNameValue = providers.gradleProperty('ROCKMAP_VERSION_NAME').getOrElse('0.1.0-alpha6.6')
 def versionCodeValue = (System.getenv('ROCKMAP_VERSION_CODE') ?: '1') as Integer
 def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
-// Alpha 6.6 bundles a compact offline Find index generated during the APK build from
+// Alpha 6.6 bundles a compact offline Find index generated during the APK/AAB build from
 // official USGS National Map Gazetteer names plus Colorado DOT state-highway names.
 // The Android app performs no statewide PMTiles scan or runtime geocoder download.
 def dataReleaseTag = 'rockmap-minerals-alpha6-2-1-20260815-test1'
 def manifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/releases/download/${dataReleaseTag}/manifest.json" : ''
+def privacyPolicyUrl = providers.gradleProperty('ROCKMAP_PRIVACY_POLICY_URL').getOrElse('')
 def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
 def signingProps = new Properties()
 def signingReady = false
@@ -38,6 +39,7 @@ android {
         versionName versionNameValue
 
         buildConfigField 'String', 'DATA_MANIFEST_URL', '"' + manifestUrl + '"'
+        buildConfigField 'String', 'PRIVACY_POLICY_URL', '"' + privacyPolicyUrl + '"'
         buildConfigField 'int', 'SUPPORTED_MANIFEST_VERSION', '1'
         buildConfigField 'int', 'SUPPORTED_STYLE_SCHEMA_VERSION', '1'
     }

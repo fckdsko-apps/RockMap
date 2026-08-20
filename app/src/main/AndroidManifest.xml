@@ -10,13 +10,15 @@
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="RockMap"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".SafetyDisclosureActivity"
             android:exported="true"
             android:screenOrientation="unspecified">
             <intent-filter>
@@ -25,17 +27,14 @@
             </intent-filter>
         </activity>
 
-        <!-- Temporary foreground-only Alpha 6.4 diagnostic entry point. It uses the same
-             GPS provider as RockMap but does not request background location. -->
         <activity
-            android:name=".gps.GpsValidationActivity"
-            android:exported="true"
-            android:label="RockMap GPS Validate"
-            android:screenOrientation="unspecified">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:name=".MainActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+
+        <activity
+            android:name=".PrivacySafetyActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
     </application>
 </manifest>

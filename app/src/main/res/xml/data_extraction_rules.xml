@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <!-- Downloadable map data is deliberately excluded. User waypoints remain backup-eligible. -->
+        <!-- Downloadable map data can be fetched again. User waypoints/trips remain backup-eligible. -->
         <exclude domain="file" path="maps/" />
+        <!-- Safety acknowledgment tokens are deliberately device/install-local and never backed up. -->
+        <exclude domain="sharedpref" path="rockmap_safety.xml" />
     </cloud-backup>
     <device-transfer>
-        <!-- Do not waste device-transfer space on data that can be downloaded and re-verified. -->
+        <!-- Do not transfer replaceable map packs or the install-local safety acknowledgment token. -->
         <exclude domain="file" path="maps/" />
+        <exclude domain="sharedpref" path="rockmap_safety.xml" />
     </device-transfer>
 </data-extraction-rules>

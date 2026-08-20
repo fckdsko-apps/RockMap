@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Downloadable map data is deliberately excluded. User waypoints remain backup-eligible. -->
+    <!-- Downloadable map data can be fetched again. User waypoints/trips remain backup-eligible. -->
     <exclude domain="file" path="maps/" />
+    <!-- Safety acknowledgment tokens are deliberately device/install-local and never backed up. -->
+    <exclude domain="sharedpref" path="rockmap_safety.xml" />
 </full-backup-content>
