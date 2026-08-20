@@ -606,7 +606,6 @@ for required_source in (
     "Land status legend",
     "LandStatusCatalog",
     "Tap a colored polygon for its category and source manager/name",
-    "TEST DATA — NOT VERIFIED FOR NAVIGATION",
     "compactClaimQuality",
     "Mapping: ",
     "CoordinateParser",

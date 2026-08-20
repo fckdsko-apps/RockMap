@@ -121,7 +121,6 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private String activeMineralScopeLabel = "All Colorado";
     private boolean historicMinesRequestedVisible;
     private boolean historicMinesLoading;
-    private TextView safetyBanner;
     private LiveData<WorkInfo> updateLiveData;
     private Observer<WorkInfo> updateObserver;
     private boolean started;
@@ -154,16 +153,6 @@ public final class MainActivity extends Activity implements LocationRepository.L
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        safetyBanner = new TextView(this);
-        safetyBanner.setTextColor(Color.WHITE);
-        safetyBanner.setBackgroundColor(Color.rgb(150, 35, 25));
-        safetyBanner.setPadding(dp(10), dp(5), dp(10), dp(5));
-        safetyBanner.setTextSize(12f);
-        safetyBanner.setGravity(Gravity.CENTER_HORIZONTAL);
-        FrameLayout.LayoutParams bannerParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
-        root.addView(safetyBanner, bannerParams);
-
         LinearLayout controls = new LinearLayout(this);
         // Two visible rows keep all eight map actions discoverable while preserving
         // comfortable touch targets on phone-width screens. addControl() groups four
@@ -186,10 +175,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             int left = insets.getSystemWindowInsetLeft();
-            int top = insets.getSystemWindowInsetTop();
             int right = insets.getSystemWindowInsetRight();
             int bottom = insets.getSystemWindowInsetBottom();
-            safetyBanner.setPadding(dp(10) + left, dp(5) + top, dp(10) + right, dp(5));
             controls.setPadding(dp(6) + left, dp(6), dp(6) + right, dp(6) + bottom);
             return insets;
         });
@@ -2767,9 +2754,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private String userFacingOfflineStatus() {
         String status = offlineDataManager.describeStatus();
         if (status == null) return "Offline data status unavailable.";
-        return status.replace(
-                "OFFLINE MAP: VERIFIED",
-                "OFFLINE MAP PACK: ACTIVE — FILE INTEGRITY CHECKED; REFERENCE ONLY");
+        return status
+                .replace("OFFLINE MAP: VERIFIED", "OFFLINE DATA PACK: ACTIVE")
+                .replace("NOT VERIFIED FOR NAVIGATION",
+                        "REFERENCE DATA — SEE SAFETY & DATA LIMITATIONS");
     }
 
     private void startDataUpdate() {
@@ -3076,13 +3064,6 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override
     public void onMapSafetyState(boolean verified, String message) {
-        safetyBanner.setText(verified
-                ? "OFFLINE DATA PACK ACTIVE — REFERENCE ONLY"
-                : "TEST DATA — REFERENCE ONLY");
-        safetyBanner.setBackgroundColor(verified
-                ? Color.rgb(45, 65, 80) : Color.rgb(150, 35, 25));
-        safetyBanner.setVisibility(View.VISIBLE);
-
         // The bundled Protomaps style already contains named peak labels, but its inherited
         // zoom-10 floor hides useful regional landmarks such as Mount Antero. Prominent peaks
         // are already ranked by the basemap; expose that existing offline layer from zoom 6.5.
