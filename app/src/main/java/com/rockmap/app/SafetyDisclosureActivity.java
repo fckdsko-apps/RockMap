@@ -144,9 +144,4 @@ public final class SafetyDisclosureActivity extends Activity {
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
-
-    @Override
-    public void onBackPressed() {
-        finishAndRemoveTask();
-    }
 }
