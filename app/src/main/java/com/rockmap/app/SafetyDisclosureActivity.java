@@ -29,9 +29,9 @@ public final class SafetyDisclosureActivity extends Activity {
             return;
         }
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(18), dp(18), dp(18), dp(24));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(18), dp(18), dp(14));
 
         TextView banner = new TextView(this);
         banner.setText("IMPORTANT — REFERENCE DATA ONLY");
@@ -40,26 +40,30 @@ public final class SafetyDisclosureActivity extends Activity {
         banner.setTextSize(15f);
         banner.setGravity(Gravity.CENTER);
         banner.setPadding(dp(12), dp(12), dp(12), dp(12));
-        content.addView(banner, new LinearLayout.LayoutParams(
+        root.addView(banner, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(this);
         title.setText("Read before using RockMap");
-        title.setTextSize(22f);
+        title.setTextSize(21f);
         title.setTextColor(Color.rgb(25, 25, 25));
-        title.setPadding(0, dp(16), 0, dp(8));
+        title.setPadding(0, dp(14), 0, dp(6));
         title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        content.addView(title);
+        root.addView(title);
+
+        String disclosureText = readAsset("safety_data_limitations.txt", 250_000);
+        boolean disclosureAvailable = disclosureText != null;
+
+        LinearLayout scrollContent = new LinearLayout(this);
+        scrollContent.setOrientation(LinearLayout.VERTICAL);
 
         TextView intro = new TextView(this);
         intro.setText("RockMap does not independently validate the accuracy, legal status, field condition, or coordinate precision of the public data it displays. You must acknowledge these limitations before using the app.");
         intro.setTextSize(14f);
         intro.setTextColor(Color.rgb(45, 45, 45));
         intro.setPadding(0, 0, 0, dp(12));
-        content.addView(intro);
+        scrollContent.addView(intro);
 
-        String disclosureText = readAsset("safety_data_limitations.txt", 250_000);
-        boolean disclosureAvailable = disclosureText != null;
         TextView disclosure = new TextView(this);
         disclosure.setText(disclosureAvailable
                 ? disclosureText
@@ -67,27 +71,45 @@ public final class SafetyDisclosureActivity extends Activity {
         disclosure.setTextSize(13f);
         disclosure.setTextColor(Color.rgb(50, 50, 50));
         disclosure.setTextIsSelectable(true);
-        disclosure.setPadding(0, 0, 0, dp(14));
-        content.addView(disclosure);
-
-        CheckBox suppress = new CheckBox(this);
-        suppress.setText("Don't show this again unless the safety notice changes");
-        suppress.setTextSize(13.5f);
-        suppress.setMinHeight(dp(48));
-        suppress.setPadding(0, dp(4), 0, dp(4));
-        content.addView(suppress, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        disclosure.setPadding(0, 0, 0, dp(12));
+        scrollContent.addView(disclosure);
 
         TextView tokenNote = new TextView(this);
         tokenNote.setText("Continuing creates a random acknowledgment token stored only in RockMap's private app data on this device. It is not sent to RockMap or used for tracking. It is a local app-state record, not a server-verified or tamper-proof legal receipt.");
         tokenNote.setTextSize(12f);
         tokenNote.setTextColor(Color.rgb(80, 80, 80));
-        tokenNote.setPadding(0, dp(4), 0, dp(12));
-        content.addView(tokenNote);
+        tokenNote.setPadding(0, dp(4), 0, dp(8));
+        scrollContent.addView(tokenNote);
 
-        Button privacy = button("Privacy & data handling");
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(scrollContent);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        CheckBox suppress = new CheckBox(this);
+        suppress.setText("Don't show this again unless the safety notice changes");
+        suppress.setTextSize(13f);
+        suppress.setMinHeight(dp(48));
+        suppress.setPadding(0, dp(2), 0, dp(2));
+        root.addView(suppress, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout secondaryActions = new LinearLayout(this);
+        secondaryActions.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button privacy = button("Privacy");
         privacy.setOnClickListener(v -> startActivity(new Intent(this, PrivacySafetyActivity.class)));
-        content.addView(privacy);
+        secondaryActions.addView(privacy, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button exit = button("Exit");
+        exit.setOnClickListener(v -> finishAndRemoveTask());
+        secondaryActions.addView(exit, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        root.addView(secondaryActions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         Button continueButton = button("I understand — continue");
         continueButton.setEnabled(disclosureAvailable);
@@ -95,15 +117,10 @@ public final class SafetyDisclosureActivity extends Activity {
             SafetyAcknowledgement.acknowledge(this, suppress.isChecked());
             openRockMap();
         });
-        content.addView(continueButton);
+        root.addView(continueButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        Button exit = button("Exit RockMap");
-        exit.setOnClickListener(v -> finishAndRemoveTask());
-        content.addView(exit);
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(content);
-        setContentView(scroll);
+        setContentView(root);
     }
 
     private void openRockMap() {

@@ -422,7 +422,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         ListView list = new ListView(this);
         list.setAdapter(adapter);
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(360)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(360)));
 
         boolean[] alphabetical = new boolean[]{false};
         Runnable refreshList = () -> refreshMineralAreaList(
@@ -614,7 +614,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         ListView list = new ListView(this);
         list.setAdapter(actionListAdapter(labels));
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(390)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(390)));
 
         LinearLayout actions = new LinearLayout(this);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -673,6 +673,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
         button.setGravity(Gravity.CENTER);
         button.setContentDescription(label);
         return button;
+    }
+
+    private int dialogListHeight(int preferredDp) {
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        int cap = Math.max(dp(140), Math.round(screenHeight * 0.38f));
+        return Math.min(dp(preferredDp), cap);
     }
 
     private static final class ActionListItem {
@@ -792,9 +798,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         ListView list = new ListView(this);
         list.setAdapter(actionListAdapter(rows));
         int estimatedRow = 96;
-        int listHeight = Math.min(430, Math.max(72, rows.size() * estimatedRow));
+        int preferredListDp = Math.min(430, Math.max(72, rows.size() * estimatedRow));
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(listHeight)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(preferredListDp)));
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(title)
@@ -1209,7 +1215,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search offline for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs — or paste latitude/longitude.\n\nFor the most accurate location, use known GPS coordinates. Name search is approximate and may only get you close.\n\nNot dependable by name: roads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, or general landmarks.\n\nExamples: Mount Antero, mtn antr, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
+        help.setText("Search offline for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs — or paste latitude/longitude. Name search is approximate.\n\nRoads, rivers, trails, parks, addresses, businesses and general landmarks are not dependable by name.\n\nExamples: Mount Antero, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -2716,38 +2722,71 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showData() {
-        new AlertDialog.Builder(this)
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(4), dp(18), 0);
+
+        TextView summary = helperText(dataSummaryText());
+        summary.setTextSize(13f);
+        summary.setPadding(0, 0, 0, dp(8));
+        box.addView(summary);
+
+        Button diagnostics = smallActionButton("Technical diagnostics");
+        box.addView(diagnostics, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Offline data & privacy")
-                .setMessage("App: RockMap " + BuildConfig.VERSION_NAME + "\n\n"
-                        + userFacingOfflineStatus()
-                        + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
-                            ? (mineralIndexRepository.hasExpandedEvidence()
-                                ? "installed offline (MRDS + official localities + expanded USGS/CGS evidence)"
-                                : mineralIndexRepository.hasOfficialLocalitySupplement()
-                                    ? "installed offline (USGS MRDS + official CGS/USGS locality supplement)"
-                                    : "installed offline (USGS MRDS; supplements not active)")
-                            : "not installed")
-                        + "\nArea mineral analysis: " + (mineralIndexRepository.isAvailable()
-                            ? "available offline" : "unavailable — mineral index not active")
-                        + "\nOffline Find: bundled Colorado search index"
-                            + (placeIndexRepository.getRecordCount() > 0
-                            ? " — " + placeIndexRepository.getRecordCount() + " records loaded"
-                            : placeIndexRepository.isReady()
-                                ? " — ready; loads when searched"
-                                : " — unavailable in this APK")
-                        + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
-                            ? (historicMineOverlayController.isLoaded()
-                                ? historicMineOverlayController.getRecordCount() + " mapped records loaded"
-                                : "available offline; enable in Layers")
-                            : "unavailable — expanded evidence index not active")
-                        + (mapController == null ? ""
-                            : "\n\n" + mapController.describeLabelDiagnostics()
-                            + "\n\n" + mapController.describeLandDiagnostics()
-                            + "\n\n" + mapController.describeClaimsDiagnostics()))
+                .setView(box)
                 .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
                 .setNeutralButton("Safety & privacy", (d, w) ->
                         startActivity(new Intent(this, PrivacySafetyActivity.class)))
                 .setNegativeButton("Close", null)
+                .create();
+        diagnostics.setOnClickListener(v -> {
+            dialog.dismiss();
+            showDataDiagnostics();
+        });
+        dialog.show();
+    }
+
+    private String dataSummaryText() {
+        return "RockMap " + BuildConfig.VERSION_NAME + "\n\n"
+                + userFacingOfflineStatus()
+                + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
+                    ? (mineralIndexRepository.hasExpandedEvidence()
+                        ? "installed — expanded offline evidence"
+                        : mineralIndexRepository.hasOfficialLocalitySupplement()
+                            ? "installed — MRDS + locality supplement"
+                            : "installed — MRDS")
+                    : "not installed")
+                + "\nOffline Find: " + (placeIndexRepository.getRecordCount() > 0
+                    ? placeIndexRepository.getRecordCount() + " records loaded"
+                    : placeIndexRepository.isReady() ? "ready" : "unavailable in this APK")
+                + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
+                    ? "available offline" : "not installed");
+    }
+
+    private void showDataDiagnostics() {
+        String diagnostics = "RockMap " + BuildConfig.VERSION_NAME
+                + (mapController == null ? "\n\nMap diagnostics unavailable."
+                    : "\n\n" + mapController.describeLabelDiagnostics()
+                    + "\n\n" + mapController.describeLandDiagnostics()
+                    + "\n\n" + mapController.describeClaimsDiagnostics());
+
+        ScrollView scroll = new ScrollView(this);
+        TextView body = new TextView(this);
+        body.setText(diagnostics);
+        body.setTextSize(12.5f);
+        body.setTextColor(Color.rgb(55, 55, 55));
+        body.setTextIsSelectable(true);
+        body.setPadding(dp(18), dp(8), dp(18), dp(8));
+        scroll.addView(body);
+
+        new AlertDialog.Builder(this)
+                .setTitle("Technical diagnostics")
+                .setView(scroll)
+                .setPositiveButton("Close", null)
                 .show();
     }
 
@@ -2776,21 +2815,25 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             : preview.message);
                     return;
                 }
-                String version = preview.version.isEmpty() ? "available pack" : preview.version;
+                if (preview.estimatedDownloadBytes <= 0L || preview.estimatedDownloadFileCount <= 0) {
+                    new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("Offline data is current")
+                            .setMessage("No additional files are currently required. Nothing will be downloaded.")
+                            .setPositiveButton("OK", null)
+                            .show();
+                    return;
+                }
+
                 String estimated = formatBytes(preview.estimatedDownloadBytes);
                 String maximum = formatBytes(preview.totalPackBytes);
-                String message = "RockMap found " + version + ".\n\n"
-                        + "Estimated additional download: " + estimated
+                String message = "Additional download: " + estimated
                         + " across " + preview.estimatedDownloadFileCount
                         + (preview.estimatedDownloadFileCount == 1 ? " file." : " files.")
-                        + "\nMaximum possible transfer for this pack: " + maximum + "."
-                        + "\n\nThe estimate is based on file sizes already present on this device. "
-                        + "If an existing same-size file fails RockMap's integrity check, it may be downloaded again, "
-                        + "but the transfer will not exceed the maximum shown above. Mobile-data charges may apply. "
-                        + "Downloads use HTTPS and are checked for declared file size and SHA-256 integrity before activation. "
-                        + "Your GPS position, saved markers, trips, and notes are not uploaded.";
+                        + "\nWorst-case transfer if an existing file fails integrity: " + maximum + "."
+                        + "\n\nInstalled files are reused. Downloads use HTTPS and declared-size/SHA-256 checks. "
+                        + "GPS positions, saved markers, trips and notes are not uploaded.";
                 new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("Download offline data?")
+                        .setTitle("Offline data update available")
                         .setMessage(message)
                         .setPositiveButton("Download", (d, w) -> queueConfirmedDataUpdate())
                         .setNegativeButton("Cancel", null)

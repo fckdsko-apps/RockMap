@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -27,15 +28,19 @@ public final class PrivacySafetyActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(18), dp(18), dp(18), dp(24));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(18), dp(18), dp(18), dp(14));
 
         TextView title = heading("Safety, sources & privacy", 22f);
-        content.addView(title);
+        title.setPadding(0, 0, 0, dp(8));
+        root.addView(title);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
 
         TextView safetyHeading = heading("Safety & data limitations", 17f);
-        safetyHeading.setPadding(0, dp(14), 0, dp(6));
+        safetyHeading.setPadding(0, dp(6), 0, dp(6));
         content.addView(safetyHeading);
 
         TextView safety = body(readAsset("safety_data_limitations.txt", 250_000));
@@ -64,6 +69,14 @@ public final class PrivacySafetyActivity extends Activity {
         });
         content.addView(reminder);
 
+        Button permissions = button("Manage app permissions");
+        permissions.setOnClickListener(v -> {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        });
+        content.addView(permissions);
+
         if (BuildConfig.PRIVACY_POLICY_URL != null
                 && !BuildConfig.PRIVACY_POLICY_URL.trim().isEmpty()) {
             Button online = button("Open public privacy policy");
@@ -77,13 +90,17 @@ public final class PrivacySafetyActivity extends Activity {
             content.addView(online);
         }
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
         Button close = button("Close");
         close.setOnClickListener(v -> finish());
-        content.addView(close);
+        root.addView(close);
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(content);
-        setContentView(scroll);
+        setContentView(root);
     }
 
     private String formatStatus(SafetyAcknowledgement.Status status) {
