@@ -232,15 +232,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void locate() {
         pendingLocationAction = LOCATION_ACTION_CENTER;
-        if (!ensureLocationPermission(false)) return;
+        if (!ensureLocationPermission(true)) return;
         pendingLocationAction = LOCATION_ACTION_NONE;
 
-        Location latest = locationRepository.getLatest();
-        if (locationRepository.isRecent(latest)) {
-            centerOnGpsFix(latest);
-            return;
-        }
-        locationRepository.requestCurrent(this::centerOnGpsFix, this::showMessage);
+        // GPS centering is intentionally stricter than passive map-position updates.
+        // Always request a fresh precise GPS-provider fix so an older approximate/coarse
+        // location cannot be reused after permission changes.
+        locationRepository.requestFreshPrecise(this::centerOnGpsFix, this::showMessage);
     }
 
     private void centerOnGpsFix(Location location) {
@@ -2785,20 +2783,25 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private String dataSummaryText() {
+        boolean mapReady = offlineDataManager.hasRenderableActivePack();
+        boolean landReady = mapController != null && mapController.hasLandStatusAvailable();
+        boolean claimsReady = mapController != null && mapController.hasClaimsAvailable();
+        boolean mineralsReady = mineralIndexRepository.isAvailable();
+        boolean minesReady = mineralIndexRepository.hasExpandedEvidence();
+        int findCount = placeIndexRepository.getRecordCount();
+
         return "RockMap " + BuildConfig.VERSION_NAME + "\n\n"
-                + userFacingOfflineStatus()
-                + "\nMineral finder: " + (mineralIndexRepository.isAvailable()
-                    ? (mineralIndexRepository.hasExpandedEvidence()
-                        ? "installed — expanded offline evidence"
-                        : mineralIndexRepository.hasOfficialLocalitySupplement()
-                            ? "installed — MRDS + locality supplement"
-                            : "installed — MRDS")
-                    : "not installed")
-                + "\nOffline Find: " + (placeIndexRepository.getRecordCount() > 0
-                    ? placeIndexRepository.getRecordCount() + " records loaded"
-                    : placeIndexRepository.isReady() ? "ready" : "unavailable in this APK")
-                + "\nHistoric mines: " + (mineralIndexRepository.hasExpandedEvidence()
-                    ? "available offline" : "not installed");
+                + "Offline data lets RockMap keep its main reference features available without a connection.\n\n"
+                + "Map: " + (mapReady ? "installed and ready" : "not installed")
+                + "\nPlace search: " + (findCount > 0
+                    ? findCount + " Colorado place records ready"
+                    : placeIndexRepository.isReady() ? "ready" : "not available")
+                + "\nMineral search: " + (mineralsReady ? "ready" : "not installed")
+                + "\nHistoric mine records: " + (minesReady ? "ready" : "not installed")
+                + "\nLand-management layer: " + (landReady ? "ready" : "not available")
+                + "\nMining-claim records: " + (claimsReady ? "ready" : "not available")
+                + "\n\nThese are public reference datasets, not guarantees of accuracy or current conditions. "
+                + "Open Safety & privacy for sources and limitations.";
     }
 
     private void showDataDiagnostics() {
@@ -3081,10 +3084,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 == PackageManager.PERMISSION_GRANTED;
         if (precise ? fine : (coarse || fine)) return true;
 
+        boolean centering = pendingLocationAction == LOCATION_ACTION_CENTER;
         String title = precise ? "Allow precise location?" : "Allow location?";
         String message = precise
-                ? "RockMap uses precise location only while the app is open so you can save a field waypoint at your current GPS position. The waypoint stays on this device unless you export it. RockMap does not request background location."
-                : "RockMap uses location only while the app is open to show your current position on the map. Approximate location is sufficient for GPS viewing. Your location is not sent to RockMap servers.";
+                ? (centering
+                    ? "RockMap needs Android's precise location permission to center the map on your actual GPS position. Location is used only while the app is open and is not sent to RockMap servers. RockMap does not request background location."
+                    : "RockMap uses precise location only while the app is open so you can save a field waypoint at your current GPS position. The waypoint stays on this device unless you export it. RockMap does not request background location.")
+                : "RockMap uses location only while the app is open. Your location is not sent to RockMap servers.";
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(message)
@@ -3123,7 +3129,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         if (started) locationRepository.start();
         if (requestedAction == LOCATION_ACTION_CENTER) {
-            mapView.post(this::locate);
+            if (fine) {
+                mapView.post(this::locate);
+            } else {
+                new AlertDialog.Builder(this)
+                        .setTitle("Precise location required")
+                        .setMessage("RockMap needs Android's Precise location setting to center accurately on your GPS position. Approximate location can be intentionally offset by Android.")
+                        .setPositiveButton("App settings", (d, w) -> openAppSettings())
+                        .setNegativeButton("Close", null)
+                        .show();
+            }
             return;
         }
         if (requestedAction == LOCATION_ACTION_SAVE) {
