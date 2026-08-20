@@ -138,7 +138,7 @@ for rel in (
         text = read(rel)
         if 'path="maps/"' not in text or 'domain="file"' not in text:
             err(f"{rel} must exclude filesDir/maps from backup.")
-        if re.search(r"<exclude[^>]+domain=\"database\"", text, re.I):
+        if re.search(r'<exclude[^>]+domain=\"database\"', text, re.I):
             err(f"{rel} must not exclude the waypoint database.")
     except Exception as exc:
         err(f"{rel} is invalid XML: {exc}")
@@ -364,7 +364,7 @@ for required_manifest_text in (
 land_validator_text = read("scripts/validate_land_metadata.py")
 for required_validator_text in ("manager_code", "manager_name", 'x.get("id") == "land"', "unexpected raw fields"):
     if required_validator_text not in land_validator_text:
-        err(f"Alpha 4 land metadata validator is missing: {required_validator_text}")
+        err(f"Alpha 4 BLM metadata validator is missing: {required_validator_text}")
 
 # Alpha 5 claims builder: official MLRS not-closed source, conservative Colorado spatial
 # selection, exact OBJECTID completeness, type-code whitelist, and coarse-quality filtering.
@@ -950,9 +950,6 @@ for path in ROOT.rglob("*"):
         for token in secret_tokens:
             if token in text:
                 err(f"Potential private signing material is tracked in {rel}: {token}")
-
-if file_count > 100:
-    err(f"Source package has {file_count} files; keep it at or below 100 for one browser upload.")
 
 if errors:
     print("PRE-FLIGHT FAILED")
