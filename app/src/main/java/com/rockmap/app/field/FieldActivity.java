@@ -20,6 +20,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rockmap.app.MainActivity;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -35,6 +36,7 @@ import java.util.List;
 import java.util.Locale;
 
 public final class FieldActivity extends Activity implements LocationRepository.Listener {
+    public static final String EXTRA_SCREEN = "rockmap.field.screen";
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
@@ -46,31 +48,36 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private Runnable pendingLocationAction;
     private String pendingPhotoUri = "";
     private boolean started;
-    private GeoMath.Point navigationTarget;
-    private TextView navigationStatus;
-    private String navigationTitle = "";
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         db = FieldDatabase.get(this);
         waypointRepository = new WaypointRepository(this);
         locationRepository = new LocationRepository(this, this);
-        showHub();
+        String screen = getIntent() == null ? "" : getIntent().getStringExtra(EXTRA_SCREEN);
+        if ("tracks".equals(screen)) showTracks();
+        else if ("records".equals(screen)) showFieldRecords();
+        else if ("coordinates".equals(screen)) showCoordinates();
+        else if ("measure".equals(screen)) { FieldMapState.requestMeasurement(this); returnToMap(); }
+        else {
+            showHub();
+            if ("import".equals(screen)) getWindow().getDecorView().post(this::beginImport);
+        }
     }
 
     private void showHub() {
         setTitle("RockMap Field");
         LinearLayout root = page();
         root.addView(title("Field"));
-        root.addView(help("Record where you went, keep richer observations and samples, measure ground, import existing GPS/GIS files, and convert coordinates. Core map/GPS behavior is unchanged."));
+        root.addView(help("Field tools are map-first: tracks, navigation, measurement, imported geometry, saved markers and Field Records all connect back to the main map so you can see what they mean geographically."));
 
-        root.addView(action("Track recording & backtrack", "Record a GPS breadcrumb trail, pause/resume, review distance and backtrack to the start.", v -> showTracks()));
+        root.addView(action("Track recording & backtrack", "Record GPS tracks that draw live on the main map and remain visible until hidden or deleted.", v -> showTracks()));
         root.addView(action("Field records & samples", "Richer saved observations with category, mineral, sample ID, notes, photo, GPS accuracy and elevation.", v -> showFieldRecords()));
         root.addView(action("Saved locations", "View the existing RockMap saved-marker database or copy a marker into a richer field record.", v -> showLegacyWaypoints()));
-        root.addView(action("Measure & prospecting areas", "Measure distance, bearing and polygon area from coordinates; save reusable areas locally.", v -> showMeasure()));
-        root.addView(action("Import GPX / KML / GeoJSON", "Add waypoints, tracks and polygon areas. Imports are additive and never delete existing RockMap data.", v -> beginImport()));
+        root.addView(action("Measure on map", "Return to the map and add measurement points by map tap, GPS, saved marker, Field Record, or pasted coordinate.", v -> { FieldMapState.requestMeasurement(this); returnToMap(); }));
+        root.addView(action("Import GPX / KML / GeoJSON", "Add waypoints, tracks and polygon areas, then choose what to view and show the import on the map.", v -> beginImport()));
         root.addView(action("Coordinate formats", "Convert one location between decimal degrees, DDM, DMS, WGS84 UTM and MGRS.", v -> showCoordinates()));
-        root.addView(action("Back to map", "Return to the normal RockMap map screen.", v -> finish()));
+        root.addView(action("Back to map", "Return to the main RockMap map and its visual Field controls.", v -> returnToMap()));
         setContentView(scroll(root));
     }
 
@@ -98,7 +105,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if(tracks.isEmpty())root.addView(help("No recorded or imported tracks yet."));
         else for(FieldDatabase.Track track:tracks){
             List<GeoMath.Point> pts=db.getTrackPoints(track.id);
-            root.addView(action(track.name,trackStatus(track,pts),v->showTrackDetail(track.id)));
+            root.addView(action(track.name,trackStatus(track,pts)+(FieldMapState.isTrackHidden(this,track.id)?" · hidden on map":" · visible on map"),v->showTrackDetail(track.id)));
         }
         root.addView(back()); setContentView(scroll(root));
     }
@@ -116,8 +123,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         }
                         long id=db.createTrack(input.getText().toString().trim(),System.currentTimeMillis());
                         Intent service=new Intent(this,TrackRecordingService.class).setAction(TrackRecordingService.ACTION_START).putExtra(TrackRecordingService.EXTRA_TRACK_ID,id);
+                        FieldMapState.showTrack(this,id);
+                        FieldMapState.requestTrackFocus(this,id);
                         if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.O)startForegroundService(service); else startService(service);
-                        showTracks();
+                        returnToMap();
                     }).setNegativeButton("Cancel",null).show();
         });
     }
@@ -142,25 +151,26 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showTrackDetail(long trackId){
         FieldDatabase.Track track=db.getTrack(trackId); if(track==null){toast("Track not found.");showTracks();return;}
         List<GeoMath.Point> pts=db.getTrackPoints(trackId);
-        LinearLayout root=page(); root.addView(title(track.name)); root.addView(help(trackStatus(track,pts)+"\nStarted: "+DateFormat.getDateTimeInstance().format(new Date(track.startedAt))));
-        BreadcrumbView breadcrumb=new BreadcrumbView(this); breadcrumb.setPoints(pts); root.addView(breadcrumb,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(250)));
-        if(pts.size()>=2)root.addView(action("Backtrack", "Live distance/bearing to the recorded start plus the breadcrumb shape.",v->showBacktrack(trackId)));
-        Button delete=button("Delete track"); delete.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Delete track?").setMessage("This permanently removes the track and its breadcrumb points from RockMap Field.").setPositiveButton("Delete",(d,w)->{db.deleteTrack(trackId);showTracks();}).setNegativeButton("Cancel",null).show()); root.addView(delete);
+        LinearLayout root=page(); root.addView(title(track.name));
+        root.addView(help(trackStatus(track,pts)+"\nStarted: "+DateFormat.getDateTimeInstance().format(new Date(track.startedAt))+"\n\nTracks are geographic map objects. The small sketch below is only a quick shape preview."));
+        BreadcrumbView breadcrumb=new BreadcrumbView(this); breadcrumb.setPoints(pts); root.addView(breadcrumb,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(180)));
+        root.addView(action("Show on map", "Open the real map, zoom to this track, and leave it visible.", v->{FieldMapState.showTrack(this,trackId);FieldMapState.requestTrackFocus(this,trackId);returnToMap();}));
+        if(FieldMapState.isTrackHidden(this,trackId)) root.addView(action("Unhide track", "Make this track part of the persistent map overlay again.",v->{FieldMapState.showTrack(this,trackId);showTrackDetail(trackId);}));
+        else root.addView(action("Hide track", "Keep the track saved but remove its line from the map until you unhide it.",v->{FieldMapState.hideTrack(this,trackId);showTrackDetail(trackId);}));
+        if(pts.size()>=2) root.addView(action("Backtrack on map", "Show the recorded track and navigate to its start using live GPS distance and bearing.",v->showBacktrack(trackId)));
+        Button delete=button("Delete track"); delete.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Delete track?").setMessage("This permanently removes the track and its recorded points. It will also disappear from the map.").setPositiveButton("Delete",(d,w)->{db.deleteTrack(trackId);showTracks();}).setNegativeButton("Cancel",null).show()); root.addView(delete);
         root.addView(nav("Back to tracks",v->showTracks())); setContentView(scroll(root));
     }
 
     private void showBacktrack(long trackId){
-        List<GeoMath.Point> pts=db.getTrackPoints(trackId); if(pts.size()<2){toast("Track has too few points for backtrack.");return;}
-        LinearLayout root=page(); root.addView(title("Backtrack"));
-        TextView status=help("Getting a fresh GPS fix…"); root.addView(status);
-        BreadcrumbView view=new BreadcrumbView(this); view.setPoints(pts); root.addView(view,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(280)));
-        root.addView(help("Green = recorded start · red = recorded end · blue = current GPS. This is simple bearing guidance, not turn-by-turn routing. Terrain, access and hazards are not evaluated."));
-        root.addView(nav("Back to track",v->showTrackDetail(trackId))); setContentView(scroll(root));
-        runWithPreciseLocation(()->locationRepository.requestFreshPrecise(location->{
-            GeoMath.Point current=point(location); view.setCurrent(current); GeoMath.Point start=pts.get(0);
-            double distance=GeoMath.distanceMeters(current,start); double bearing=GeoMath.initialBearingDegrees(current,start);
-            status.setText("To recorded start: "+GeoMath.distanceLabel(distance)+" · "+String.format(Locale.US,"%.0f° %s",bearing,GeoMath.cardinal(bearing))+"\nCurrent: "+current.decimal());
-        },this::toast));
+        FieldDatabase.Track track=db.getTrack(trackId);
+        List<GeoMath.Point> pts=db.getTrackPoints(trackId);
+        if(track==null||pts.size()<2){toast("Track has too few points for backtrack.");return;}
+        GeoMath.Point start=pts.get(0);
+        FieldMapState.showTrack(this,trackId);
+        FieldMapState.requestTrackFocus(this,trackId);
+        FieldMapState.startNavigation(this,"Start of "+track.name,start);
+        returnToMap();
     }
 
     // ---------- FIELD RECORDS ----------
@@ -200,7 +210,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
         LinearLayout root=page();root.addView(title(r.name));
         StringBuilder s=new StringBuilder();s.append(CoordinateFormats.decimal(r.lat,r.lon));if(r.accuracy>=0)s.append(String.format(Locale.US,"\nGPS accuracy: ±%.1f m",r.accuracy));if(Double.isFinite(r.altitude))s.append(String.format(Locale.US,"\nElevation: %.1f m",r.altitude));if(!r.category.isEmpty())s.append("\nCategory: ").append(r.category);if(!r.mineral.isEmpty())s.append("\nMineral/material: ").append(r.mineral);if(!r.sampleId.isEmpty())s.append("\nSample ID: ").append(r.sampleId);if(!r.notes.isEmpty())s.append("\n\n").append(r.notes);s.append("\n\nUpdated: ").append(DateFormat.getDateTimeInstance().format(new Date(r.updatedAt)));root.addView(help(s.toString()));
         if(r.photoUri!=null&&!r.photoUri.isEmpty())root.addView(action("Open attached photo",r.photoUri,v->openPhoto(r.photoUri)));
-        root.addView(action("Navigate to this point","Live straight-line distance and bearing from GPS. This is not route guidance.",v->showPointNavigation(r.name,new GeoMath.Point(r.lat,r.lon))));
+        root.addView(action("Show on map","Center this Field Record on the main map without starting navigation.",v->{FieldMapState.requestFocusBounds(this,new FieldMapState.Bounds(r.lat,r.lon,r.lat,r.lon));returnToMap();}));
+        root.addView(action("Navigate to this point","Open the main map with a live target line, distance and bearing from GPS.",v->showPointNavigation(r.name,new GeoMath.Point(r.lat,r.lon))));
         LinearLayout row=row();row.addView(small("Edit",v->editFieldRecord(r)),weight());row.addView(small("Delete",v->new AlertDialog.Builder(this).setTitle("Delete field record?").setMessage(r.name+" will be removed from this device.").setPositiveButton("Delete",(d,w)->{db.deleteFieldRecord(r.id);showFieldRecords();}).setNegativeButton("Cancel",null).show()),weight());root.addView(row);root.addView(nav("Back to field records",v->showFieldRecords()));setContentView(scroll(root));
     }
 
@@ -210,44 +221,110 @@ public final class FieldActivity extends Activity implements LocationRepository.
     // ---------- LEGACY SAVED LOCATIONS ----------
 
     private void showLegacyWaypoints(){
-        waypointRepository.getAll(items->{LinearLayout root=page();root.addView(title("Saved locations"));root.addView(help("These are the existing RockMap markers used by the current map. Copying one to a Field Record leaves the original marker untouched."));
+        waypointRepository.getAll(items->{LinearLayout root=page();root.addView(title("Saved locations"));root.addView(help("These are the existing RockMap markers used by the main map. Their names are displayed as map labels at useful zoom levels. Copying one to a Field Record leaves the original marker untouched."));
             if(items.isEmpty())root.addView(help("No saved locations yet."));
             else for(WaypointEntity w:items){root.addView(action(w.name,CoordinateFormats.decimal(w.latitude,w.longitude),v->showLegacyWaypoint(w)));}
             root.addView(nav("Back to Field",v->showHub()));setContentView(scroll(root));});
     }
     private void showLegacyWaypoint(WaypointEntity w){
         LinearLayout root=page();root.addView(title(w.name));root.addView(help(CoordinateFormats.decimal(w.latitude,w.longitude)+(w.accuracyMeters>=0?String.format(Locale.US,"\nGPS accuracy: ±%.1f m",w.accuracyMeters):"")+(w.notes==null||w.notes.trim().isEmpty()?"":"\n\n"+w.notes)));
-        root.addView(action("Navigate to this point","Live straight-line distance and bearing from GPS. This is not route guidance.",v->showPointNavigation(w.name,new GeoMath.Point(w.latitude,w.longitude))));
+        root.addView(action("Show on map","Center this labeled saved marker on the main map.",v->{FieldMapState.requestFocusBounds(this,new FieldMapState.Bounds(w.latitude,w.longitude,w.latitude,w.longitude));returnToMap();}));
+        root.addView(action("Navigate to this point","Open the main map with a live target line, distance and bearing from GPS.",v->showPointNavigation(w.name,new GeoMath.Point(w.latitude,w.longitude))));
         root.addView(action("Copy to Field Record","Creates a richer editable field record; the original map marker remains.",v->{long now=System.currentTimeMillis();FieldDatabase.FieldRecord r=new FieldDatabase.FieldRecord(0,w.name,"Saved location","","",w.notes,w.latitude,w.longitude,Double.NaN,w.accuracyMeters,"",now,now);r.id=db.insertFieldRecord(r);showFieldRecord(r.id);}));root.addView(nav("Back to saved locations",v->showLegacyWaypoints()));setContentView(scroll(root));
     }
 
     // ---------- MEASURE / AREAS ----------
 
     private void showMeasure(){
-        LinearLayout root=page();root.addView(title("Measure & areas"));root.addView(help("Enter one coordinate per line. RockMap calculates total path distance, first-to-last bearing, and polygon area when 3+ points are present. This works offline."));
-        EditText points=input("39.7392, -104.9903\n39.7400, -104.9800\n…","");points.setSingleLine(false);points.setMinLines(7);root.addView(points);
-        TextView result=help("No measurement yet.");root.addView(result);
-        LinearLayout row=row();row.addView(small("Add GPS",v->runWithPreciseLocation(()->locationRepository.requestFreshPrecise(l->{String old=points.getText().toString().trim();points.setText(old+(old.isEmpty()?"":"\n")+CoordinateFormats.decimal(l.getLatitude(),l.getLongitude()));},this::toast))),weight());row.addView(small("Calculate",v->{try{List<GeoMath.Point> parsed=parseLines(points.getText().toString());result.setText(measurementText(parsed));}catch(IllegalArgumentException ex){toast(ex.getMessage());}}),weight());root.addView(row);
-        root.addView(action("Save as prospecting area","Requires at least 3 coordinate lines.",v->{try{List<GeoMath.Point> parsed=parseLines(points.getText().toString());if(parsed.size()<3)throw new IllegalArgumentException("Enter at least 3 coordinates to save an area.");promptSaveArea(parsed);}catch(IllegalArgumentException ex){toast(ex.getMessage());}}));
-        root.addView(section("Saved areas"));List<FieldDatabase.Area> areas=db.listAreas();if(areas.isEmpty())root.addView(help("No saved areas yet."));else for(FieldDatabase.Area a:areas)root.addView(action(a.name,GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points))+" · "+a.points.size()+" vertices",v->showArea(a)));root.addView(back());setContentView(scroll(root));
+        LinearLayout root=page();
+        root.addView(title("Measure & prospecting areas"));
+        root.addView(help("Measurement now happens on the main map so every point, line and polygon has geographic context. Use map taps, GPS, saved markers, Field Records, or pasted coordinates."));
+        root.addView(action("Start measurement on map","Opens a clearly labeled measurement HUD over the map with undo, save-area and finish controls.",v->{FieldMapState.requestMeasurement(this);returnToMap();}));
+        root.addView(section("Saved areas"));
+        List<FieldDatabase.Area> areas=db.listAreas();
+        if(areas.isEmpty())root.addView(help("No saved prospecting areas yet."));
+        else for(FieldDatabase.Area a:areas)root.addView(action(a.name,GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points))+" · "+a.points.size()+" vertices",v->showArea(a)));
+        root.addView(back());
+        setContentView(scroll(root));
     }
 
     private List<GeoMath.Point> parseLines(String raw){ArrayList<GeoMath.Point> out=new ArrayList<>();for(String line:raw.split("\\r?\\n")){String t=line.trim();if(t.isEmpty())continue;try{CoordinateParser.Result r=CoordinateParser.parse(t);out.add(new GeoMath.Point(r.latitude,r.longitude));}catch(IllegalArgumentException ex){throw new IllegalArgumentException("Could not parse: "+t+" — "+ex.getMessage());}}if(out.size()<2)throw new IllegalArgumentException("Enter at least 2 coordinates.");if(out.size()>2000)throw new IllegalArgumentException("Measurement is limited to 2,000 points.");return out;}
     private String measurementText(List<GeoMath.Point> pts){double distance=GeoMath.pathDistanceMeters(pts);double bearing=GeoMath.initialBearingDegrees(pts.get(0),pts.get(pts.size()-1));String out="Path distance: "+GeoMath.distanceLabel(distance)+"\nFirst → last bearing: "+String.format(Locale.US,"%.0f° %s",bearing,GeoMath.cardinal(bearing));if(pts.size()>=3)out+="\nPolygon area: "+GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(pts));return out;}
-    private void promptSaveArea(List<GeoMath.Point> pts){EditText name=input("Area name","");new AlertDialog.Builder(this).setTitle("Save prospecting area").setMessage(measurementText(pts)).setView(name).setPositiveButton("Save",(d,w)->{db.insertArea(name.getText().toString().trim(),"Saved from measurement tool",pts);showMeasure();}).setNegativeButton("Cancel",null).show();}
-    private void showArea(FieldDatabase.Area a){LinearLayout root=page();root.addView(title(a.name));root.addView(help(a.points.size()+" vertices\n"+measurementText(a.points)+(a.notes==null||a.notes.isEmpty()?"":"\n\n"+a.notes)));BreadcrumbView view=new BreadcrumbView(this);view.setPoints(a.points);root.addView(view,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(250)));Button del=button("Delete area");del.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Delete area?").setPositiveButton("Delete",(d,w)->{db.deleteArea(a.id);showMeasure();}).setNegativeButton("Cancel",null).show());root.addView(del);root.addView(nav("Back to measure",v->showMeasure()));setContentView(scroll(root));}
+    private void showArea(FieldDatabase.Area a){
+        LinearLayout root=page();
+        root.addView(title(a.name));
+        root.addView(help(a.points.size()+" vertices\n"+measurementText(a.points)+(a.notes==null||a.notes.isEmpty()?"":"\n\n"+a.notes)+"\n\nThe sketch is only a shape preview; Show on map is the geographic view."));
+        BreadcrumbView view=new BreadcrumbView(this);view.setPoints(a.points);root.addView(view,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,dp(180)));
+        root.addView(action("Show on map","Zoom to this saved area and keep the polygon visible in geographic context.",v->{FieldMapState.Bounds bounds=FieldMapState.Bounds.fromPoints(a.points);if(bounds!=null)FieldMapState.requestFocusBounds(this,bounds);returnToMap();}));
+        Button del=button("Delete area");del.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Delete area?").setPositiveButton("Delete",(d,w)->{db.deleteArea(a.id);showMeasure();}).setNegativeButton("Cancel",null).show());root.addView(del);
+        root.addView(nav("Back to areas",v->showMeasure()));setContentView(scroll(root));
+    }
 
     // ---------- IMPORT ----------
 
     private void beginImport(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_IMPORT);}
     private void handleImport(Uri uri){
-        try{byte[] bytes=read(uri,MAX_IMPORT_BYTES);String name=displayName(uri);FieldImport.Result result=FieldImport.parse(bytes,name);String summary="Found:\n"+result.waypoints.size()+" waypoints\n"+result.tracks.size()+" tracks\n"+result.areas.size()+" polygon areas\n"+result.pointCount+" total geometry points\n\nImport is additive. Existing RockMap data will not be replaced.";new AlertDialog.Builder(this).setTitle("Import "+name+"?").setMessage(summary).setPositiveButton("Import",(d,w)->applyImport(result)).setNegativeButton("Cancel",null).show();}catch(Exception ex){toast("Import rejected: "+ex.getMessage());}
+        try{
+            byte[] bytes=read(uri,MAX_IMPORT_BYTES);
+            String name=displayName(uri);
+            FieldImport.Result result=FieldImport.parse(bytes,name);
+            String summary="Found:\n"+result.waypoints.size()+" waypoints\n"+result.tracks.size()+" tracks\n"+result.areas.size()+" polygon areas\n"+result.pointCount+" total geometry points\n\nImport is additive. Existing RockMap data will not be replaced.";
+            new AlertDialog.Builder(this).setTitle("Import "+name+"?").setMessage(summary).setPositiveButton("Import",(d,w)->applyImport(result,name)).setNegativeButton("Cancel",null).show();
+        }catch(Exception ex){toast("Import rejected: "+ex.getMessage());}
     }
-    private void applyImport(FieldImport.Result r){
-        final int[] remaining={r.tracks.size()+r.areas.size()};
-        for(FieldImport.ImportedTrack t:r.tracks){long id=db.createTrack(t.name,System.currentTimeMillis());for(GeoMath.Point p:t.points)db.addTrackPoint(id,p);db.setTrackStatus(id,FieldDatabase.TRACK_COMPLETE,System.currentTimeMillis());}
-        for(FieldImport.ImportedArea a:r.areas)db.insertArea(a.name,"Imported area",a.points);
-        if(!r.waypoints.isEmpty())waypointRepository.insertAll(r.waypoints,count->{toast("Imported "+count+" waypoints, "+r.tracks.size()+" tracks and "+r.areas.size()+" areas.");showHub();});else{toast("Imported "+r.tracks.size()+" tracks and "+r.areas.size()+" areas.");showHub();}
+
+    private void applyImport(FieldImport.Result r,String displayName){
+        ArrayList<Long> trackIds=new ArrayList<>();
+        ArrayList<Long> areaIds=new ArrayList<>();
+        for(FieldImport.ImportedTrack t:r.tracks){
+            long id=db.createTrack(t.name,System.currentTimeMillis());
+            for(GeoMath.Point p:t.points)db.addTrackPoint(id,p);
+            db.setTrackStatus(id,FieldDatabase.TRACK_COMPLETE,System.currentTimeMillis());
+            FieldMapState.showTrack(this,id);
+            trackIds.add(id);
+        }
+        for(FieldImport.ImportedArea a:r.areas)areaIds.add(db.insertArea(a.name,"Imported area",a.points));
+        Runnable done=()->showImportComplete(displayName,r,trackIds,areaIds);
+        if(!r.waypoints.isEmpty())waypointRepository.insertAll(r.waypoints,count->done.run());else done.run();
+    }
+
+    private void showImportComplete(String displayName,FieldImport.Result r,List<Long> trackIds,List<Long> areaIds){
+        final AlertDialog[] holder=new AlertDialog[1];
+        LinearLayout box=page();
+        box.setPadding(dp(14),dp(6),dp(14),dp(6));
+        box.addView(help("Imported "+r.waypoints.size()+" waypoint"+(r.waypoints.size()==1?"":"s")+", "+r.tracks.size()+" track"+(r.tracks.size()==1?"":"s")+", and "+r.areas.size()+" area"+(r.areas.size()==1?"":"s")+". Choose what you want to do next."));
+        box.addView(action("Show import on map","Zoom to all imported geometry. Tracks, areas and labeled waypoints are visible immediately.",v->{holder[0].dismiss();FieldMapState.Bounds bounds=importBounds(r);if(bounds!=null)FieldMapState.requestFocusBounds(this,bounds);returnToMap();}));
+        if(!r.waypoints.isEmpty())box.addView(action("View imported waypoints",r.waypoints.size()+" imported saved marker"+(r.waypoints.size()==1?"":"s")+".",v->{holder[0].dismiss();showImportedWaypoints(r.waypoints);}));
+        if(!trackIds.isEmpty())box.addView(action("View imported tracks",trackIds.size()+" imported track"+(trackIds.size()==1?"":"s")+".",v->{holder[0].dismiss();showImportedTracks(trackIds);}));
+        if(!areaIds.isEmpty())box.addView(action("View imported areas",areaIds.size()+" imported area"+(areaIds.size()==1?"":"s")+".",v->{holder[0].dismiss();showImportedAreas(areaIds);}));
+        holder[0]=new AlertDialog.Builder(this).setTitle("Import complete — "+displayName).setView(scroll(box)).setNegativeButton("Done",(d,w)->showHub()).create();
+        holder[0].show();
+    }
+
+    private FieldMapState.Bounds importBounds(FieldImport.Result r){
+        ArrayList<GeoMath.Point> all=new ArrayList<>();
+        for(WaypointEntity w:r.waypoints)all.add(new GeoMath.Point(w.latitude,w.longitude));
+        for(FieldImport.ImportedTrack t:r.tracks)all.addAll(t.points);
+        for(FieldImport.ImportedArea a:r.areas)all.addAll(a.points);
+        return FieldMapState.Bounds.fromPoints(all);
+    }
+
+    private void showImportedWaypoints(List<WaypointEntity> items){
+        LinearLayout root=page();root.addView(title("Imported waypoints"));root.addView(help("These are now normal RockMap saved markers and are labeled on the map."));
+        for(WaypointEntity w:items)root.addView(action(w.name,CoordinateFormats.decimal(w.latitude,w.longitude),v->showPointNavigation(w.name,new GeoMath.Point(w.latitude,w.longitude))));
+        root.addView(back());setContentView(scroll(root));
+    }
+
+    private void showImportedTracks(List<Long> ids){
+        LinearLayout root=page();root.addView(title("Imported tracks"));
+        for(Long id:ids){FieldDatabase.Track t=db.getTrack(id);if(t!=null)root.addView(action(t.name,trackStatus(t,db.getTrackPoints(t.id)),v->showTrackDetail(t.id)));}
+        root.addView(back());setContentView(scroll(root));
+    }
+
+    private void showImportedAreas(List<Long> ids){
+        LinearLayout root=page();root.addView(title("Imported areas"));
+        for(Long id:ids){for(FieldDatabase.Area a:db.listAreas()){if(a.id==id){root.addView(action(a.name,GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points)),v->showArea(a)));break;}}}
+        root.addView(back());setContentView(scroll(root));
     }
 
     // ---------- COORDINATES ----------
@@ -259,19 +336,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void renderFormats(EditText input,TextView output){try{CoordinateParser.Result r=CoordinateParser.parse(input.getText().toString());CoordinateFormats.Utm utm=CoordinateFormats.toUtm(r.latitude,r.longitude);output.setText("Decimal\n"+CoordinateFormats.decimal(r.latitude,r.longitude)+"\n\nDDM\n"+CoordinateFormats.ddm(r.latitude,r.longitude)+"\n\nDMS\n"+CoordinateFormats.dms(r.latitude,r.longitude)+"\n\nUTM (WGS84)\n"+utm.label()+"\n\nMGRS (5-digit grid)\n"+CoordinateFormats.mgrs(r.latitude,r.longitude));}catch(IllegalArgumentException ex){input.setError(ex.getMessage());}}
 
     private void showPointNavigation(String name, GeoMath.Point target){
-        navigationTarget=target; navigationTitle=name==null?"Target":name;
-        LinearLayout root=page(); root.addView(title("Navigate to "+navigationTitle));
-        navigationStatus=help("Getting a fresh GPS fix…"); root.addView(navigationStatus);
-        root.addView(help("Target: "+target.decimal()+"\nStraight-line bearing only. RockMap does not calculate a safe/legal route, trail condition, cliff exposure or private-property access."));
-        root.addView(nav("Back to Field",v->{navigationTarget=null;navigationStatus=null;showHub();}));
-        setContentView(scroll(root));
-        runWithPreciseLocation(()->locationRepository.requestFreshPrecise(this::updateNavigation,this::toast));
-    }
-
-    private void updateNavigation(Location location){
-        if(navigationTarget==null||navigationStatus==null||location==null)return;
-        GeoMath.Point current=point(location); double distance=GeoMath.distanceMeters(current,navigationTarget); double bearing=GeoMath.initialBearingDegrees(current,navigationTarget);
-        navigationStatus.setText("Distance: "+GeoMath.distanceLabel(distance)+"\nBearing: "+String.format(Locale.US,"%.0f° %s",bearing,GeoMath.cardinal(bearing))+"\nCurrent: "+current.decimal());
+        FieldMapState.startNavigation(this,name,target);
+        FieldMapState.requestFocusBounds(this,new FieldMapState.Bounds(target.lat,target.lon,target.lat,target.lon));
+        returnToMap();
     }
 
     // ---------- LOCATION / ACTIVITY RESULTS ----------
@@ -284,13 +351,20 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
     @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] results){super.onRequestPermissionsResult(requestCode,permissions,results);if(requestCode!=REQ_LOCATION)return;Runnable pending=pendingLocationAction;pendingLocationAction=null;if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED){if(started)locationRepository.start();if(pending!=null)pending.run();}else toast("Precise location was not granted.");}
     @Override public void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();if(requestCode==REQ_IMPORT)handleImport(uri);else if(requestCode==REQ_PHOTO){try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(RuntimeException ignored){}pendingPhotoUri=uri.toString();toast("Photo attached. Tap Save to keep the field record.");}}
-    @Override public void onLocation(Location location) { if(navigationTarget!=null) updateNavigation(location); }
+    @Override public void onLocation(Location location) {}
     @Override public void onLocationError(String message){toast(message);}
     @Override protected void onStart(){super.onStart();started=true;if(locationRepository.hasCoarsePermission())locationRepository.start();}
     @Override protected void onStop(){started=false;locationRepository.stop();super.onStop();}
     @Override protected void onDestroy(){waypointRepository.close();super.onDestroy();}
 
     // ---------- UI / IO ----------
+
+    private void returnToMap(){
+        Intent intent=new Intent(this, MainActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
+        finish();
+    }
 
     private LinearLayout page(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);l.setPadding(dp(18),dp(14),dp(18),dp(24));l.setBackgroundColor(0xfffafafa);return l;}
     private ScrollView scroll(View content){ScrollView s=new ScrollView(this);s.setFillViewport(true);s.addView(content);s.setOnApplyWindowInsetsListener((v,i)->{v.setPadding(i.getSystemWindowInsetLeft(),i.getSystemWindowInsetTop(),i.getSystemWindowInsetRight(),i.getSystemWindowInsetBottom());return i;});s.requestApplyInsets();return s;}
@@ -300,7 +374,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private Button button(String text){Button b=new Button(this);b.setText(text);b.setAllCaps(false);b.setTextSize(14f);b.setMinHeight(dp(50));b.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);return b;}
     private View action(String title,String detail,View.OnClickListener listener){LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);card.setPadding(dp(14),dp(10),dp(14),dp(10));card.setBackgroundColor(0xffffffff);TextView h=new TextView(this);h.setText(title+"  ›");h.setTextSize(16f);h.setTextColor(0xff205b93);h.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);card.addView(h);TextView d=help(detail);d.setPadding(0,dp(3),0,0);card.addView(d);card.setClickable(true);card.setFocusable(true);card.setMinimumHeight(dp(68));card.setOnClickListener(listener);LinearLayout wrap=new LinearLayout(this);wrap.setPadding(0,dp(4),0,dp(4));wrap.addView(card,new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,ViewGroup.LayoutParams.WRAP_CONTENT));return wrap;}
     private Button nav(String text,View.OnClickListener listener){Button b=button(text);b.setOnClickListener(listener);return b;}
-    private Button back(){return nav("Back to map",v->finish());}
+    private Button back(){return nav("Back to map",v->returnToMap());}
     private Button small(String text,View.OnClickListener l){Button b=button(text);b.setGravity(Gravity.CENTER);b.setOnClickListener(l);return b;}
     private LinearLayout row(){LinearLayout r=new LinearLayout(this);r.setOrientation(LinearLayout.HORIZONTAL);return r;}
     private LinearLayout.LayoutParams weight(){return new LinearLayout.LayoutParams(0,ViewGroup.LayoutParams.WRAP_CONTENT,1f);}
