@@ -88,6 +88,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int EXPORT_TRIP_GEOJSON_REQUEST = 504;
     private static final int EXPORT_TRIP_GPX_REQUEST = 505;
     private static final int EXPORT_TRIP_CSV_REQUEST = 506;
+    private static final int EXPORT_TRIP_XML_REQUEST = 507;
     private static final String STATE_PENDING_TRIP_EXPORT_ID = "pendingTripExportId";
     private static final int MAX_IMPORT_BYTES = 5_000_000;
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
@@ -2305,16 +2306,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showTripExportPicker(TripEntity trip) {
         String[] formats = {
-                "GeoJSON — full trip data",
-                "GPX — GPS / mapping apps",
-                "CSV — spreadsheet"
+                "CSV — spreadsheet / easy editing\nKeeps stop order, names, coordinates, type/context, notes, source references, and trip details in columns.",
+                "RockMap XML — readable full trip file\nKeeps trip details plus stop order, coordinates, notes, type/context, and RockMap source references.",
+                "GPX — GPS / mapping apps\nKeeps coordinates, stop names, type/context/notes, and trip description. RockMap source references are not preserved.",
+                "GeoJSON — GIS / mapping software\nKeeps full trip/stop planning metadata and point geometry, including RockMap source references."
         };
         new AlertDialog.Builder(this)
                 .setTitle("Export " + trip.name)
                 .setItems(formats, (d, which) -> {
-                    if (which == 0) beginTripExport(trip, EXPORT_TRIP_GEOJSON_REQUEST);
-                    else if (which == 1) beginTripExport(trip, EXPORT_TRIP_GPX_REQUEST);
-                    else beginTripExport(trip, EXPORT_TRIP_CSV_REQUEST);
+                    if (which == 0) beginTripExport(trip, EXPORT_TRIP_CSV_REQUEST);
+                    else if (which == 1) beginTripExport(trip, EXPORT_TRIP_XML_REQUEST);
+                    else if (which == 2) beginTripExport(trip, EXPORT_TRIP_GPX_REQUEST);
+                    else beginTripExport(trip, EXPORT_TRIP_GEOJSON_REQUEST);
                 })
                 .setNegativeButton("Back", (d, w) -> showTripDetail(trip))
                 .show();
@@ -2331,6 +2334,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         } else if (requestCode == EXPORT_TRIP_CSV_REQUEST) {
             intent.setType("text/csv");
             intent.putExtra(Intent.EXTRA_TITLE, base + ".csv");
+        } else if (requestCode == EXPORT_TRIP_XML_REQUEST) {
+            intent.setType("application/xml");
+            intent.putExtra(Intent.EXTRA_TITLE, base + ".xml");
         } else {
             intent.setType("application/geo+json");
             intent.putExtra(Intent.EXTRA_TITLE, base + ".geojson");
@@ -2359,6 +2365,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 } else if (requestCode == EXPORT_TRIP_CSV_REQUEST) {
                     content = TripExport.csv(trip, items);
                     label = "CSV";
+                } else if (requestCode == EXPORT_TRIP_XML_REQUEST) {
+                    content = TripExport.rockMapXml(trip, items);
+                    label = "RockMap XML";
                 } else {
                     content = TripExport.geoJson(trip, items);
                     label = "GeoJSON";
@@ -2574,7 +2583,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         super.onActivityResult(requestCode, resultCode, data);
         boolean tripExportRequest = requestCode == EXPORT_TRIP_GEOJSON_REQUEST
                 || requestCode == EXPORT_TRIP_GPX_REQUEST
-                || requestCode == EXPORT_TRIP_CSV_REQUEST;
+                || requestCode == EXPORT_TRIP_CSV_REQUEST
+                || requestCode == EXPORT_TRIP_XML_REQUEST;
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (tripExportRequest) pendingTripExportId = -1L;
             return;
@@ -2586,7 +2596,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
             importWaypoints(uri);
         } else if (requestCode == EXPORT_TRIP_GEOJSON_REQUEST
                 || requestCode == EXPORT_TRIP_GPX_REQUEST
-                || requestCode == EXPORT_TRIP_CSV_REQUEST) {
+                || requestCode == EXPORT_TRIP_CSV_REQUEST
+                || requestCode == EXPORT_TRIP_XML_REQUEST) {
             exportTrip(uri, requestCode);
         }
     }

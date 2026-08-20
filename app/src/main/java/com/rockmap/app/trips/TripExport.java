@@ -33,6 +33,34 @@ public final class TripExport {
         return out.toString();
     }
 
+    public static String rockMapXml(TripEntity trip, List<TripItemEntity> items) {
+        StringBuilder out = new StringBuilder();
+        out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+                .append("<rockmapTrip schema=\"2\">\n")
+                .append("  <trip>\n")
+                .append("    <name>").append(xml(trip.name)).append("</name>\n")
+                .append("    <plannedDate>").append(xml(trip.plannedDate)).append("</plannedDate>\n")
+                .append("    <notes>").append(xml(trip.notes)).append("</notes>\n")
+                .append("  </trip>\n")
+                .append("  <stops>\n");
+        for (int i = 0; i < items.size(); i++) {
+            TripItemEntity item = items.get(i);
+            out.append("    <stop order=\"").append(i + 1).append("\">\n")
+                    .append("      <name>").append(xml(item.name)).append("</name>\n")
+                    .append("      <kind>").append(xml(item.kind)).append("</kind>\n")
+                    .append("      <context>").append(xml(item.context)).append("</context>\n")
+                    .append("      <latitude>").append(number(item.latitude)).append("</latitude>\n")
+                    .append("      <longitude>").append(number(item.longitude)).append("</longitude>\n")
+                    .append("      <notes>").append(xml(item.notes)).append("</notes>\n")
+                    .append("      <sourceType>").append(xml(item.sourceType)).append("</sourceType>\n")
+                    .append("      <sourceRef>").append(xml(item.sourceRef)).append("</sourceRef>\n")
+                    .append("    </stop>\n");
+        }
+        out.append("  </stops>\n")
+                .append("</rockmapTrip>\n");
+        return out.toString();
+    }
+
     public static String gpx(TripEntity trip, List<TripItemEntity> items) {
         StringBuilder out = new StringBuilder();
         out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")

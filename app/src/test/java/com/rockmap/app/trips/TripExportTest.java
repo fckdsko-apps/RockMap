@@ -18,6 +18,12 @@ public class TripExportTest {
         assertTrue(json.contains("Antero \\\"weekend\\\""));
         assertTrue(json.contains("-106.2469000"));
 
+        String xml = TripExport.rockMapXml(trip, Arrays.asList(item));
+        assertTrue(xml.contains("<rockmapTrip schema=\"2\">"));
+        assertTrue(xml.contains("<notes>A&amp;B</notes>"));
+        assertTrue(xml.contains("<sourceRef>place:mount-antero</sourceRef>"));
+        assertTrue(xml.contains("<latitude>38.6741000</latitude>"));
+
         String gpx = TripExport.gpx(trip, Arrays.asList(item));
         assertTrue(gpx.contains("A&amp;B") || gpx.contains("Chaffee &amp; Lake"));
         assertTrue(gpx.contains("lat=\"38.6741000\""));
