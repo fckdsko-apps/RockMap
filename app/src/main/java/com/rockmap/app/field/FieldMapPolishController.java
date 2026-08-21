@@ -3,6 +3,8 @@ package com.rockmap.app.field;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Color;
+import android.graphics.PointF;
+import android.graphics.RectF;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -17,12 +19,12 @@ import com.rockmap.app.MainActivity;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.maplibre.android.geometry.LatLng;
 import org.maplibre.android.maps.MapLibreMap;
 import org.maplibre.android.maps.MapView;
 import org.maplibre.android.maps.Style;
 import org.maplibre.android.style.layers.CircleLayer;
 import org.maplibre.android.style.layers.Layer;
-import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.sources.GeoJsonSource;
 import org.maplibre.geojson.Feature;
 import org.maplibre.geojson.Geometry;
@@ -32,47 +34,39 @@ import org.maplibre.geojson.Point;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.maplibre.android.style.expressions.Expression.get;
 import static org.maplibre.android.style.layers.Property.NONE;
 import static org.maplibre.android.style.layers.Property.VISIBLE;
 import static org.maplibre.android.style.layers.PropertyFactory.circleColor;
 import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
-import static org.maplibre.android.style.layers.PropertyFactory.textAllowOverlap;
-import static org.maplibre.android.style.layers.PropertyFactory.textColor;
-import static org.maplibre.android.style.layers.PropertyFactory.textField;
-import static org.maplibre.android.style.layers.PropertyFactory.textHaloColor;
-import static org.maplibre.android.style.layers.PropertyFactory.textHaloWidth;
-import static org.maplibre.android.style.layers.PropertyFactory.textOffset;
-import static org.maplibre.android.style.layers.PropertyFactory.textSize;
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
 /**
- * Small additive map-polish controller for Commit-1 field UX.
+ * Small additive map-polish controller for the Commit-1 field UX.
  *
- * It deliberately does not replace MainActivity, MapController, LocationRepository, or the
- * primary FieldMapController. It adds three narrowly-scoped behaviors:
- *  1) measurement values directly on measurement geometry,
- *  2) immediate synchronization of Field waypoint mirror/labels with Layers > Saved locations,
- *  3) completed-track context HUD plus START/END markers on the real basemap.
+ * The primary FieldMapController still owns track/area/measurement geometry. This controller
+ * deliberately leaves MainActivity, MapController, LocationRepository and the known-good GPS
+ * centering path untouched. It supplies the pieces that need to stay visually obvious above the
+ * basemap: saved-location visibility synchronization, persistent import access, readable
+ * measurement labels, and completed-track context controls/endpoints.
  */
 public final class FieldMapPolishController {
     private static final String CONTEXT_HUD_TAG = "rockmap-track-context-hud";
     private static final String EXISTING_FIELD_HUD_TAG = "rockmap-field-map-hud";
     private static final String IMPORTS_BUTTON_TAG = "rockmap-imports-entry";
+    private static final String TRACK_TOOLS_BUTTON_TAG = "rockmap-track-tools-entry";
+    private static final String SCREEN_LABELS_TAG = "rockmap-field-screen-labels";
+    private static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
 
     private static final String MAIN_WAYPOINT_LAYER = "rockmap-waypoint-layer";
     private static final String FIELD_WAYPOINT_MIRROR = "rockmap-waypoint-mirror-layer";
     private static final String FIELD_WAYPOINT_LABEL = "rockmap-waypoint-label-layer";
 
-    private static final String MEASURE_LINE_SOURCE = "rockmap-field-measure-line-source";
-    private static final String MEASURE_LABEL_SOURCE = "rockmap-field-measure-label-source";
-    private static final String MEASURE_LABEL_LAYER = "rockmap-field-measure-label-layer";
+    private static final String MEASURE_LINE_LAYER = "rockmap-field-measure-line-layer";
 
     private static final String TRACK_ENDPOINT_SOURCE = "rockmap-field-track-endpoint-source";
     private static final String TRACK_ENDPOINT_LAYER = "rockmap-field-track-endpoint-layer";
-    private static final String TRACK_ENDPOINT_LABEL = "rockmap-field-track-endpoint-label";
 
     private final Activity activity;
     private final FieldDatabase db;
@@ -83,22 +77,22 @@ public final class FieldMapPolishController {
     private MapLibreMap map;
     private LinearLayout contextHud;
     private Button importsButton;
+    private Button trackToolsButton;
+    private FrameLayout screenLabels;
     private boolean resumed;
     private boolean styleTickPending;
+    private boolean contextHudDismissed;
 
     private long cachedTrackId = Long.MIN_VALUE;
     private FieldDatabase.Track cachedTrack;
     private List<GeoMath.Point> cachedTrackPoints = new ArrayList<>();
-    private String lastMeasureLabelJson = "";
     private String lastEndpointJson = "";
-    private long lastImportsCheck;
-    private boolean cachedHasImports;
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (!resumed) return;
             applyPolish();
-            main.postDelayed(this, 350L);
+            main.postDelayed(this, 300L);
         }
     };
 
@@ -114,8 +108,12 @@ public final class FieldMapPolishController {
         if (mapView == null) return;
         root = findMapRoot(mapView);
         if (root == null) return;
+
+        installScreenLabels();
         installContextHud();
         installImportsButton();
+        installTrackToolsButton();
+
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
             applyPolish();
@@ -124,6 +122,9 @@ public final class FieldMapPolishController {
 
     public void onResume() {
         resumed = true;
+        // Returning from Field > Tracks is an explicit way of reopening a track map view.
+        // Do not leave the toolbar hidden simply because the same track id was selected again.
+        if (FieldMapState.selectedTrackDetail(activity) >= 0L) contextHudDismissed = false;
         attach();
         main.removeCallbacks(tick);
         main.post(tick);
@@ -144,30 +145,14 @@ public final class FieldMapPolishController {
         map.getStyle(style -> {
             styleTickPending = false;
             ensureLayers(style);
-            updateImportsButton();
+            updatePersistentButtons();
             syncSavedLocationVisibility(style);
-            updateMeasurementLabels(style);
             updateTrackContext(style);
+            renderScreenLabels();
         });
     }
 
     private void ensureLayers(Style style) {
-        if (style.getSource(MEASURE_LABEL_SOURCE) == null) {
-            style.addSource(new GeoJsonSource(MEASURE_LABEL_SOURCE, emptyCollection()));
-            lastMeasureLabelJson = null;
-        }
-        if (style.getLayer(MEASURE_LABEL_LAYER) == null) {
-            SymbolLayer labels = new SymbolLayer(MEASURE_LABEL_LAYER, MEASURE_LABEL_SOURCE);
-            labels.setProperties(
-                    textField(get("name")),
-                    textSize(13f),
-                    textColor(Color.rgb(185, 25, 110)),
-                    textHaloColor(Color.WHITE),
-                    textHaloWidth(2.2f),
-                    textAllowOverlap(true));
-            style.addLayer(labels);
-        }
-
         if (style.getSource(TRACK_ENDPOINT_SOURCE) == null) {
             style.addSource(new GeoJsonSource(TRACK_ENDPOINT_SOURCE, emptyCollection()));
             lastEndpointJson = null;
@@ -176,30 +161,14 @@ public final class FieldMapPolishController {
             CircleLayer points = new CircleLayer(TRACK_ENDPOINT_LAYER, TRACK_ENDPOINT_SOURCE);
             points.setProperties(
                     circleColor(Color.rgb(20, 70, 135)),
-                    circleRadius(7f),
+                    circleRadius(8f),
                     circleStrokeColor(Color.WHITE),
-                    circleStrokeWidth(2.5f));
+                    circleStrokeWidth(3f));
             style.addLayer(points);
-        }
-        if (style.getLayer(TRACK_ENDPOINT_LABEL) == null) {
-            SymbolLayer labels = new SymbolLayer(TRACK_ENDPOINT_LABEL, TRACK_ENDPOINT_SOURCE);
-            labels.setProperties(
-                    textField(get("name")),
-                    textSize(12f),
-                    textColor(Color.rgb(15, 45, 90)),
-                    textHaloColor(Color.WHITE),
-                    textHaloWidth(2f),
-                    textOffset(new Float[]{0f, 1.35f}),
-                    textAllowOverlap(true));
-            style.addLayer(labels);
         }
     }
 
-    /**
-     * MainActivity owns Layers > Saved locations. The previous map integration mirrored those
-     * circles for immediate import visibility, so this tiny loop follows the real layer's
-     * visibility within a fraction of a second rather than waiting for the heavier field refresh.
-     */
+    /** Keep the Field mirror/labels locked to MainActivity's real Layers > Saved locations state. */
     private void syncSavedLocationVisibility(Style style) {
         Layer mainSaved = style.getLayer(MAIN_WAYPOINT_LAYER);
         if (mainSaved == null) return;
@@ -209,65 +178,130 @@ public final class FieldMapPolishController {
         setVisible(style, FIELD_WAYPOINT_LABEL, visible && FieldMapState.labelsVisible(activity));
     }
 
-    private void updateMeasurementLabels(Style style) {
-        GeoJsonSource lineSource = style.getSourceAs(MEASURE_LINE_SOURCE);
-        if (lineSource == null) {
-            setMeasureLabels(style, emptyCollection(), false);
-            return;
+    /**
+     * Use Android overlay text instead of relying on a MapLibre glyph/symbol layer. The previous
+     * symbol labels could exist in the style yet still be effectively invisible. These labels are
+     * positioned from the same geographic line every 300 ms, so the number is visibly attached to
+     * the line while the user pans/zooms.
+     */
+    private void renderScreenLabels() {
+        if (screenLabels == null || map == null || mapView == null) return;
+        screenLabels.removeAllViews();
+
+        renderMeasurementLabels();
+        renderTrackEndpointLabels();
+
+        if (screenLabels.getChildCount() == 0) {
+            screenLabels.setVisibility(View.GONE);
+        } else {
+            screenLabels.setVisibility(View.VISIBLE);
+            screenLabels.bringToFront();
+        }
+        bringPersistentControlsToFront();
+        if (contextHud != null && contextHud.getVisibility() == View.VISIBLE) contextHud.bringToFront();
+    }
+
+    private void renderMeasurementLabels() {
+        List<GeoMath.Point> points = renderedMeasurementPoints();
+        if (points.size() < 2) return;
+
+        int segmentCount = points.size() - 1;
+        int step = Math.max(1, (int) Math.ceil(segmentCount / 30d));
+        for (int i = 0; i < segmentCount; i += step) {
+            GeoMath.Point a = points.get(i);
+            GeoMath.Point b = points.get(i + 1);
+            GeoMath.Point mid = new GeoMath.Point(
+                    (a.lat + b.lat) / 2d,
+                    midpointLongitude(a.lon, b.lon));
+            addMapLabel(
+                    GeoMath.distanceLabel(GeoMath.distanceMeters(a, b)),
+                    mid,
+                    Color.rgb(255, 224, 70),
+                    Color.rgb(25, 25, 25),
+                    13f,
+                    true,
+                    0);
         }
 
-        List<GeoMath.Point> points = new ArrayList<>();
+        if (points.size() >= 3) {
+            GeoMath.Point center = averagePoint(points);
+            addMapLabel(
+                    "AREA  " + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(points)),
+                    center,
+                    Color.rgb(185, 25, 110),
+                    Color.WHITE,
+                    13f,
+                    true,
+                    dp(24));
+        }
+    }
+
+    private List<GeoMath.Point> renderedMeasurementPoints() {
+        ArrayList<GeoMath.Point> out = new ArrayList<>();
+        if (map == null || mapView == null || mapView.getWidth() <= 0 || mapView.getHeight() <= 0) return out;
         try {
-            List<Feature> features = lineSource.querySourceFeatures(null);
+            RectF viewport = new RectF(0f, 0f, mapView.getWidth(), mapView.getHeight());
+            List<Feature> features = map.queryRenderedFeatures(viewport, new String[]{MEASURE_LINE_LAYER});
             for (Feature feature : features) {
                 if (feature == null) continue;
                 Geometry geometry = feature.geometry();
                 if (!(geometry instanceof LineString)) continue;
                 for (Point point : ((LineString) geometry).coordinates()) {
-                    points.add(new GeoMath.Point(point.latitude(), point.longitude()));
+                    out.add(new GeoMath.Point(point.latitude(), point.longitude()));
                 }
-                if (!points.isEmpty()) break;
+                if (!out.isEmpty()) break;
             }
         } catch (RuntimeException ignored) {
-            // A style can be in the middle of reloading. The next 350 ms tick retries safely.
+            // Map/style transitions are retried on the next tick.
         }
-
-        if (points.size() < 2) {
-            setMeasureLabels(style, emptyCollection(), false);
-            return;
-        }
-
-        JSONArray features = new JSONArray();
-        try {
-            int segmentCount = points.size() - 1;
-            int step = Math.max(1, (int) Math.ceil(segmentCount / 40d));
-            for (int i = 0; i < segmentCount; i += step) {
-                GeoMath.Point a = points.get(i);
-                GeoMath.Point b = points.get(i + 1);
-                GeoMath.Point mid = new GeoMath.Point((a.lat + b.lat) / 2d, midpointLongitude(a.lon, b.lon));
-                String label = GeoMath.distanceLabel(GeoMath.distanceMeters(a, b));
-                features.put(pointFeature(mid, label));
-            }
-
-            if (points.size() >= 3) {
-                GeoMath.Point center = averagePoint(points);
-                String area = "AREA  " + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(points));
-                features.put(pointFeature(center, area));
-            }
-        } catch (JSONException ignored) {
-            setMeasureLabels(style, emptyCollection(), false);
-            return;
-        }
-        setMeasureLabels(style, collection(features), true);
+        return out;
     }
 
-    private void setMeasureLabels(Style style, String json, boolean visible) {
-        if (!json.equals(lastMeasureLabelJson)) {
-            GeoJsonSource source = style.getSourceAs(MEASURE_LABEL_SOURCE);
-            if (source != null) source.setGeoJson(json);
-            lastMeasureLabelJson = json;
-        }
-        setVisible(style, MEASURE_LABEL_LAYER, visible);
+    private void renderTrackEndpointLabels() {
+        if (cachedTrack == null || cachedTrackPoints.size() < 2
+                || FieldMapState.selectedTrackDetail(activity) < 0L) return;
+
+        addMapLabel("START", cachedTrackPoints.get(0),
+                Color.rgb(20, 70, 135), Color.WHITE, 13f, true, -dp(25));
+        addMapLabel("END", cachedTrackPoints.get(cachedTrackPoints.size() - 1),
+                Color.rgb(20, 70, 135), Color.WHITE, 13f, true, dp(25));
+    }
+
+    private void addMapLabel(String label, GeoMath.Point point, int background, int foreground,
+                             float textSizeSp, boolean bold, int verticalOffsetPx) {
+        if (screenLabels == null || map == null || point == null) return;
+        PointF screen = map.getProjection().toScreenLocation(new LatLng(point.lat, point.lon));
+        if (screen == null || !Float.isFinite(screen.x) || !Float.isFinite(screen.y)) return;
+
+        int safeBottom = Math.max(dp(80), mapView.getHeight() - dp(118));
+        if (screen.x < -dp(60) || screen.x > mapView.getWidth() + dp(60)
+                || screen.y < -dp(60) || screen.y > mapView.getHeight() + dp(60)) return;
+
+        TextView view = new TextView(activity);
+        view.setText(label);
+        view.setTextSize(textSizeSp);
+        view.setTextColor(foreground);
+        view.setBackgroundColor(background);
+        view.setGravity(Gravity.CENTER);
+        view.setPadding(dp(6), dp(3), dp(6), dp(3));
+        view.setClickable(false);
+        view.setFocusable(false);
+        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        view.measure(
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+
+        int width = Math.max(dp(38), view.getMeasuredWidth());
+        int height = Math.max(dp(24), view.getMeasuredHeight());
+        int left = Math.round(screen.x - width / 2f);
+        int top = Math.round(screen.y - height / 2f) + verticalOffsetPx;
+        left = Math.max(dp(3), Math.min(left, Math.max(dp(3), mapView.getWidth() - width - dp(3))));
+        top = Math.max(statusBarHeight() + dp(3), Math.min(top, safeBottom - height));
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
+        params.leftMargin = left;
+        params.topMargin = top;
+        screenLabels.addView(view, params);
     }
 
     private void updateTrackContext(Style style) {
@@ -276,22 +310,32 @@ public final class FieldMapPolishController {
             cachedTrackId = selected;
             cachedTrack = selected >= 0L ? db.getTrack(selected) : null;
             cachedTrackPoints = selected >= 0L ? db.getTrackPoints(selected) : new ArrayList<>();
+            contextHudDismissed = false;
         }
 
         if (selected < 0L || cachedTrack == null || cachedTrackPoints.size() < 2) {
             if (selected >= 0L && cachedTrack == null) FieldMapState.clearSelectedTrackDetail(activity);
             setEndpointJson(style, emptyCollection(), false);
             hideContextHud();
+            updateTrackToolsButton(false);
             return;
         }
 
         JSONArray endpointFeatures = new JSONArray();
         try {
-            endpointFeatures.put(pointFeature(cachedTrackPoints.get(0), "START"));
-            endpointFeatures.put(pointFeature(cachedTrackPoints.get(cachedTrackPoints.size() - 1), "END"));
-        } catch (JSONException ignored) {}
+            endpointFeatures.put(pointFeature(cachedTrackPoints.get(0)));
+            endpointFeatures.put(pointFeature(cachedTrackPoints.get(cachedTrackPoints.size() - 1)));
+        } catch (JSONException ignored) {
+        }
         setEndpointJson(style, collection(endpointFeatures), true);
-        renderContextHud(cachedTrack, cachedTrackPoints);
+
+        if (contextHudDismissed) {
+            hideContextHud();
+            updateTrackToolsButton(true);
+        } else {
+            updateTrackToolsButton(false);
+            renderContextHud(cachedTrack, cachedTrackPoints);
+        }
     }
 
     private void setEndpointJson(Style style, String json, boolean visible) {
@@ -301,74 +345,99 @@ public final class FieldMapPolishController {
             lastEndpointJson = json;
         }
         setVisible(style, TRACK_ENDPOINT_LAYER, visible);
-        setVisible(style, TRACK_ENDPOINT_LABEL, visible);
     }
-
 
     private void installImportsButton() {
         if (root == null) return;
         View existing = root.findViewWithTag(IMPORTS_BUTTON_TAG);
         if (existing instanceof Button) {
             importsButton = (Button) existing;
+            importsButton.setOnClickListener(v -> IntentFactory.openImports(activity));
             return;
         }
-        importsButton = new Button(activity);
-        importsButton.setTag(IMPORTS_BUTTON_TAG);
-        importsButton.setText("Imports");
-        importsButton.setAllCaps(false);
-        importsButton.setTextSize(11.5f);
-        importsButton.setMinWidth(dp(88));
-        importsButton.setMinimumWidth(dp(88));
-        importsButton.setMinHeight(dp(48));
-        importsButton.setMinimumHeight(dp(48));
-        importsButton.setContentDescription("Manage imported GPX, KML and GeoJSON data");
-        importsButton.setOnClickListener(v -> IntentFactory.openImports(activity));
-        importsButton.setVisibility(View.GONE);
 
+        importsButton = persistentButton("Imports", "Open imported data management");
+        importsButton.setTag(IMPORTS_BUTTON_TAG);
+        importsButton.setOnClickListener(v -> IntentFactory.openImports(activity));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 dp(96), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
         params.setMargins(0, 0, dp(108), dp(112));
         root.addView(importsButton, params);
+    }
 
-        View field = root.findViewWithTag("rockmap-field-entry");
-        if (field != null) {
-            field.post(() -> {
-                ViewGroup.LayoutParams raw = field.getLayoutParams();
-                ViewGroup.LayoutParams importRaw = importsButton.getLayoutParams();
-                if (raw instanceof FrameLayout.LayoutParams && importRaw instanceof FrameLayout.LayoutParams) {
-                    FrameLayout.LayoutParams fieldParams = (FrameLayout.LayoutParams) raw;
-                    FrameLayout.LayoutParams importParams = (FrameLayout.LayoutParams) importRaw;
-                    importParams.bottomMargin = fieldParams.bottomMargin;
-                    importParams.rightMargin = fieldParams.rightMargin + dp(100);
-                    importsButton.setLayoutParams(importParams);
-                }
-            });
+    private void installTrackToolsButton() {
+        if (root == null) return;
+        View existing = root.findViewWithTag(TRACK_TOOLS_BUTTON_TAG);
+        if (existing instanceof Button) {
+            trackToolsButton = (Button) existing;
+            trackToolsButton.setOnClickListener(v -> reopenTrackToolbar());
+            return;
+        }
+
+        trackToolsButton = persistentButton("Track tools", "Reopen the current track map toolbar");
+        trackToolsButton.setTag(TRACK_TOOLS_BUTTON_TAG);
+        trackToolsButton.setOnClickListener(v -> reopenTrackToolbar());
+        trackToolsButton.setVisibility(View.GONE);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                dp(104), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        params.setMargins(0, 0, dp(208), dp(112));
+        root.addView(trackToolsButton, params);
+    }
+
+    private void updatePersistentButtons() {
+        if (importsButton != null) {
+            // Import management is a tool, not a temporary success state. Keep it reachable even
+            // with zero managed batches so the user can re-import/test again without hunting.
+            importsButton.setVisibility(View.VISIBLE);
+            positionRelativeToField(importsButton, 100);
+        }
+        updateTrackToolsButton(contextHudDismissed && FieldMapState.selectedTrackDetail(activity) >= 0L);
+        bringPersistentControlsToFront();
+    }
+
+    private void updateTrackToolsButton(boolean visible) {
+        if (trackToolsButton == null) return;
+        trackToolsButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (visible) {
+            positionRelativeToField(trackToolsButton, 200);
+            trackToolsButton.bringToFront();
         }
     }
 
-    private void updateImportsButton() {
-        if (importsButton == null || root == null) return;
-        long now = android.os.SystemClock.elapsedRealtime();
-        if (now - lastImportsCheck > 2000L) {
-            cachedHasImports = !db.listImportBatches().isEmpty();
-            lastImportsCheck = now;
-        }
-        importsButton.setVisibility(cachedHasImports ? View.VISIBLE : View.GONE);
-        if (!cachedHasImports) return;
+    private void positionRelativeToField(Button button, int extraRightDp) {
+        if (button == null || root == null) return;
+        View field = root.findViewWithTag(FIELD_BUTTON_TAG);
+        if (field == null) return;
+        ViewGroup.LayoutParams raw = field.getLayoutParams();
+        ViewGroup.LayoutParams targetRaw = button.getLayoutParams();
+        if (!(raw instanceof FrameLayout.LayoutParams) || !(targetRaw instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams fieldParams = (FrameLayout.LayoutParams) raw;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) targetRaw;
+        params.bottomMargin = fieldParams.bottomMargin;
+        params.rightMargin = fieldParams.rightMargin + dp(extraRightDp);
+        button.setLayoutParams(params);
+    }
 
-        View field = root.findViewWithTag("rockmap-field-entry");
-        if (field != null) {
-            ViewGroup.LayoutParams raw = field.getLayoutParams();
-            ViewGroup.LayoutParams importRaw = importsButton.getLayoutParams();
-            if (raw instanceof FrameLayout.LayoutParams && importRaw instanceof FrameLayout.LayoutParams) {
-                FrameLayout.LayoutParams fieldParams = (FrameLayout.LayoutParams) raw;
-                FrameLayout.LayoutParams importParams = (FrameLayout.LayoutParams) importRaw;
-                importParams.bottomMargin = fieldParams.bottomMargin;
-                importParams.rightMargin = fieldParams.rightMargin + dp(100);
-                importsButton.setLayoutParams(importParams);
-            }
+    private void bringPersistentControlsToFront() {
+        if (importsButton != null) importsButton.bringToFront();
+        if (trackToolsButton != null && trackToolsButton.getVisibility() == View.VISIBLE) trackToolsButton.bringToFront();
+        if (root != null) {
+            View field = root.findViewWithTag(FIELD_BUTTON_TAG);
+            if (field != null) field.bringToFront();
         }
-        importsButton.bringToFront();
+    }
+
+    private Button persistentButton(String text, String description) {
+        Button button = new Button(activity);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(11.5f);
+        button.setMinWidth(dp(88));
+        button.setMinimumWidth(dp(88));
+        button.setMinHeight(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setContentDescription(description);
+        return button;
     }
 
     private void installContextHud() {
@@ -391,10 +460,26 @@ public final class FieldMapPolishController {
         root.addView(contextHud, params);
     }
 
+    private void installScreenLabels() {
+        if (root == null) return;
+        View existing = root.findViewWithTag(SCREEN_LABELS_TAG);
+        if (existing instanceof FrameLayout) {
+            screenLabels = (FrameLayout) existing;
+            return;
+        }
+        screenLabels = new FrameLayout(activity);
+        screenLabels.setTag(SCREEN_LABELS_TAG);
+        screenLabels.setClickable(false);
+        screenLabels.setFocusable(false);
+        screenLabels.setVisibility(View.GONE);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        root.addView(screenLabels, params);
+    }
+
     private void renderContextHud(FieldDatabase.Track track, List<GeoMath.Point> points) {
         if (contextHud == null) return;
 
-        // Active recording already has the primary FieldMapController HUD.
         if (FieldDatabase.TRACK_RECORDING.equals(track.status)
                 || FieldDatabase.TRACK_PAUSED.equals(track.status)) {
             hideContextHud();
@@ -402,11 +487,10 @@ public final class FieldMapPolishController {
         }
 
         contextHud.removeAllViews();
-        TextView title = text("TRACK MAP — " + track.name, 13.5f, true);
-        contextHud.addView(title);
+        contextHud.addView(text("TRACK MAP — " + track.name, 13.5f, true));
         contextHud.addView(text(points.size() + " points · "
-                + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
-                + "\nThe basemap is the track preview. START and END are labeled at their actual positions.",
+                        + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
+                        + "\nSTART and END are labeled directly on the basemap.",
                 11.5f, false));
 
         LinearLayout firstRow = new LinearLayout(activity);
@@ -419,7 +503,7 @@ public final class FieldMapPolishController {
             FieldMapState.requestTrackFocus(activity, cachedTrack.id);
             FieldMapState.startNavigation(activity, "Start of " + cachedTrack.name, cachedTrackPoints.get(0));
             FieldMapState.clearSelectedTrackDetail(activity);
-            cachedTrackId = Long.MIN_VALUE;
+            resetTrackContext();
             applyPolish();
         });
         firstRow.addView(backtrack, weight());
@@ -428,8 +512,7 @@ public final class FieldMapPolishController {
         hide.setOnClickListener(v -> {
             if (cachedTrack == null) return;
             FieldMapState.hideTrack(activity, cachedTrack.id);
-            FieldMapState.clearSelectedTrackDetail(activity);
-            cachedTrackId = Long.MIN_VALUE;
+            resetTrackContext();
             toast("Track hidden. Reopen it from Field > Tracks to show it again.");
             applyPolish();
         });
@@ -445,7 +528,7 @@ public final class FieldMapPolishController {
                     .setPositiveButton("Delete", (d, w) -> {
                         db.deleteTrack(trackToDelete.id);
                         FieldMapState.clearSelectedTrackDetail(activity);
-                        cachedTrackId = Long.MIN_VALUE;
+                        resetTrackContext();
                         toast("Track deleted.");
                         applyPolish();
                     })
@@ -461,15 +544,19 @@ public final class FieldMapPolishController {
         Button tracks = button("All tracks");
         tracks.setOnClickListener(v -> {
             FieldMapState.clearSelectedTrackDetail(activity);
+            resetTrackContext();
             IntentFactory.openTracks(activity);
         });
         secondRow.addView(tracks, weight());
 
-        Button close = button("Close map view");
+        Button close = button("Hide toolbar");
         close.setOnClickListener(v -> {
-            FieldMapState.clearSelectedTrackDetail(activity);
-            cachedTrackId = Long.MIN_VALUE;
-            applyPolish();
+            // Keep the selected track and its START/END context. Only dismiss the large toolbar.
+            // A persistent Track tools button now resurrects it immediately.
+            contextHudDismissed = true;
+            hideContextHud();
+            updateTrackToolsButton(true);
+            renderScreenLabels();
         });
         secondRow.addView(close, weight());
 
@@ -477,6 +564,26 @@ public final class FieldMapPolishController {
         positionContextHud();
         contextHud.setVisibility(View.VISIBLE);
         contextHud.bringToFront();
+        bringPersistentControlsToFront();
+    }
+
+    private void reopenTrackToolbar() {
+        if (FieldMapState.selectedTrackDetail(activity) < 0L) {
+            updateTrackToolsButton(false);
+            toast("No track map is currently selected.");
+            return;
+        }
+        contextHudDismissed = false;
+        applyPolish();
+    }
+
+    private void resetTrackContext() {
+        cachedTrackId = Long.MIN_VALUE;
+        cachedTrack = null;
+        cachedTrackPoints = new ArrayList<>();
+        contextHudDismissed = false;
+        hideContextHud();
+        updateTrackToolsButton(false);
     }
 
     private void positionContextHud() {
@@ -527,11 +634,12 @@ public final class FieldMapPolishController {
         return new GeoMath.Point(lat / points.size(), lon);
     }
 
-    private static JSONObject pointFeature(GeoMath.Point point, String label) throws JSONException {
-        JSONObject props = new JSONObject().put("name", label);
+    private static JSONObject pointFeature(GeoMath.Point point) throws JSONException {
         JSONArray coordinates = new JSONArray().put(point.lon).put(point.lat);
         JSONObject geometry = new JSONObject().put("type", "Point").put("coordinates", coordinates);
-        return new JSONObject().put("type", "Feature").put("properties", props).put("geometry", geometry);
+        return new JSONObject().put("type", "Feature")
+                .put("properties", new JSONObject())
+                .put("geometry", geometry);
     }
 
     private static String collection(JSONArray features) {
@@ -608,9 +716,6 @@ public final class FieldMapPolishController {
         Toast.makeText(activity, message == null ? "" : message, Toast.LENGTH_LONG).show();
     }
 
-    /**
-     * Keeps Intent construction isolated so this controller remains focused on map rendering.
-     */
     private static final class IntentFactory {
         static void openTracks(Activity activity) {
             android.content.Intent intent = new android.content.Intent(activity, FieldActivity.class);
