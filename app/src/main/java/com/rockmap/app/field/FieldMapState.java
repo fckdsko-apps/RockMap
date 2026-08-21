@@ -19,6 +19,7 @@ public final class FieldMapState {
     private static final String KEY_LABELS_VISIBLE = "labels-visible";
     private static final String KEY_FIELD_RECORDS_VISIBLE = "field-records-visible";
     private static final String KEY_FOCUS_TRACK = "focus-track";
+    private static final String KEY_TRACK_DETAIL = "track-detail";
     private static final String KEY_MEASURE_REQUEST = "measure-request";
     private static final String KEY_FOCUS_PENDING = "focus-pending";
     private static final String KEY_FOCUS_MIN_LAT = "focus-min-lat";
@@ -104,6 +105,7 @@ public final class FieldMapState {
         Set<String> ids = hiddenTracks(context);
         ids.add(Long.toString(trackId));
         prefs(context).edit().putStringSet(KEY_HIDDEN_TRACKS, ids).apply();
+        if (selectedTrackDetail(context) == trackId) clearSelectedTrackDetail(context);
     }
 
     public static Set<String> hiddenTracks(Context context) {
@@ -119,6 +121,19 @@ public final class FieldMapState {
         long id = p.getLong(KEY_FOCUS_TRACK, -1L);
         if (id >= 0L) p.edit().remove(KEY_FOCUS_TRACK).apply();
         return id;
+    }
+
+    /** Keeps a completed track's map-context HUD/endpoints visible until the user closes it. */
+    public static void selectTrackDetail(Context context, long trackId) {
+        prefs(context).edit().putLong(KEY_TRACK_DETAIL, trackId).apply();
+    }
+
+    public static long selectedTrackDetail(Context context) {
+        return prefs(context).getLong(KEY_TRACK_DETAIL, -1L);
+    }
+
+    public static void clearSelectedTrackDetail(Context context) {
+        prefs(context).edit().remove(KEY_TRACK_DETAIL).apply();
     }
 
     public static void requestMeasurement(Context context) {

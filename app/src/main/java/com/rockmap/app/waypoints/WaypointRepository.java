@@ -35,7 +35,25 @@ public final class WaypointRepository {
     public void insertAll(List<WaypointEntity> waypoints, Consumer<Integer> callback) {
         executor.execute(() -> {
             List<Long> ids = dao.insertAll(waypoints);
+            int assigned = Math.min(ids.size(), waypoints.size());
+            for (int i = 0; i < assigned; i++) waypoints.get(i).id = ids.get(i);
             main.post(() -> callback.accept(ids.size()));
+        });
+    }
+
+    /** Deletes exactly the supplied waypoint rows and nothing else. */
+    public void deleteAll(List<WaypointEntity> waypoints, Consumer<Integer> callback) {
+        executor.execute(() -> {
+            int deleted = 0;
+            if (waypoints != null) {
+                for (WaypointEntity waypoint : waypoints) {
+                    if (waypoint == null) continue;
+                    dao.delete(waypoint);
+                    deleted++;
+                }
+            }
+            int count = deleted;
+            main.post(() -> callback.accept(count));
         });
     }
 

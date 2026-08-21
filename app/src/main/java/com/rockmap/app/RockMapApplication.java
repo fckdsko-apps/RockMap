@@ -5,6 +5,7 @@ import android.app.Application;
 import android.os.Bundle;
 
 import com.rockmap.app.field.FieldMapController;
+import com.rockmap.app.field.FieldMapPolishController;
 
 import java.util.WeakHashMap;
 
@@ -14,6 +15,7 @@ import java.util.WeakHashMap;
  */
 public final class RockMapApplication extends Application implements Application.ActivityLifecycleCallbacks {
     private final WeakHashMap<Activity, FieldMapController> controllers = new WeakHashMap<>();
+    private final WeakHashMap<Activity, FieldMapPolishController> polishControllers = new WeakHashMap<>();
 
     @Override public void onCreate() {
         super.onCreate();
@@ -30,24 +32,46 @@ public final class RockMapApplication extends Application implements Application
         return controller;
     }
 
-    @Override public void onActivityCreated(Activity activity, Bundle state) {
+    private FieldMapPolishController polish(Activity activity) {
+        if (!(activity instanceof MainActivity)) return null;
+        FieldMapPolishController controller = polishControllers.get(activity);
+        if (controller == null) {
+            controller = new FieldMapPolishController(activity);
+            polishControllers.put(activity, controller);
+        }
+        return controller;
+    }
+
+    private void attach(Activity activity) {
         FieldMapController controller = controller(activity);
-        if (controller != null) activity.getWindow().getDecorView().post(controller::attach);
+        if (controller != null) controller.attach();
+        FieldMapPolishController polish = polish(activity);
+        if (polish != null) polish.attach();
+    }
+
+    @Override public void onActivityCreated(Activity activity, Bundle state) {
+        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityStarted(Activity activity) {
-        FieldMapController controller = controller(activity);
-        if (controller != null) activity.getWindow().getDecorView().post(controller::attach);
+        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityResumed(Activity activity) {
-        FieldMapController controller = controller(activity);
-        if (controller != null) activity.getWindow().getDecorView().post(controller::onResume);
+        if (!(activity instanceof MainActivity)) return;
+        activity.getWindow().getDecorView().post(() -> {
+            FieldMapController controller = controller(activity);
+            if (controller != null) controller.onResume();
+            FieldMapPolishController polish = polish(activity);
+            if (polish != null) polish.onResume();
+        });
     }
 
     @Override public void onActivityPaused(Activity activity) {
         FieldMapController controller = controllers.get(activity);
         if (controller != null) controller.onPause();
+        FieldMapPolishController polish = polishControllers.get(activity);
+        if (polish != null) polish.onPause();
     }
 
     @Override public void onActivityStopped(Activity activity) {}
@@ -56,5 +80,7 @@ public final class RockMapApplication extends Application implements Application
     @Override public void onActivityDestroyed(Activity activity) {
         FieldMapController controller = controllers.remove(activity);
         if (controller != null) controller.destroy();
+        FieldMapPolishController polish = polishControllers.remove(activity);
+        if (polish != null) polish.destroy();
     }
 }

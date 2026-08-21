@@ -11,13 +11,17 @@ import java.util.List;
 
 public final class FieldDatabase extends SQLiteOpenHelper {
     private static final String DB_NAME = "rockmap-field.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     private static volatile FieldDatabase instance;
 
     public static final String TRACK_RECORDING = "recording";
     public static final String TRACK_PAUSED = "paused";
     public static final String TRACK_COMPLETE = "complete";
     public static final String TRACK_INTERRUPTED = "interrupted";
+
+    public static final String IMPORT_WAYPOINT = "waypoint";
+    public static final String IMPORT_TRACK = "track";
+    public static final String IMPORT_AREA = "area";
 
     public static FieldDatabase get(Context context) {
         FieldDatabase local = instance;
@@ -58,10 +62,32 @@ public final class FieldDatabase extends SQLiteOpenHelper {
                 + "sort_order INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, "
                 + "FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE CASCADE)");
         db.execSQL("CREATE INDEX area_points_area_order ON area_points(area_id, sort_order)");
+
+        createImportTables(db);
+    }
+
+    private static void createImportTables(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS import_batches ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, source_name TEXT NOT NULL, source_sha256 TEXT NOT NULL, "
+                + "imported_at INTEGER NOT NULL, waypoint_count INTEGER NOT NULL, "
+                + "track_count INTEGER NOT NULL, area_count INTEGER NOT NULL)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS import_batches_sha ON import_batches(source_sha256)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS import_items ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL, item_type TEXT NOT NULL, "
+                + "item_id INTEGER NOT NULL, "
+                + "FOREIGN KEY(batch_id) REFERENCES import_batches(id) ON DELETE CASCADE)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS import_items_batch ON import_items(batch_id, item_type)");
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS import_items_unique "
+                + "ON import_items(batch_id, item_type, item_id)");
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        throw new IllegalStateException("Unsupported RockMap field database upgrade path.");
+        if (oldVersion == 1 && newVersion == 2) {
+            createImportTables(db);
+            return;
+        }
+        throw new IllegalStateException("Unsupported RockMap field database upgrade path: "
+                + oldVersion + " -> " + newVersion);
     }
 
     @Override public void onConfigure(SQLiteDatabase db) {
@@ -146,17 +172,19 @@ public final class FieldDatabase extends SQLiteOpenHelper {
     }
 
     public synchronized void deleteTrack(long trackId) {
-        getWritableDatabase().delete("tracks", "id=?", new String[]{Long.toString(trackId)});
+        SQLiteDatabase db = getWritableDatabase();
+        db.delete("tracks", "id=?", new String[]{Long.toString(trackId)});
+        db.delete("import_items", "item_type=? AND item_id=?",
+                new String[]{IMPORT_TRACK, Long.toString(trackId)});
     }
 
     public synchronized long insertFieldRecord(FieldRecord record) {
-        ContentValues v = fieldValues(record);
-        return getWritableDatabase().insertOrThrow("field_records", null, v);
+        return getWritableDatabase().insertOrThrow("field_records", null, fieldValues(record));
     }
 
     public synchronized void updateFieldRecord(FieldRecord record) {
-        ContentValues v = fieldValues(record);
-        getWritableDatabase().update("field_records", v, "id=?", new String[]{Long.toString(record.id)});
+        getWritableDatabase().update("field_records", fieldValues(record),
+                "id=?", new String[]{Long.toString(record.id)});
     }
 
     public synchronized List<FieldRecord> listFieldRecords() {
@@ -218,6 +246,15 @@ public final class FieldDatabase extends SQLiteOpenHelper {
         return out;
     }
 
+    public synchronized Area getArea(long id) {
+        try (Cursor c = getReadableDatabase().query("areas",
+                new String[]{"id","name","notes","created_at"},
+                "id=?", new String[]{Long.toString(id)}, null, null, null)) {
+            if (!c.moveToFirst()) return null;
+            return new Area(c.getLong(0), c.getString(1), c.getString(2), c.getLong(3), getAreaPoints(id));
+        }
+    }
+
     public synchronized List<GeoMath.Point> getAreaPoints(long areaId) {
         ArrayList<GeoMath.Point> out = new ArrayList<>();
         try (Cursor c = getReadableDatabase().query("area_points", new String[]{"lat","lon"},
@@ -228,11 +265,105 @@ public final class FieldDatabase extends SQLiteOpenHelper {
     }
 
     public synchronized void deleteArea(long id) {
-        getWritableDatabase().delete("areas", "id=?", new String[]{Long.toString(id)});
+        SQLiteDatabase db = getWritableDatabase();
+        db.delete("areas", "id=?", new String[]{Long.toString(id)});
+        db.delete("import_items", "item_type=? AND item_id=?",
+                new String[]{IMPORT_AREA, Long.toString(id)});
+    }
+
+    public synchronized long createImportBatch(String sourceName, String sha256,
+                                               int waypointCount, int trackCount, int areaCount) {
+        ContentValues v = new ContentValues();
+        v.put("source_name", safe(sourceName, "Imported file"));
+        v.put("source_sha256", sha256 == null ? "" : sha256);
+        v.put("imported_at", System.currentTimeMillis());
+        v.put("waypoint_count", Math.max(0, waypointCount));
+        v.put("track_count", Math.max(0, trackCount));
+        v.put("area_count", Math.max(0, areaCount));
+        return getWritableDatabase().insertOrThrow("import_batches", null, v);
+    }
+
+    public synchronized void addImportItem(long batchId, String type, long itemId) {
+        if (batchId <= 0L || itemId <= 0L) return;
+        if (!IMPORT_WAYPOINT.equals(type) && !IMPORT_TRACK.equals(type) && !IMPORT_AREA.equals(type)) {
+            throw new IllegalArgumentException("Unknown import item type.");
+        }
+        ContentValues v = new ContentValues();
+        v.put("batch_id", batchId);
+        v.put("item_type", type);
+        v.put("item_id", itemId);
+        getWritableDatabase().insertWithOnConflict("import_items", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+    }
+
+    public synchronized List<ImportBatch> listImportBatches() {
+        ArrayList<ImportBatch> out = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().query("import_batches",
+                new String[]{"id","source_name","source_sha256","imported_at","waypoint_count","track_count","area_count"},
+                null, null, null, null, "imported_at DESC")) {
+            while (c.moveToNext()) out.add(importBatchFrom(c));
+        }
+        return out;
+    }
+
+    public synchronized ImportBatch getImportBatch(long id) {
+        try (Cursor c = getReadableDatabase().query("import_batches",
+                new String[]{"id","source_name","source_sha256","imported_at","waypoint_count","track_count","area_count"},
+                "id=?", new String[]{Long.toString(id)}, null, null, null)) {
+            return c.moveToFirst() ? importBatchFrom(c) : null;
+        }
+    }
+
+    public synchronized ImportBatch findImportBatchBySha(String sha256) {
+        if (sha256 == null || sha256.isEmpty()) return null;
+        try (Cursor c = getReadableDatabase().query("import_batches",
+                new String[]{"id","source_name","source_sha256","imported_at","waypoint_count","track_count","area_count"},
+                "source_sha256=?", new String[]{sha256}, null, null, "imported_at DESC", "1")) {
+            return c.moveToFirst() ? importBatchFrom(c) : null;
+        }
+    }
+
+    public synchronized List<Long> getImportItemIds(long batchId, String type) {
+        return getImportItemIds(getReadableDatabase(), batchId, type);
+    }
+
+    private static List<Long> getImportItemIds(SQLiteDatabase db, long batchId, String type) {
+        ArrayList<Long> out = new ArrayList<>();
+        try (Cursor c = db.query("import_items", new String[]{"item_id"},
+                "batch_id=? AND item_type=?", new String[]{Long.toString(batchId), type},
+                null, null, "id ASC")) {
+            while (c.moveToNext()) out.add(c.getLong(0));
+        }
+        return out;
+    }
+
+    /**
+     * Deletes tracks/areas owned by a batch and its batch metadata. Waypoints live in the
+     * existing Room database and are removed by FieldActivity immediately before this call.
+     */
+    public synchronized void deleteImportBatchFieldItems(long batchId) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.beginTransaction();
+        try {
+            for (Long id : getImportItemIds(db, batchId, IMPORT_TRACK)) {
+                db.delete("tracks", "id=?", new String[]{Long.toString(id)});
+            }
+            for (Long id : getImportItemIds(db, batchId, IMPORT_AREA)) {
+                db.delete("areas", "id=?", new String[]{Long.toString(id)});
+            }
+            db.delete("import_batches", "id=?", new String[]{Long.toString(batchId)});
+            db.setTransactionSuccessful();
+        } finally {
+            db.endTransaction();
+        }
     }
 
     private static Track trackFrom(Cursor c) {
         return new Track(c.getLong(0), c.getString(1), c.getLong(2), c.getLong(3), c.getString(4));
+    }
+
+    private static ImportBatch importBatchFrom(Cursor c) {
+        return new ImportBatch(c.getLong(0), c.getString(1), c.getString(2), c.getLong(3),
+                c.getInt(4), c.getInt(5), c.getInt(6));
     }
 
     private static ContentValues fieldValues(FieldRecord record) {
@@ -306,6 +437,27 @@ public final class FieldDatabase extends SQLiteOpenHelper {
         public final List<GeoMath.Point> points;
         Area(long id, String name, String notes, long createdAt, List<GeoMath.Point> points) {
             this.id=id; this.name=name; this.notes=notes; this.createdAt=createdAt; this.points=points;
+        }
+    }
+
+    public static final class ImportBatch {
+        public final long id;
+        public final String sourceName;
+        public final String sha256;
+        public final long importedAt;
+        public final int waypointCount;
+        public final int trackCount;
+        public final int areaCount;
+
+        ImportBatch(long id, String sourceName, String sha256, long importedAt,
+                    int waypointCount, int trackCount, int areaCount) {
+            this.id = id;
+            this.sourceName = sourceName;
+            this.sha256 = sha256;
+            this.importedAt = importedAt;
+            this.waypointCount = waypointCount;
+            this.trackCount = trackCount;
+            this.areaCount = areaCount;
         }
     }
 }
