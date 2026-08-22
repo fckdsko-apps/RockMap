@@ -31,6 +31,10 @@ import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -71,6 +75,7 @@ public final class ResearchActivity extends Activity {
     private List<GeologyUnit> currentResults = new ArrayList<>();
     private String currentResultTitle = "Analysis";
     private GeologyRepository.Bounds currentResultBounds;
+    private String currentQueryContextJson = "";
     private LiveData<WorkInfo> geologyUpdateLiveData;
     private Observer<WorkInfo> geologyUpdateObserver;
 
@@ -342,7 +347,7 @@ public final class ResearchActivity extends Activity {
             runAsync("Searching geology…", () -> geology.search(filter, bounds, 0),
                     results -> showResults(results,
                             "Geology Search" + (filter.text.isEmpty() ? "" : ": " + text.getText().toString().trim()),
-                            bounds));
+                            bounds, queryBoundsContext(bounds, "Visible Area search")));
         }));
         dialog.show();
         text.requestFocus();
@@ -360,7 +365,7 @@ public final class ResearchActivity extends Activity {
 
     private void runBoundsQuery(GeologyRepository.Bounds bounds, String title) {
         runAsync("Analyzing map area…", () -> geology.queryBounds(bounds, 0),
-                results -> showResults(results, title, bounds));
+                results -> showResults(results, title, bounds, queryBoundsContext(bounds, "Visible Area")));
     }
 
     private void showAreaPicker() {
@@ -397,7 +402,8 @@ public final class ResearchActivity extends Activity {
         for (GeoMath.Point p : area.points) polygon.add(new GeologyRepository.Point(p.lat, p.lon));
         GeologyRepository.Bounds bounds = boundsOf(polygon);
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
-                results -> showResults(results, "Geology — Prospecting Area: " + area.name, bounds));
+                results -> showResults(results, "Geology — Prospecting Area: " + area.name, bounds,
+                        queryPolygonContext(polygon, area.name)));
     }
 
     private void showPointSourcePicker() {
@@ -565,7 +571,8 @@ public final class ResearchActivity extends Activity {
                     ? "Geology — Exact Point at " + pointName
                     : "Geology — " + distance + " Around " + pointName;
             runAsync("Querying geology " + distance + "…", () -> geology.queryPointRadius(point, radiusMeters, 0),
-                    results -> showResults(results, resultTitle, bounds));
+                    results -> showResults(results, resultTitle, bounds,
+                            queryPointRadiusContext(point, radiusMeters, pointName, bounds)));
         } catch (RuntimeException ex) {
             toast(ex.getMessage());
             showHub();
@@ -573,12 +580,13 @@ public final class ResearchActivity extends Activity {
     }
 
     private void showResults(List<GeologyUnit> results, String resultTitle,
-                             GeologyRepository.Bounds queryBounds) {
+                             GeologyRepository.Bounds queryBounds, String queryContextJson) {
         List<GeologyUnit> safe = results == null ? new ArrayList<>() : results;
         currentResults = new ArrayList<>(safe);
         currentResultTitle = resultTitle;
         currentResultBounds = queryBounds;
-        String geoJson = geology.toGeoJson(safe);
+        currentQueryContextJson = queryContextJson == null ? "" : queryContextJson;
+        String geoJson = decorateQueryContext(geology.toGeoJson(safe), currentQueryContextJson);
         try {
             ResearchResultStore.save(this, resultTitle, geoJson, safe.size());
         } catch (IOException ex) {
@@ -602,8 +610,10 @@ public final class ResearchActivity extends Activity {
         top.addView(help(compactSummary(safe, groups)));
         if (!safe.isEmpty()) {
             Button showMap = button("Show Geology on Map");
+            GeologyRepository.Bounds mapBounds = currentQueryContextJson.trim().isEmpty()
+                    ? boundsOfUnits(safe) : null;
             showMap.setOnClickListener(v -> returnGeology(
-                    geoJson, resultTitle, safe.size(), boundsOfUnits(safe)));
+                    geoJson, resultTitle, safe.size(), mapBounds));
             top.addView(showMap);
         }
         top.addView(section("Geologic Units"));
@@ -667,16 +677,20 @@ public final class ResearchActivity extends Activity {
         LinearLayout root = page();
         root.addView(title(group.name));
         root.addView(help(group.detailLine()));
+        String groupGeoJson = decorateQueryContext(geology.toGeoJson(group.units), currentQueryContextJson);
+        GeologyRepository.Bounds groupMapBounds = currentQueryContextJson.trim().isEmpty()
+                ? boundsOfUnits(group.units) : null;
         root.addView(action("Show Unit on Map",
                 group.units.size() + " mapped area" + (group.units.size() == 1 ? "" : "s") + " for this unit.",
-                v -> returnGeology(geology.toGeoJson(group.units), group.name, group.units.size(), boundsOfUnits(group.units))));
+                v -> returnGeology(groupGeoJson, group.name, group.units.size(), groupMapBounds)));
         root.addView(action("Source & Technical Details",
                 "View raw SGMC labels, full age hierarchy, references and source identifiers.",
                 v -> showTechnicalDetails(group.representative())));
         if (group.units.size() > 1) {
             root.addView(help(group.units.size() + " separate mapped areas are represented by this grouped unit. Their individual source geometry remains available on the map and in GeoJSON export."));
         }
-        root.addView(nav("Back to Results", v -> showResults(currentResults, currentResultTitle, currentResultBounds)));
+        root.addView(nav("Back to Results", v -> showResults(
+                currentResults, currentResultTitle, currentResultBounds, currentQueryContextJson)));
         setContentView(scroll(root));
     }
 
@@ -885,6 +899,134 @@ public final class ResearchActivity extends Activity {
             north = Math.max(north, u.north); east = Math.max(east, u.east);
         }
         return new GeologyRepository.Bounds(south, west, north, east);
+    }
+
+    private static String decorateQueryContext(String geoJson, String queryContextJson) {
+        if (geoJson == null || queryContextJson == null || queryContextJson.trim().isEmpty()) return geoJson;
+        try {
+            JSONObject root = new JSONObject(geoJson);
+            root.put("rockmapQuery", new JSONObject(queryContextJson));
+            return root.toString();
+        } catch (JSONException ex) {
+            return geoJson;
+        }
+    }
+
+    private static String queryBoundsContext(GeologyRepository.Bounds bounds, String label) {
+        if (bounds == null) return "";
+        try {
+            JSONObject query = new JSONObject();
+            query.put("type", "bounds");
+            query.put("label", blank(label, "Analyzed area"));
+            putQueryBounds(query, bounds);
+            query.put("geometry", boundsGeometry(bounds));
+            return query.toString();
+        } catch (JSONException ex) {
+            return "";
+        }
+    }
+
+    private static String queryPolygonContext(List<GeologyRepository.Point> polygon, String label) {
+        if (polygon == null || polygon.size() < 3) return "";
+        try {
+            JSONObject query = new JSONObject();
+            query.put("type", "polygon");
+            query.put("label", blank(label, "Prospecting Area"));
+            putQueryBounds(query, boundsOf(polygon));
+            query.put("geometry", polygonGeometry(polygon));
+            return query.toString();
+        } catch (JSONException ex) {
+            return "";
+        }
+    }
+
+    private static String queryPointRadiusContext(GeologyRepository.Point point, double radiusMeters,
+                                                  String label, GeologyRepository.Bounds bounds) {
+        if (point == null) return "";
+        try {
+            JSONObject query = new JSONObject();
+            query.put("type", radiusMeters <= 0d ? "point" : "point_radius");
+            query.put("label", blank(label, "Selected Point"));
+            query.put("centerLat", point.lat);
+            query.put("centerLon", point.lon);
+            query.put("radiusMeters", Math.max(0d, radiusMeters));
+            putQueryBounds(query, bounds);
+            if (radiusMeters > 0d) query.put("geometry", circleGeometry(point, radiusMeters));
+            return query.toString();
+        } catch (JSONException ex) {
+            return "";
+        }
+    }
+
+    private static void putQueryBounds(JSONObject query, GeologyRepository.Bounds bounds) throws JSONException {
+        if (query == null || bounds == null) return;
+        query.put("south", bounds.south);
+        query.put("west", bounds.west);
+        query.put("north", bounds.north);
+        query.put("east", bounds.east);
+    }
+
+    private static JSONObject boundsGeometry(GeologyRepository.Bounds bounds) throws JSONException {
+        JSONArray ring = new JSONArray();
+        ring.put(lonLat(bounds.west, bounds.south));
+        ring.put(lonLat(bounds.east, bounds.south));
+        ring.put(lonLat(bounds.east, bounds.north));
+        ring.put(lonLat(bounds.west, bounds.north));
+        ring.put(lonLat(bounds.west, bounds.south));
+        JSONObject geometry = new JSONObject();
+        geometry.put("type", "Polygon");
+        JSONArray coordinates = new JSONArray();
+        coordinates.put(ring);
+        geometry.put("coordinates", coordinates);
+        return geometry;
+    }
+
+    private static JSONObject polygonGeometry(List<GeologyRepository.Point> polygon) throws JSONException {
+        JSONArray ring = new JSONArray();
+        for (GeologyRepository.Point point : polygon) ring.put(lonLat(point.lon, point.lat));
+        GeologyRepository.Point first = polygon.get(0);
+        GeologyRepository.Point last = polygon.get(polygon.size() - 1);
+        if (first.lat != last.lat || first.lon != last.lon) ring.put(lonLat(first.lon, first.lat));
+        JSONObject geometry = new JSONObject();
+        geometry.put("type", "Polygon");
+        JSONArray coordinates = new JSONArray();
+        coordinates.put(ring);
+        geometry.put("coordinates", coordinates);
+        return geometry;
+    }
+
+    private static JSONObject circleGeometry(GeologyRepository.Point center, double radiusMeters) throws JSONException {
+        final double earthRadius = 6371008.8d;
+        final int segments = 72;
+        final double angularDistance = Math.max(0d, radiusMeters) / earthRadius;
+        final double lat1 = Math.toRadians(center.lat);
+        final double lon1 = Math.toRadians(center.lon);
+        JSONArray ring = new JSONArray();
+        for (int i = 0; i <= segments; i++) {
+            double bearing = (Math.PI * 2d * i) / segments;
+            double lat2 = Math.asin(Math.sin(lat1) * Math.cos(angularDistance)
+                    + Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing));
+            double lon2 = lon1 + Math.atan2(
+                    Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+                    Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2));
+            double lon = Math.toDegrees(lon2);
+            while (lon > 180d) lon -= 360d;
+            while (lon < -180d) lon += 360d;
+            ring.put(lonLat(lon, Math.toDegrees(lat2)));
+        }
+        JSONObject geometry = new JSONObject();
+        geometry.put("type", "Polygon");
+        JSONArray coordinates = new JSONArray();
+        coordinates.put(ring);
+        geometry.put("coordinates", coordinates);
+        return geometry;
+    }
+
+    private static JSONArray lonLat(double lon, double lat) {
+        JSONArray pair = new JSONArray();
+        pair.put(lon);
+        pair.put(lat);
+        return pair;
     }
 
     private static double[] parseLatLon(String raw) {
