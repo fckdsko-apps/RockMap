@@ -75,8 +75,8 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
  * measurement are rendered as local GeoJSON sources in the active MapLibre style.
  */
 public final class FieldMapController implements LocationRepository.Listener {
-    private static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
-    private static final String HUD_TAG = "rockmap-field-map-hud";
+    static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
+    static final String HUD_TAG = "rockmap-field-map-hud";
     static final String COLLAPSED_TABS_TAG = "rockmap-field-collapsed-tabs";
     private static final String TRACK_TAB_TAG = "rockmap-collapsed-active-track";
     private static final String NAV_TAB_TAG = "rockmap-collapsed-navigation";
@@ -126,14 +126,13 @@ public final class FieldMapController implements LocationRepository.Listener {
     private boolean resumed;
     private boolean refreshRunning;
     private boolean measureActive;
-    private boolean trackPanelCollapsed;
-    private boolean navigationPanelCollapsed;
-    private boolean measurePanelCollapsed;
+    private String expandedTool;
     private boolean awaitingMapTap;
     private View tapCapture;
     private Location latestNavigationLocation;
-    private boolean navigationCameraFramed;
     private boolean navigationUpdatesStarted;
+    private boolean cameraMoveListenerInstalled;
+    private long cameraCommandGeneration;
     private long lastWaypointRefresh;
     private String trackJson = emptyCollection();
     private String areaJson = emptyCollection();
@@ -153,20 +152,19 @@ public final class FieldMapController implements LocationRepository.Listener {
         this.db = FieldDatabase.get(activity);
         this.waypointRepository = new WaypointRepository(activity);
         this.locationRepository = new LocationRepository(activity, this);
+        this.expandedTool = FieldMapState.expandedTool(activity);
+        this.measureActive = FieldMapState.measurementActive(activity);
+        if (measureActive) measurement.addAll(FieldMapState.measurementPoints(activity));
     }
 
     public void attach() {
         if (!(activity instanceof MainActivity) || activity.getWindow() == null) return;
         View decor = activity.getWindow().getDecorView();
-        Button markers = findButton(decor, "Markers");
-        if (markers == null || !(markers.getParent() instanceof ViewGroup)) return;
-        ViewGroup markerRow = (ViewGroup) markers.getParent();
-        if (!(markerRow.getParent() instanceof ViewGroup)) return;
-        controls = (ViewGroup) markerRow.getParent();
-        if (!(controls.getParent() instanceof FrameLayout)) return;
-        root = (FrameLayout) controls.getParent();
-        mapView = findMapView(root);
+        mapView = findMapView(decor);
         if (mapView == null) return;
+        root = findMapRoot(mapView);
+        if (root == null) return;
+        controls = findBottomControls(root);
 
         fieldButton = (Button) root.findViewWithTag(FIELD_BUTTON_TAG);
         if (fieldButton == null) {
@@ -192,6 +190,15 @@ public final class FieldMapController implements LocationRepository.Listener {
 
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
+            if (!cameraMoveListenerInstalled) {
+                map.addOnCameraMoveStartedListener(reason -> {
+                    if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                        beginCameraCommand();
+                    }
+                });
+                cameraMoveListenerInstalled = true;
+            }
+            configureMapUi();
             applyCachedSources();
             consumeMapRequests();
         });
@@ -199,6 +206,12 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     public void onResume() {
         resumed = true;
+        expandedTool = FieldMapState.expandedTool(activity);
+        if (!measureActive && FieldMapState.measurementActive(activity)) {
+            measurement.clear();
+            measurement.addAll(FieldMapState.measurementPoints(activity));
+            measureActive = true;
+        }
         attach();
         refreshNavigationState();
         main.removeCallbacks(refreshLoop);
@@ -209,6 +222,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         resumed = false;
         main.removeCallbacks(refreshLoop);
         removeTapCapture();
+        if (measureActive) FieldMapState.saveMeasurement(activity, measurement, true);
         locationRepository.stop();
         navigationUpdatesStarted = false;
     }
@@ -220,15 +234,18 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void positionFieldButton() {
-        if (controls == null || fieldButton == null) return;
-        controls.post(() -> {
+        if (fieldButton == null) return;
+        Runnable place = () -> {
             ViewGroup.LayoutParams raw = fieldButton.getLayoutParams();
             if (!(raw instanceof FrameLayout.LayoutParams)) return;
             FrameLayout.LayoutParams positioned = (FrameLayout.LayoutParams) raw;
-            positioned.bottomMargin = controls.getHeight() + dp(8);
+            int controlsHeight = controls == null ? dp(104) : controls.getHeight();
+            if (controlsHeight <= 0) controlsHeight = dp(104);
+            positioned.bottomMargin = controlsHeight + dp(8);
             positioned.rightMargin = dp(10);
             fieldButton.setLayoutParams(positioned);
-        });
+        };
+        if (controls != null) controls.post(place); else fieldButton.post(place);
     }
 
     private void installHud() {
@@ -251,7 +268,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         root.addView(hud, params);
         hud.bringToFront();
         fieldButton.bringToFront();
-        controls.bringToFront();
+        if (controls != null) controls.bringToFront();
     }
 
     private void installCollapsedTabs() {
@@ -273,6 +290,41 @@ public final class FieldMapController implements LocationRepository.Listener {
         root.addView(collapsedTabs, params);
     }
 
+    private void configureMapUi() {
+        if (map == null) return;
+        try {
+            map.getUiSettings().setCompassEnabled(true);
+            map.getUiSettings().setCompassFadeFacingNorth(false);
+            map.getUiSettings().setCompassGravity(Gravity.TOP | Gravity.END);
+            updateMapUiInsets();
+        } catch (RuntimeException ignored) {
+            // A map UI decoration must never destabilize the field map.
+        }
+    }
+
+    private void updateMapUiInsets() {
+        if (map == null) return;
+        try {
+            int top = statusBarHeight() + dp(8);
+            if (hud != null && hud.getVisibility() == View.VISIBLE && hud.getHeight() > 0) {
+                top = Math.max(top, hud.getBottom() + dp(8));
+            }
+            map.getUiSettings().setCompassMargins(dp(8), top, dp(8), dp(8));
+        } catch (RuntimeException ignored) {
+            // Keep the map usable even if MapLibre is between UI/style states.
+        }
+    }
+
+    private void setExpandedTool(String tool) {
+        setExpandedToolValue(tool);
+        renderHud();
+    }
+
+    private void setExpandedToolValue(String tool) {
+        expandedTool = tool;
+        FieldMapState.setExpandedTool(activity, tool);
+    }
+
     private void renderHud() {
         if (hud == null) return;
         installCollapsedTabs();
@@ -282,47 +334,53 @@ public final class FieldMapController implements LocationRepository.Listener {
         removeCollapsedTab(MEASURE_TAB_TAG);
 
         FieldDatabase.Track activeTrack = db.getActiveTrack();
+        FieldDatabase.Track viewedTrack = null;
+        long viewedTrackId = FieldMapState.selectedTrackDetail(activity);
+        if (viewedTrackId >= 0L) {
+            viewedTrack = db.getTrack(viewedTrackId);
+            if (viewedTrack == null) FieldMapState.clearViewedMapContext(activity);
+            if (activeTrack != null && viewedTrack != null && activeTrack.id == viewedTrack.id) viewedTrack = null;
+        }
         FieldMapState.NavigationTarget target = FieldMapState.navigationTarget(activity);
 
-        if (activeTrack == null) trackPanelCollapsed = false;
-        if (target == null) navigationPanelCollapsed = false;
-        if (!measureActive) measurePanelCollapsed = false;
+        boolean trackActive = activeTrack != null || viewedTrack != null;
+        boolean navigationActive = target != null;
+        boolean measurementActive = measureActive;
+        if ((FieldMapState.TOOL_TRACK.equals(expandedTool) && !trackActive)
+                || (FieldMapState.TOOL_NAVIGATE.equals(expandedTool) && !navigationActive)
+                || (FieldMapState.TOOL_MEASURE.equals(expandedTool) && !measurementActive)) {
+            expandedTool = null;
+            FieldMapState.setExpandedTool(activity, null);
+        }
 
         boolean expanded = false;
-
-        if (activeTrack != null) {
-            if (trackPanelCollapsed) {
-                addCollapsedTab(TRACK_TAB_TAG, "Track", v -> {
-                    trackPanelCollapsed = false;
-                    renderHud();
-                });
-            } else {
-                addTrackHud(activeTrack);
+        if (trackActive) {
+            if (FieldMapState.TOOL_TRACK.equals(expandedTool)) {
+                addTrackHud(activeTrack, viewedTrack);
                 expanded = true;
+            } else {
+                addCollapsedTab(TRACK_TAB_TAG, FieldUiNames.TRACK_SHORT,
+                        v -> setExpandedTool(FieldMapState.TOOL_TRACK));
             }
         }
 
-        if (target != null) {
-            if (navigationPanelCollapsed) {
-                addCollapsedTab(NAV_TAB_TAG, "Navigate", v -> {
-                    navigationPanelCollapsed = false;
-                    renderHud();
-                });
-            } else {
+        if (navigationActive) {
+            if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) {
                 addNavigationHud(target);
                 expanded = true;
+            } else {
+                addCollapsedTab(NAV_TAB_TAG, FieldUiNames.NAVIGATE_SHORT,
+                        v -> setExpandedTool(FieldMapState.TOOL_NAVIGATE));
             }
         }
 
-        if (measureActive) {
-            if (measurePanelCollapsed) {
-                addCollapsedTab(MEASURE_TAB_TAG, "Measure", v -> {
-                    measurePanelCollapsed = false;
-                    renderHud();
-                });
-            } else {
+        if (measurementActive) {
+            if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) {
                 addMeasureHud();
                 expanded = true;
+            } else {
+                addCollapsedTab(MEASURE_TAB_TAG, FieldUiNames.MEASURE_SHORT,
+                        v -> setExpandedTool(FieldMapState.TOOL_MEASURE));
             }
         }
 
@@ -332,38 +390,95 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
         }
         if (expanded) hud.bringToFront();
-        fieldButton.bringToFront();
-        controls.bringToFront();
+        if (fieldButton != null) fieldButton.bringToFront();
+        if (controls != null) controls.bringToFront();
         if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
+        if (hud != null) hud.post(this::updateMapUiInsets);
     }
 
-    private void addTrackHud(FieldDatabase.Track track) {
-        if (hud.getChildCount() > 0) hud.addView(divider());
-        hud.addView(panelHeader("Track & backtrack — " + track.name, "Track", v -> {
-            trackPanelCollapsed = true;
-            renderHud();
-        }));
-        List<GeoMath.Point> points = db.getTrackPoints(track.id);
-        hud.addView(hudText((FieldDatabase.TRACK_PAUSED.equals(track.status) ? "Paused" : "Recording")
-                + " · " + points.size() + " points · " + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
-                + "\nThe line is drawn live on the map and remains visible after you stop it."));
-        LinearLayout row = buttonRow();
-        if (FieldDatabase.TRACK_PAUSED.equals(track.status)) {
-            row.addView(hudButton("Resume", v -> trackCommand(TrackRecordingService.ACTION_RESUME, track.id)), weight());
-        } else {
-            row.addView(hudButton("Pause", v -> trackCommand(TrackRecordingService.ACTION_PAUSE, track.id)), weight());
+    private void addTrackHud(FieldDatabase.Track activeTrack, FieldDatabase.Track viewedTrack) {
+        String title = FieldUiNames.TRACK;
+        if (activeTrack != null && viewedTrack == null) title += " — " + activeTrack.name;
+        else if (activeTrack == null && viewedTrack != null) title += " — " + viewedTrack.name;
+        hud.addView(panelHeader(title, FieldUiNames.TRACK_SHORT,
+                v -> setExpandedTool(null)));
+
+        if (activeTrack != null) {
+            List<GeoMath.Point> points = db.getTrackPoints(activeTrack.id);
+            String prefix = viewedTrack == null ? "" : "Recording — " + activeTrack.name + "\n";
+            hud.addView(hudText(prefix
+                    + (FieldDatabase.TRACK_PAUSED.equals(activeTrack.status) ? "Paused" : "Recording")
+                    + " · " + points.size() + " points · "
+                    + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
+                    + "\nThe line continues recording while this panel is collapsed or another tool is open."));
+            LinearLayout row = buttonRow();
+            if (FieldDatabase.TRACK_PAUSED.equals(activeTrack.status)) {
+                row.addView(hudButton("Resume", v -> trackCommand(TrackRecordingService.ACTION_RESUME, activeTrack.id)), weight());
+            } else {
+                row.addView(hudButton("Pause", v -> trackCommand(TrackRecordingService.ACTION_PAUSE, activeTrack.id)), weight());
+            }
+            row.addView(hudButton("Stop", v -> confirmStopTrack(activeTrack)), weight());
+            row.addView(hudButton("Tracks", v -> openFieldScreen("tracks")), weight());
+            hud.addView(row);
         }
-        row.addView(hudButton("Stop", v -> confirmStopTrack(track)), weight());
-        row.addView(hudButton("Tracks", v -> openFieldScreen("tracks")), weight());
-        hud.addView(row);
+
+        if (viewedTrack != null) {
+            if (activeTrack != null) hud.addView(divider());
+            List<GeoMath.Point> points = db.getTrackPoints(viewedTrack.id);
+            FieldDatabase.Track selected = viewedTrack;
+            hud.addView(hudText("Viewing — " + selected.name + "\n"
+                    + points.size() + " points · " + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
+                    + "\nSTART and END appear once the map is zoomed in enough to use them."));
+
+            LinearLayout first = buttonRow();
+            first.addView(hudButton("Backtrack", v -> {
+                if (points.size() < 2) return;
+                FieldMapState.showTrack(activity, selected.id);
+                FieldMapState.clearViewedMapContext(activity);
+                startNavigation("Start of " + selected.name, points.get(0));
+            }), weight());
+            first.addView(hudButton("Hide", v -> {
+                FieldMapState.hideTrack(activity, selected.id);
+                FieldMapState.clearViewedMapContext(activity);
+                refreshFieldSnapshot();
+                applyCachedSources();
+                renderHud();
+                toast("Track hidden. Reopen it from Field > Tracks to show it again.");
+            }), weight());
+            first.addView(hudButton("Delete", v -> new AlertDialog.Builder(activity)
+                    .setTitle("Delete track?")
+                    .setMessage("Permanently remove “" + selected.name + "” and all of its recorded points?")
+                    .setPositiveButton("Delete", (d, w) -> {
+                        db.deleteTrack(selected.id);
+                        FieldMapState.clearViewedMapContext(activity);
+                        refreshFieldSnapshot();
+                        applyCachedSources();
+                        renderHud();
+                        toast("Track deleted.");
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show()), weight());
+            hud.addView(first);
+
+            LinearLayout second = buttonRow();
+            second.addView(hudButton("All tracks", v -> {
+                FieldMapState.clearViewedMapContext(activity);
+                if (activeTrack == null) setExpandedTool(null);
+                openFieldScreen("tracks");
+            }), weight());
+            second.addView(hudButton("Close map view", v -> {
+                FieldMapState.clearViewedMapContext(activity);
+                if (activeTrack == null) setExpandedTool(null);
+                else renderHud();
+                applyCachedSources();
+            }), weight());
+            hud.addView(second);
+        }
     }
 
     private void addNavigationHud(FieldMapState.NavigationTarget target) {
-        if (hud.getChildCount() > 0) hud.addView(divider());
-        hud.addView(panelHeader("Navigate — " + target.name, "Navigate", v -> {
-            navigationPanelCollapsed = true;
-            renderHud();
-        }));
+        hud.addView(panelHeader(FieldUiNames.NAVIGATE + " — " + target.name,
+                FieldUiNames.NAVIGATE_SHORT, v -> setExpandedTool(null)));
         String status;
         if (latestNavigationLocation == null) {
             status = "Getting a GPS fix…\nTarget: " + target.point.decimal();
@@ -378,20 +493,18 @@ public final class FieldMapController implements LocationRepository.Listener {
         hud.addView(hudText(status));
         LinearLayout row = buttonRow();
         row.addView(hudButton("Frame", v -> frameNavigation(target)), weight());
-        row.addView(hudButton("Target", v -> center(target.point, 16d)), weight());
+        row.addView(hudButton("Target", v -> centerExplicit(target.point, 16d)), weight());
         row.addView(hudButton("Stop", v -> stopNavigation()), weight());
         hud.addView(row);
     }
 
     private void addMeasureHud() {
-        if (hud.getChildCount() > 0) hud.addView(divider());
         hud.addView(panelHeader(
-                "Measure on map — " + measurement.size() + " point" + (measurement.size() == 1 ? "" : "s"),
-                "Measure",
+                FieldUiNames.MEASURE + " — " + measurement.size() + " point" + (measurement.size() == 1 ? "" : "s"),
+                FieldUiNames.MEASURE_SHORT,
                 v -> {
-                    measurePanelCollapsed = true;
                     removeTapCapture();
-                    renderHud();
+                    setExpandedTool(null);
                 }));
         hud.addView(hudText(measurementSummary()));
 
@@ -416,28 +529,28 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void showFieldMenu() {
         final AlertDialog[] holder = new AlertDialog[1];
         LinearLayout box = dialogBox();
-        box.addView(dialogAction("Track & backtrack", "Record a track and see it build live on this map.", v -> {
+        box.addView(dialogAction(FieldUiNames.TRACK, "Record a track and see it build live on this map.", v -> {
             holder[0].dismiss(); openFieldScreen("tracks");
         }));
-        box.addView(dialogAction("Navigate", "Choose a saved marker, Field Record, or coordinate and follow a live map line.", v -> {
+        box.addView(dialogAction(FieldUiNames.NAVIGATE, "Choose a saved marker, Field Record, or coordinate and follow a live map line.", v -> {
             holder[0].dismiss(); showNavigateMenu();
         }));
-        box.addView(dialogAction("Measure on map", "Tap map points or use GPS/saved records; see distance and area directly here.", v -> {
+        box.addView(dialogAction(FieldUiNames.MEASURE, "Tap map points or use GPS/saved records; see distance and area directly here.", v -> {
             holder[0].dismiss(); startMeasurement();
         }));
-        box.addView(dialogAction("Field records & samples", "Create, edit, photograph, navigate to, and map richer field observations.", v -> {
+        box.addView(dialogAction(FieldUiNames.FIELD_RECORDS, "Create, edit, photograph, navigate to, and map richer field observations.", v -> {
             holder[0].dismiss(); openFieldScreen("records");
         }));
-        box.addView(dialogAction("Import GPX / KML / GeoJSON", "Import waypoints, tracks, and areas, then immediately show them on this map.", v -> {
+        box.addView(dialogAction(FieldUiNames.IMPORT, "Import waypoints, tracks, and areas, then immediately show them on this map.", v -> {
             holder[0].dismiss(); openFieldScreen("import");
         }));
-        box.addView(dialogAction("Imported data", "Review managed imports, show a batch on the map, delete a batch, or import another file.", v -> {
+        box.addView(dialogAction(FieldUiNames.IMPORTED_DATA, "Review managed imports, show a batch on the map, delete a batch, or import another file.", v -> {
             holder[0].dismiss(); openFieldScreen("imports");
         }));
-        box.addView(dialogAction("Coordinate tools", "Convert decimal, DDM, DMS, UTM and MGRS coordinates.", v -> {
+        box.addView(dialogAction(FieldUiNames.COORDINATES, "Convert decimal, DDM, DMS, UTM and MGRS coordinates.", v -> {
             holder[0].dismiss(); openFieldScreen("coordinates");
         }));
-        box.addView(dialogAction("Field visibility", "Show or hide tracks, prospecting areas, Field Records, and marker labels.", v -> {
+        box.addView(dialogAction(FieldUiNames.VISIBILITY, "Show or hide tracks, prospecting areas, Field Records, and marker labels.", v -> {
             holder[0].dismiss(); showVisibilityMenu();
         }));
         holder[0] = new AlertDialog.Builder(activity)
@@ -482,7 +595,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 "Names for saved/imported RockMap markers. Labels also hide when the normal marker layer is hidden.");
         box.addView(tracks); box.addView(areas); box.addView(records); box.addView(labels);
         new AlertDialog.Builder(activity)
-                .setTitle("Field visibility")
+                .setTitle(FieldUiNames.VISIBILITY)
                 .setView(box)
                 .setPositiveButton("Apply", (d, w) -> {
                     FieldMapState.setTracksVisible(activity, tracks.isChecked());
@@ -793,52 +906,69 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void refreshNavigationState() {
         FieldMapState.NavigationTarget target = FieldMapState.navigationTarget(activity);
-        latestNavigationLocation = null;
-        navigationCameraFramed = false;
-        locationRepository.stop();
-        navigationUpdatesStarted = false;
-        if (target != null) {
-            ensureNavigationUpdates();
+        if (target == null) {
+            latestNavigationLocation = null;
+            locationRepository.stop();
+            navigationUpdatesStarted = false;
+            if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) setExpandedTool(null);
+            else {
+                renderHud();
+                applyCachedSources();
+            }
+            return;
+        }
+
+        // Navigation remains logically active while the user opens Field screens or inspects other
+        // map objects. Resuming only restarts location updates; it never takes camera ownership.
+        ensureNavigationUpdates();
+        if (latestNavigationLocation == null) {
             locationRepository.requestFreshPrecise(location -> {
                 latestNavigationLocation = location;
                 renderHud();
                 applyCachedSources();
-                if (!navigationCameraFramed) frameNavigation(target);
-            }, message -> toast(message == null ? "GPS fix failed." : message));
+            }, message -> {
+                renderHud();
+                if (message != null) toast(message);
+            });
         }
         renderHud();
         applyCachedSources();
     }
 
     private void startNavigation(String name, GeoMath.Point target) {
-        navigationPanelCollapsed = false;
+        if (target == null) return;
+        // A new navigation target becomes the current map context. Ongoing Track/Measure modes
+        // remain active, but stale completed-track START/END context should not follow it.
+        FieldMapState.clearViewedMapContext(activity);
         FieldMapState.startNavigation(activity, name, target);
+        setExpandedToolValue(FieldMapState.TOOL_NAVIGATE);
         latestNavigationLocation = null;
-        navigationCameraFramed = false;
         locationRepository.stop();
         navigationUpdatesStarted = false;
         ensureNavigationUpdates();
+
+        // Initial navigation may frame once. Any newer explicit map action invalidates this token,
+        // so a delayed GPS fix can never steal the camera from Show batch/area/track/etc.
+        long cameraToken = beginCameraCommand();
+        centerInternal(target, 16d);
         locationRepository.requestFreshPrecise(location -> {
             latestNavigationLocation = location;
             renderHud();
             applyCachedSources();
-            frameNavigation(FieldMapState.navigationTarget(activity));
+            if (isCameraCommandCurrent(cameraToken)) frameNavigationInternal(FieldMapState.navigationTarget(activity));
         }, message -> {
-            center(target, 16d);
             renderHud();
             applyCachedSources();
             toast(message == null ? "Navigation target mapped; GPS fix is not available yet." : message);
         });
-        center(target, 16d);
         renderHud();
         applyCachedSources();
     }
 
     private void stopNavigation() {
-        navigationPanelCollapsed = false;
+        if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) setExpandedToolValue(null);
         FieldMapState.stopNavigation(activity);
         latestNavigationLocation = null;
-        navigationCameraFramed = false;
         locationRepository.stop();
         navigationUpdatesStarted = false;
         applyCachedSources();
@@ -858,16 +988,20 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void frameNavigation(FieldMapState.NavigationTarget target) {
+        beginCameraCommand();
+        frameNavigationInternal(target);
+    }
+
+    private void frameNavigationInternal(FieldMapState.NavigationTarget target) {
         if (target == null) return;
         if (latestNavigationLocation == null) {
-            center(target.point, 16d);
+            centerInternal(target.point, 16d);
             return;
         }
         GeoMath.Point current = point(latestNavigationLocation);
-        focusBounds(new FieldMapState.Bounds(
+        focusBoundsInternal(new FieldMapState.Bounds(
                 Math.min(current.lat, target.point.lat), Math.min(current.lon, target.point.lon),
                 Math.max(current.lat, target.point.lat), Math.max(current.lon, target.point.lon)));
-        navigationCameraFramed = true;
     }
 
     private void chooseSavedNavigation() {
@@ -927,8 +1061,9 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void startMeasurement() {
         if (!measureActive) measurement.clear();
-        measurePanelCollapsed = false;
         measureActive = true;
+        FieldMapState.saveMeasurement(activity, measurement, true);
+        setExpandedToolValue(FieldMapState.TOOL_MEASURE);
         removeTapCapture();
         renderHud();
         applyCachedSources();
@@ -969,9 +1104,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         root.addView(catcher, params);
         tapCapture = catcher;
         awaitingMapTap = true;
-        controls.bringToFront();
-        fieldButton.bringToFront();
-        hud.bringToFront();
+        if (controls != null) controls.bringToFront();
+        if (fieldButton != null) fieldButton.bringToFront();
+        if (hud != null) hud.bringToFront();
         renderHud();
         toast("Tap once on the map to add the next measurement point. Dragging cancels the tap so you can pan normally afterward.");
     }
@@ -1040,7 +1175,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (!measureActive) measureActive = true;
         measurement.add(point);
         if (measurement.size() > 2000) measurement.remove(measurement.size() - 1);
-        if (centerIfFirst && measurement.size() == 1) center(point, 16d);
+        FieldMapState.saveMeasurement(activity, measurement, true);
+        if (centerIfFirst && measurement.size() == 1) centerExplicit(point, 16d);
         applyCachedSources();
         renderHud();
     }
@@ -1048,6 +1184,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void undoMeasurement() {
         if (measurement.isEmpty()) { toast("There is no measurement point to undo."); return; }
         measurement.remove(measurement.size() - 1);
+        FieldMapState.saveMeasurement(activity, measurement, true);
         applyCachedSources();
         renderHud();
     }
@@ -1061,9 +1198,10 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setView(name)
                 .setPositiveButton("Save", (d, w) -> {
                     db.insertArea(name.getText().toString().trim(), "Saved from map measurement", new ArrayList<>(measurement));
-                    measurePanelCollapsed = false;
                     measureActive = false;
                     measurement.clear();
+                    FieldMapState.clearMeasurement(activity);
+                    if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) setExpandedToolValue(null);
                     removeTapCapture();
                     refreshFieldSnapshot();
                     applyCachedSources();
@@ -1074,8 +1212,9 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void finishMeasurement() {
         if (measurement.isEmpty()) {
-            measurePanelCollapsed = false;
             measureActive = false;
+            FieldMapState.clearMeasurement(activity);
+            if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) setExpandedToolValue(null);
             removeTapCapture();
             applyCachedSources();
             renderHud();
@@ -1084,7 +1223,13 @@ public final class FieldMapController implements LocationRepository.Listener {
         new AlertDialog.Builder(activity).setTitle("Finish measurement?")
                 .setMessage("The temporary measurement will be cleared. Save it as a prospecting area first if you want it to remain on the map.")
                 .setPositiveButton("Clear & finish", (d, w) -> {
-                    measurement.clear(); measurePanelCollapsed = false; measureActive = false; removeTapCapture(); applyCachedSources(); renderHud();
+                    measurement.clear();
+                    measureActive = false;
+                    FieldMapState.clearMeasurement(activity);
+                    if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) setExpandedToolValue(null);
+                    removeTapCapture();
+                    applyCachedSources();
+                    renderHud();
                 })
                 .setNegativeButton("Keep measuring", null).show();
     }
@@ -1117,17 +1262,23 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void consumeMapRequests() {
         if (map == null) return;
         if (FieldMapState.consumeMeasurementRequest(activity)) startMeasurement();
-        FieldMapState.Bounds bounds = FieldMapState.consumeFocusBounds(activity);
-        if (bounds != null) focusBounds(bounds);
-        long trackId = FieldMapState.consumeTrackFocus(activity);
-        if (trackId >= 0L) {
-            worker.execute(() -> {
-                List<GeoMath.Point> points = db.getTrackPoints(trackId);
-                main.post(() -> {
-                    FieldMapState.Bounds trackBounds = FieldMapState.Bounds.fromPoints(points);
-                    if (trackBounds != null) focusBounds(trackBounds);
+
+        FieldMapState.CameraRequest cameraRequest = FieldMapState.consumeCameraRequest(activity);
+        if (cameraRequest != null) {
+            long cameraToken = beginCameraCommand();
+            if (FieldMapState.CAMERA_BOUNDS.equals(cameraRequest.kind) && cameraRequest.bounds != null) {
+                focusBoundsInternal(cameraRequest.bounds);
+            } else if (FieldMapState.CAMERA_TRACK.equals(cameraRequest.kind) && cameraRequest.trackId >= 0L) {
+                long trackId = cameraRequest.trackId;
+                worker.execute(() -> {
+                    List<GeoMath.Point> points = db.getTrackPoints(trackId);
+                    main.post(() -> {
+                        if (!isCameraCommandCurrent(cameraToken)) return;
+                        FieldMapState.Bounds trackBounds = FieldMapState.Bounds.fromPoints(points);
+                        if (trackBounds != null) focusBoundsInternal(trackBounds);
+                    });
                 });
-            });
+            }
         }
         refreshNavigationStateIfNeeded();
     }
@@ -1143,7 +1294,15 @@ public final class FieldMapController implements LocationRepository.Listener {
         locationRepository.start();
     }
 
-    private void focusBounds(FieldMapState.Bounds bounds) {
+    private long beginCameraCommand() {
+        return ++cameraCommandGeneration;
+    }
+
+    private boolean isCameraCommandCurrent(long token) {
+        return token == cameraCommandGeneration;
+    }
+
+    private void focusBoundsInternal(FieldMapState.Bounds bounds) {
         if (map == null || bounds == null || !bounds.isValid()) return;
         GeoMath.Point a = new GeoMath.Point(bounds.minLat, bounds.minLon);
         GeoMath.Point b = new GeoMath.Point(bounds.maxLat, bounds.maxLon);
@@ -1160,7 +1319,12 @@ public final class FieldMapController implements LocationRepository.Listener {
         map.animateCamera(CameraUpdateFactory.newLatLngZoom(mid, zoom));
     }
 
-    private void center(GeoMath.Point point, double zoom) {
+    private void centerExplicit(GeoMath.Point point, double zoom) {
+        beginCameraCommand();
+        centerInternal(point, zoom);
+    }
+
+    private void centerInternal(GeoMath.Point point, double zoom) {
         if (map == null || point == null) return;
         map.animateCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(point.lat, point.lon), zoom));
     }
@@ -1355,17 +1519,28 @@ public final class FieldMapController implements LocationRepository.Listener {
                 location.getTime() > 0L ? location.getTime() : System.currentTimeMillis());
     }
 
-    private Button findButton(View view, String text) {
-        if (view instanceof Button) {
-            Button button = (Button) view;
-            if (text.contentEquals(button.getText())) return button;
+    private FrameLayout findMapRoot(MapView target) {
+        View current = target;
+        while (current.getParent() instanceof View) {
+            View parent = (View) current.getParent();
+            if (parent instanceof FrameLayout) return (FrameLayout) parent;
+            current = parent;
         }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                Button found = findButton(group.getChildAt(i), text);
-                if (found != null) return found;
-            }
+        return null;
+    }
+
+    /** Locate MainActivity's bottom action tray by layout role, never by visible button text. */
+    private ViewGroup findBottomControls(FrameLayout container) {
+        if (container == null) return null;
+        for (int i = 0; i < container.getChildCount(); i++) {
+            View child = container.getChildAt(i);
+            if (!(child instanceof ViewGroup) || child == mapView) continue;
+            Object tag = child.getTag();
+            if (HUD_TAG.equals(tag) || COLLAPSED_TABS_TAG.equals(tag)) continue;
+            ViewGroup.LayoutParams raw = child.getLayoutParams();
+            if (!(raw instanceof FrameLayout.LayoutParams)) continue;
+            int gravity = ((FrameLayout.LayoutParams) raw).gravity;
+            if ((gravity & Gravity.BOTTOM) == Gravity.BOTTOM) return (ViewGroup) child;
         }
         return null;
     }

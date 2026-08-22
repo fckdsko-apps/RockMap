@@ -80,25 +80,25 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title("Field"));
         root.addView(help("Field tools are map-first. Spatial features lead back to the main map so their position, scale, and relationship to the surrounding terrain are visible."));
 
-        root.addView(action("Track recording & backtrack",
+        root.addView(action(FieldUiNames.TRACK,
                 "Record GPS tracks that draw live on the main map. Opening a saved track now opens its real basemap view instead of an abstract squiggle.",
                 v -> showTracks()));
-        root.addView(action("Field records & samples",
+        root.addView(action(FieldUiNames.FIELD_RECORDS,
                 "Richer saved observations with category, mineral, sample ID, notes, photo, GPS accuracy and elevation.",
                 v -> showFieldRecords()));
-        root.addView(action("Saved locations",
+        root.addView(action(FieldUiNames.SAVED_LOCATIONS,
                 "View the existing RockMap saved-marker database or copy a marker into a richer field record.",
                 v -> showLegacyWaypoints()));
-        root.addView(action("Measure on map",
+        root.addView(action(FieldUiNames.MEASURE,
                 "Add points by map tap, GPS, saved marker, Field Record, or pasted coordinate. Segment distances and polygon area are labeled directly on the map.",
                 v -> { FieldMapState.requestMeasurement(this); returnToMap(); }));
-        root.addView(action("Import GPX / KML / GeoJSON",
+        root.addView(action(FieldUiNames.IMPORT,
                 "Import waypoints, tracks and areas as a managed batch, then show or remove that batch cleanly.",
                 v -> beginImport()));
-        root.addView(action("Imported data",
+        root.addView(action(FieldUiNames.IMPORTED_DATA,
                 "Review imported batches, show a batch on the map, or delete only the data created by that import.",
                 v -> showImports()));
-        root.addView(action("Coordinate formats",
+        root.addView(action(FieldUiNames.COORDINATES,
                 "Convert one location between decimal degrees, DDM, DMS, WGS84 UTM and MGRS.",
                 v -> showCoordinates()));
         root.addView(action("Back to map",
@@ -172,7 +172,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
                                 .putExtra(TrackRecordingService.EXTRA_TRACK_ID, id);
                         FieldMapState.showTrack(this, id);
                         FieldMapState.requestTrackFocus(this, id);
-                        FieldMapState.clearSelectedTrackDetail(this);
+                        FieldMapState.clearViewedMapContext(this);
+                        FieldMapState.setExpandedTool(this, FieldMapState.TOOL_TRACK);
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
                         else startService(service);
                         returnToMap();
@@ -223,10 +224,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
         FieldMapState.showTrack(this, trackId);
         FieldMapState.requestTrackFocus(this, trackId);
         if (FieldDatabase.TRACK_RECORDING.equals(track.status) || FieldDatabase.TRACK_PAUSED.equals(track.status)) {
-            FieldMapState.clearSelectedTrackDetail(this);
+            FieldMapState.clearViewedMapContext(this);
         } else {
             FieldMapState.selectTrackDetail(this, trackId);
         }
+        FieldMapState.setExpandedTool(this, FieldMapState.TOOL_TRACK);
         returnToMap();
     }
 
@@ -234,7 +236,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showFieldRecords() {
         LinearLayout root = page();
-        root.addView(title("Field records & samples"));
+        root.addView(title(FieldUiNames.FIELD_RECORDS));
         LinearLayout add = row();
         add.addView(small("New at GPS", v -> newFieldAtGps()), weight());
         add.addView(small("New at coordinates", v -> newFieldAtCoordinates()), weight());
@@ -370,6 +372,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Show on map",
                 "Center this Field Record on the main map without starting navigation.",
                 v -> {
+                    FieldMapState.clearViewedMapContext(this);
                     FieldMapState.requestFocusBounds(this, new FieldMapState.Bounds(r.lat, r.lon, r.lat, r.lon));
                     returnToMap();
                 }));
@@ -438,6 +441,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Show on map",
                 "Center this labeled saved marker on the main map.",
                 v -> {
+                    FieldMapState.clearViewedMapContext(this);
                     FieldMapState.requestFocusBounds(this,
                             new FieldMapState.Bounds(w.latitude, w.longitude, w.latitude, w.longitude));
                     returnToMap();
@@ -504,6 +508,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Show on map",
                 "Zoom to this saved area and keep the polygon visible in geographic context.",
                 v -> {
+                    FieldMapState.clearViewedMapContext(this);
                     FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
                     if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
                     returnToMap();
@@ -680,7 +685,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showImports() {
         LinearLayout root = page();
-        root.addView(title("Imported data"));
+        root.addView(title(FieldUiNames.IMPORTED_DATA));
         root.addView(help("Each new GPX/KML/GeoJSON import is tracked as its own batch. Deleting a batch removes only the remaining objects created by that import."));
 
         List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
@@ -812,6 +817,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 toast("No remaining geometry was found in this import.");
                 return;
             }
+            FieldMapState.clearViewedMapContext(this);
             FieldMapState.requestFocusBounds(this, bounds);
             returnToMap();
         });
@@ -834,10 +840,31 @@ public final class FieldActivity extends Activity implements LocationRepository.
             root.addView(help("No remaining waypoints in this batch."));
         } else {
             for (WaypointEntity w : items) {
-                root.addView(action(w.name, CoordinateFormats.decimal(w.latitude, w.longitude),
-                        v -> showPointNavigation(w.name, new GeoMath.Point(w.latitude, w.longitude))));
+                root.addView(action(w.name, CoordinateFormats.decimal(w.latitude, w.longitude) + "\nTap for map and navigation options.",
+                        v -> showImportedWaypoint(w)));
             }
         }
+        root.addView(nav("Back to imported data", v -> showImports()));
+        setContentView(scroll(root));
+    }
+
+    private void showImportedWaypoint(WaypointEntity w) {
+        LinearLayout root = page();
+        root.addView(title(w.name == null || w.name.trim().isEmpty() ? "Imported waypoint" : w.name));
+        root.addView(help(CoordinateFormats.decimal(w.latitude, w.longitude)
+                + (w.accuracyMeters >= 0 ? String.format(Locale.US, "\nGPS accuracy: ±%.1f m", w.accuracyMeters) : "")
+                + (w.notes == null || w.notes.trim().isEmpty() ? "" : "\n\n" + w.notes)));
+        root.addView(action("Show on map",
+                "Center this imported saved marker without changing any active navigation target.",
+                v -> {
+                    FieldMapState.clearViewedMapContext(this);
+                    FieldMapState.requestFocusBounds(this,
+                            new FieldMapState.Bounds(w.latitude, w.longitude, w.latitude, w.longitude));
+                    returnToMap();
+                }));
+        root.addView(action("Navigate to this point",
+                "Make this marker the active navigation target.",
+                v -> showPointNavigation(w.name, new GeoMath.Point(w.latitude, w.longitude))));
         root.addView(nav("Back to imported data", v -> showImports()));
         setContentView(scroll(root));
     }
@@ -878,7 +905,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showCoordinates() {
         LinearLayout root = page();
-        root.addView(title("Coordinate formats"));
+        root.addView(title(FieldUiNames.COORDINATES));
         root.addView(help("Enter latitude/longitude in decimal, DDM or DMS. Output uses WGS84. UTM/MGRS are displayed for supported latitudes."));
         EditText input = input("Latitude, longitude", "");
         root.addView(input);
@@ -913,10 +940,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     private void showPointNavigation(String name, GeoMath.Point target) {
+        FieldMapState.clearViewedMapContext(this);
         FieldMapState.startNavigation(this, name, target);
+        FieldMapState.setExpandedTool(this, FieldMapState.TOOL_NAVIGATE);
         FieldMapState.requestFocusBounds(this,
                 new FieldMapState.Bounds(target.lat, target.lon, target.lat, target.lon));
-        FieldMapState.clearSelectedTrackDetail(this);
         returnToMap();
     }
 

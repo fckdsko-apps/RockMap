@@ -1,18 +1,15 @@
 package com.rockmap.app.field;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import com.rockmap.app.MainActivity;
 
@@ -43,30 +40,28 @@ import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidt
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
 /**
- * Small additive map-polish controller for the Commit-1 field UX.
+ * Visual polish layered over the map-first Field controller.
  *
- * The primary FieldMapController still owns track/area/measurement geometry. This controller
- * deliberately leaves MainActivity, MapController, LocationRepository and the known-good GPS
- * centering path untouched. It supplies the pieces that need to stay visually obvious above the
- * basemap: saved-location visibility synchronization, readable measurement labels, and
- * completed-track context controls/endpoints. Import management lives permanently in Field.
+ * This class deliberately does not own toolbars or camera state. FieldMapController is the single
+ * owner of persistent tool panels and camera commands. This class only keeps saved-location
+ * visibility synchronized and renders geographic labels that must stay visually anchored to map
+ * geometry. Context labels are suppressed when zoomed too far out or when they would collide with
+ * important map UI.
  */
 public final class FieldMapPolishController {
-    private static final String CONTEXT_HUD_TAG = "rockmap-track-context-hud";
-    private static final String EXISTING_FIELD_HUD_TAG = "rockmap-field-map-hud";
-    private static final String COLLAPSED_TABS_TAG = "rockmap-field-collapsed-tabs";
-    private static final String TRACK_CONTEXT_TAB_TAG = "rockmap-collapsed-track-context";
     private static final String SCREEN_LABELS_TAG = "rockmap-field-screen-labels";
-    private static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
 
     private static final String MAIN_WAYPOINT_LAYER = "rockmap-waypoint-layer";
     private static final String FIELD_WAYPOINT_MIRROR = "rockmap-waypoint-mirror-layer";
     private static final String FIELD_WAYPOINT_LABEL = "rockmap-waypoint-label-layer";
-
     private static final String MEASURE_LINE_LAYER = "rockmap-field-measure-line-layer";
 
     private static final String TRACK_ENDPOINT_SOURCE = "rockmap-field-track-endpoint-source";
     private static final String TRACK_ENDPOINT_LAYER = "rockmap-field-track-endpoint-layer";
+
+    // Context labels should help at field scale, not clutter a statewide/regional overview.
+    private static final double MEASUREMENT_LABEL_MIN_ZOOM = 12.0d;
+    private static final double TRACK_ENDPOINT_LABEL_MIN_ZOOM = 13.0d;
 
     private final Activity activity;
     private final FieldDatabase db;
@@ -75,12 +70,9 @@ public final class FieldMapPolishController {
     private FrameLayout root;
     private MapView mapView;
     private MapLibreMap map;
-    private LinearLayout contextHud;
-    private LinearLayout collapsedTabs;
     private FrameLayout screenLabels;
     private boolean resumed;
     private boolean styleTickPending;
-    private boolean contextHudDismissed;
 
     private long cachedTrackId = Long.MIN_VALUE;
     private FieldDatabase.Track cachedTrack;
@@ -109,9 +101,6 @@ public final class FieldMapPolishController {
         if (root == null) return;
 
         installScreenLabels();
-        installContextHud();
-        installCollapsedTabs();
-
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
             applyPolish();
@@ -120,9 +109,6 @@ public final class FieldMapPolishController {
 
     public void onResume() {
         resumed = true;
-        // Returning from Field > Tracks is an explicit way of reopening a track map view.
-        // Do not leave the toolbar hidden simply because the same track id was selected again.
-        if (FieldMapState.selectedTrackDetail(activity) >= 0L) contextHudDismissed = false;
         attach();
         main.removeCallbacks(tick);
         main.post(tick);
@@ -165,7 +151,7 @@ public final class FieldMapPolishController {
         }
     }
 
-    /** Keep the Field mirror/labels locked to MainActivity's real Layers > Saved locations state. */
+    /** Keep Field's waypoint mirror and labels locked to Layers > Saved locations. */
     private void syncSavedLocationVisibility(Style style) {
         Layer mainSaved = style.getLayer(MAIN_WAYPOINT_LAYER);
         if (mainSaved == null) return;
@@ -175,12 +161,6 @@ public final class FieldMapPolishController {
         setVisible(style, FIELD_WAYPOINT_LABEL, visible && FieldMapState.labelsVisible(activity));
     }
 
-    /**
-     * Use Android overlay text instead of relying on a MapLibre glyph/symbol layer. The previous
-     * symbol labels could exist in the style yet still be effectively invisible. These labels are
-     * positioned from the same geographic line every 300 ms, so the number is visibly attached to
-     * the line while the user pans/zooms.
-     */
     private void renderScreenLabels() {
         if (screenLabels == null || map == null || mapView == null) return;
         screenLabels.removeAllViews();
@@ -194,11 +174,11 @@ public final class FieldMapPolishController {
             screenLabels.setVisibility(View.VISIBLE);
             screenLabels.bringToFront();
         }
-        bringOverlayControlsToFront();
-        if (contextHud != null && contextHud.getVisibility() == View.VISIBLE) contextHud.bringToFront();
+        bringMapUiToFront();
     }
 
     private void renderMeasurementLabels() {
+        if (currentZoom() < MEASUREMENT_LABEL_MIN_ZOOM) return;
         List<GeoMath.Point> points = renderedMeasurementPoints();
         if (points.size() < 2) return;
 
@@ -255,6 +235,7 @@ public final class FieldMapPolishController {
     }
 
     private void renderTrackEndpointLabels() {
+        if (currentZoom() < TRACK_ENDPOINT_LABEL_MIN_ZOOM) return;
         if (cachedTrack == null || cachedTrackPoints.size() < 2
                 || FieldMapState.selectedTrackDetail(activity) < 0L) return;
 
@@ -264,15 +245,16 @@ public final class FieldMapPolishController {
                 Color.rgb(20, 70, 135), Color.WHITE, 13f, true, dp(25));
     }
 
+    private double currentZoom() {
+        if (map == null || map.getCameraPosition() == null) return 0d;
+        return map.getCameraPosition().zoom;
+    }
+
     private void addMapLabel(String label, GeoMath.Point point, int background, int foreground,
                              float textSizeSp, boolean bold, int verticalOffsetPx) {
-        if (screenLabels == null || map == null || point == null) return;
+        if (screenLabels == null || map == null || point == null || mapView == null) return;
         PointF screen = map.getProjection().toScreenLocation(new LatLng(point.lat, point.lon));
         if (screen == null || !Float.isFinite(screen.x) || !Float.isFinite(screen.y)) return;
-
-        int safeBottom = Math.max(dp(80), mapView.getHeight() - dp(118));
-        if (screen.x < -dp(60) || screen.x > mapView.getWidth() + dp(60)
-                || screen.y < -dp(60) || screen.y > mapView.getHeight() + dp(60)) return;
 
         TextView view = new TextView(activity);
         view.setText(label);
@@ -292,13 +274,52 @@ public final class FieldMapPolishController {
         int height = Math.max(dp(24), view.getMeasuredHeight());
         int left = Math.round(screen.x - width / 2f);
         int top = Math.round(screen.y - height / 2f) + verticalOffsetPx;
-        left = Math.max(dp(3), Math.min(left, Math.max(dp(3), mapView.getWidth() - width - dp(3))));
-        top = Math.max(statusBarHeight() + dp(3), Math.min(top, safeBottom - height));
+        Rect candidate = new Rect(left, top, left + width, top + height);
+
+        // Do not detach a geographic label from its feature by clamping it to a screen edge. If it
+        // cannot be shown cleanly in the usable map area, suppress it until pan/zoom makes it useful.
+        if (candidate.left < dp(3) || candidate.right > mapView.getWidth() - dp(3)
+                || candidate.top < statusBarHeight() + dp(3)
+                || candidate.bottom > mapView.getHeight() - dp(3)
+                || overlapsMapUi(candidate)) return;
 
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(width, height);
         params.leftMargin = left;
         params.topMargin = top;
         screenLabels.addView(view, params);
+    }
+
+    private boolean overlapsMapUi(Rect candidate) {
+        if (root == null || mapView == null) return false;
+        for (String tag : new String[]{
+                FieldMapController.HUD_TAG,
+                FieldMapController.COLLAPSED_TABS_TAG,
+                FieldMapController.FIELD_BUTTON_TAG}) {
+            View view = root.findViewWithTag(tag);
+            if (view != null && view.getVisibility() == View.VISIBLE && view.getWidth() > 0 && view.getHeight() > 0) {
+                Rect occupied = new Rect(view.getLeft(), view.getTop(), view.getRight(), view.getBottom());
+                if (Rect.intersects(candidate, occupied)) return true;
+            }
+        }
+
+        ViewGroup bottomControls = findBottomControls(root);
+        if (bottomControls != null && bottomControls.getVisibility() == View.VISIBLE
+                && bottomControls.getWidth() > 0 && bottomControls.getHeight() > 0) {
+            Rect occupied = new Rect(bottomControls.getLeft(), bottomControls.getTop(),
+                    bottomControls.getRight(), bottomControls.getBottom());
+            if (Rect.intersects(candidate, occupied)) return true;
+        }
+
+        // MapLibre's compass lives inside MapView rather than as a root sibling, so reserve its
+        // top-right footprint explicitly. FieldMapController moves it below an expanded HUD.
+        int compassTop = statusBarHeight() + dp(8);
+        View hud = root.findViewWithTag(FieldMapController.HUD_TAG);
+        if (hud != null && hud.getVisibility() == View.VISIBLE && hud.getHeight() > 0) {
+            compassTop = Math.max(compassTop, hud.getBottom() + dp(8));
+        }
+        Rect compass = new Rect(mapView.getWidth() - dp(72), compassTop,
+                mapView.getWidth(), compassTop + dp(72));
+        return Rect.intersects(candidate, compass);
     }
 
     private void updateTrackContext(Style style) {
@@ -307,14 +328,13 @@ public final class FieldMapPolishController {
             cachedTrackId = selected;
             cachedTrack = selected >= 0L ? db.getTrack(selected) : null;
             cachedTrackPoints = selected >= 0L ? db.getTrackPoints(selected) : new ArrayList<>();
-            contextHudDismissed = false;
         }
 
         if (selected < 0L || cachedTrack == null || cachedTrackPoints.size() < 2) {
-            if (selected >= 0L && cachedTrack == null) FieldMapState.clearSelectedTrackDetail(activity);
+            if (selected >= 0L && cachedTrack == null) FieldMapState.clearViewedMapContext(activity);
+            cachedTrack = null;
+            cachedTrackPoints = new ArrayList<>();
             setEndpointJson(style, emptyCollection(), false);
-            hideContextHud();
-            updateTrackCollapsedTab(false);
             return;
         }
 
@@ -325,14 +345,6 @@ public final class FieldMapPolishController {
         } catch (JSONException ignored) {
         }
         setEndpointJson(style, collection(endpointFeatures), true);
-
-        if (contextHudDismissed) {
-            hideContextHud();
-            updateTrackCollapsedTab(true);
-        } else {
-            updateTrackCollapsedTab(false);
-            renderContextHud(cachedTrack, cachedTrackPoints);
-        }
     }
 
     private void setEndpointJson(Style style, String json, boolean visible) {
@@ -344,79 +356,18 @@ public final class FieldMapPolishController {
         setVisible(style, TRACK_ENDPOINT_LAYER, visible);
     }
 
-    private void installCollapsedTabs() {
+    private void bringMapUiToFront() {
         if (root == null) return;
-        View existing = root.findViewWithTag(COLLAPSED_TABS_TAG);
-        if (existing instanceof LinearLayout) {
-            collapsedTabs = (LinearLayout) existing;
-            return;
-        }
-        collapsedTabs = new LinearLayout(activity);
-        collapsedTabs.setTag(COLLAPSED_TABS_TAG);
-        collapsedTabs.setOrientation(LinearLayout.VERTICAL);
-        collapsedTabs.setGravity(Gravity.END);
-        collapsedTabs.setPadding(0, dp(2), 0, dp(2));
-        collapsedTabs.setVisibility(View.GONE);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER_VERTICAL | Gravity.END);
-        root.addView(collapsedTabs, params);
-    }
-
-    private void updateTrackCollapsedTab(boolean visible) {
-        if (collapsedTabs == null) installCollapsedTabs();
-        if (collapsedTabs == null) return;
-
-        View existing = collapsedTabs.findViewWithTag(TRACK_CONTEXT_TAB_TAG);
-        if (existing != null) collapsedTabs.removeView(existing);
-
-        if (visible) {
-            Button tab = new Button(activity);
-            tab.setTag(TRACK_CONTEXT_TAB_TAG);
-            tab.setText("‹ Track");
-            tab.setAllCaps(false);
-            tab.setTextSize(11f);
-            tab.setMinWidth(dp(82));
-            tab.setMinimumWidth(dp(82));
-            tab.setMinHeight(dp(40));
-            tab.setMinimumHeight(dp(40));
-            tab.setPadding(dp(5), 0, dp(5), 0);
-            tab.setContentDescription("Expand Track & backtrack map toolbar");
-            tab.setOnClickListener(v -> reopenTrackToolbar());
-            collapsedTabs.addView(tab, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-
-        collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
-        if (collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
-    }
-
-    private void bringOverlayControlsToFront() {
-        if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
-        if (root != null) {
-            View field = root.findViewWithTag(FIELD_BUTTON_TAG);
-            if (field != null) field.bringToFront();
-        }
-    }
-
-    private void installContextHud() {
-        if (root == null) return;
-        View existing = root.findViewWithTag(CONTEXT_HUD_TAG);
-        if (existing instanceof LinearLayout) {
-            contextHud = (LinearLayout) existing;
-            return;
-        }
-        contextHud = new LinearLayout(activity);
-        contextHud.setTag(CONTEXT_HUD_TAG);
-        contextHud.setOrientation(LinearLayout.VERTICAL);
-        contextHud.setPadding(dp(10), dp(8), dp(10), dp(8));
-        contextHud.setBackgroundColor(Color.argb(240, 255, 255, 255));
-        contextHud.setVisibility(View.GONE);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        params.setMargins(dp(8), statusBarHeight() + dp(8), dp(8), 0);
-        root.addView(contextHud, params);
+        View hud = root.findViewWithTag(FieldMapController.HUD_TAG);
+        if (hud != null && hud.getVisibility() == View.VISIBLE) hud.bringToFront();
+        View tabs = root.findViewWithTag(FieldMapController.COLLAPSED_TABS_TAG);
+        if (tabs != null && tabs.getVisibility() == View.VISIBLE) tabs.bringToFront();
+        View field = root.findViewWithTag(FieldMapController.FIELD_BUTTON_TAG);
+        if (field != null) field.bringToFront();
+        ViewGroup bottomControls = findBottomControls(root);
+        if (bottomControls != null) bottomControls.bringToFront();
+        if (tabs != null && tabs.getVisibility() == View.VISIBLE) tabs.bringToFront();
+        if (field != null) field.bringToFront();
     }
 
     private void installScreenLabels() {
@@ -434,150 +385,6 @@ public final class FieldMapPolishController {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         root.addView(screenLabels, params);
-    }
-
-    private void renderContextHud(FieldDatabase.Track track, List<GeoMath.Point> points) {
-        if (contextHud == null) return;
-
-        if (FieldDatabase.TRACK_RECORDING.equals(track.status)
-                || FieldDatabase.TRACK_PAUSED.equals(track.status)) {
-            hideContextHud();
-            return;
-        }
-
-        contextHud.removeAllViews();
-
-        LinearLayout header = new LinearLayout(activity);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(text("Track & backtrack — " + track.name, 13.5f, true),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        Button collapse = button("›");
-        collapse.setTextSize(20f);
-        collapse.setContentDescription("Collapse Track & backtrack toolbar to the right edge");
-        collapse.setOnClickListener(v -> {
-            contextHudDismissed = true;
-            hideContextHud();
-            updateTrackCollapsedTab(true);
-            renderScreenLabels();
-        });
-        header.addView(collapse, new LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT));
-        contextHud.addView(header);
-
-        contextHud.addView(text(points.size() + " points · "
-                        + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
-                        + "\nSTART and END are labeled directly on the basemap.",
-                11.5f, false));
-
-        LinearLayout firstRow = new LinearLayout(activity);
-        firstRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button backtrack = button("Backtrack");
-        backtrack.setOnClickListener(v -> {
-            if (cachedTrackPoints.size() < 2 || cachedTrack == null) return;
-            FieldMapState.showTrack(activity, cachedTrack.id);
-            FieldMapState.requestTrackFocus(activity, cachedTrack.id);
-            FieldMapState.startNavigation(activity, "Start of " + cachedTrack.name, cachedTrackPoints.get(0));
-            FieldMapState.clearSelectedTrackDetail(activity);
-            resetTrackContext();
-            applyPolish();
-        });
-        firstRow.addView(backtrack, weight());
-
-        Button hide = button("Hide");
-        hide.setOnClickListener(v -> {
-            if (cachedTrack == null) return;
-            FieldMapState.hideTrack(activity, cachedTrack.id);
-            resetTrackContext();
-            toast("Track hidden. Reopen it from Field > Tracks to show it again.");
-            applyPolish();
-        });
-        firstRow.addView(hide, weight());
-
-        Button delete = button("Delete");
-        delete.setOnClickListener(v -> {
-            if (cachedTrack == null) return;
-            FieldDatabase.Track trackToDelete = cachedTrack;
-            new AlertDialog.Builder(activity)
-                    .setTitle("Delete track?")
-                    .setMessage("Permanently remove “" + trackToDelete.name + "” and all of its recorded points?")
-                    .setPositiveButton("Delete", (d, w) -> {
-                        db.deleteTrack(trackToDelete.id);
-                        FieldMapState.clearSelectedTrackDetail(activity);
-                        resetTrackContext();
-                        toast("Track deleted.");
-                        applyPolish();
-                    })
-                    .setNegativeButton("Cancel", null)
-                    .show();
-        });
-        firstRow.addView(delete, weight());
-        contextHud.addView(firstRow);
-
-        LinearLayout secondRow = new LinearLayout(activity);
-        secondRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button tracks = button("All tracks");
-        tracks.setOnClickListener(v -> {
-            FieldMapState.clearSelectedTrackDetail(activity);
-            resetTrackContext();
-            IntentFactory.openTracks(activity);
-        });
-        secondRow.addView(tracks, weight());
-
-        Button close = button("Close map view");
-        close.setOnClickListener(v -> {
-            FieldMapState.clearSelectedTrackDetail(activity);
-            resetTrackContext();
-            applyPolish();
-        });
-        secondRow.addView(close, weight());
-
-        contextHud.addView(secondRow);
-        positionContextHud();
-        contextHud.setVisibility(View.VISIBLE);
-        contextHud.bringToFront();
-        bringOverlayControlsToFront();
-    }
-
-    private void reopenTrackToolbar() {
-        if (FieldMapState.selectedTrackDetail(activity) < 0L) {
-            updateTrackCollapsedTab(false);
-            toast("No track map is currently selected.");
-            return;
-        }
-        contextHudDismissed = false;
-        updateTrackCollapsedTab(false);
-        applyPolish();
-    }
-
-    private void resetTrackContext() {
-        cachedTrackId = Long.MIN_VALUE;
-        cachedTrack = null;
-        cachedTrackPoints = new ArrayList<>();
-        contextHudDismissed = false;
-        hideContextHud();
-        updateTrackCollapsedTab(false);
-    }
-
-    private void positionContextHud() {
-        if (contextHud == null || root == null) return;
-        int top = statusBarHeight() + dp(8);
-        View primary = root.findViewWithTag(EXISTING_FIELD_HUD_TAG);
-        if (primary != null && primary.getVisibility() == View.VISIBLE && primary.getHeight() > 0) {
-            top += primary.getHeight() + dp(6);
-        }
-        ViewGroup.LayoutParams raw = contextHud.getLayoutParams();
-        if (raw instanceof FrameLayout.LayoutParams) {
-            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) raw;
-            params.topMargin = top;
-            contextHud.setLayoutParams(params);
-        }
-    }
-
-    private void hideContextHud() {
-        if (contextHud != null) contextHud.setVisibility(View.GONE);
     }
 
     private void setVisible(Style style, String id, boolean visible) {
@@ -639,6 +446,21 @@ public final class FieldMapPolishController {
         return null;
     }
 
+    private ViewGroup findBottomControls(FrameLayout container) {
+        if (container == null) return null;
+        for (int i = 0; i < container.getChildCount(); i++) {
+            View child = container.getChildAt(i);
+            if (!(child instanceof ViewGroup) || child == mapView || child == screenLabels) continue;
+            Object tag = child.getTag();
+            if (FieldMapController.HUD_TAG.equals(tag) || FieldMapController.COLLAPSED_TABS_TAG.equals(tag)) continue;
+            ViewGroup.LayoutParams raw = child.getLayoutParams();
+            if (!(raw instanceof FrameLayout.LayoutParams)) continue;
+            int gravity = ((FrameLayout.LayoutParams) raw).gravity;
+            if ((gravity & Gravity.BOTTOM) == Gravity.BOTTOM) return (ViewGroup) child;
+        }
+        return null;
+    }
+
     private MapView findMapView(View view) {
         if (view instanceof MapView) return (MapView) view;
         if (view instanceof ViewGroup) {
@@ -651,33 +473,6 @@ public final class FieldMapPolishController {
         return null;
     }
 
-    private TextView text(String value, float size, boolean bold) {
-        TextView view = new TextView(activity);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(Color.rgb(45, 45, 45));
-        if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        view.setPadding(0, 0, 0, dp(4));
-        return view;
-    }
-
-    private Button button(String value) {
-        Button button = new Button(activity);
-        button.setText(value);
-        button.setAllCaps(false);
-        button.setTextSize(11f);
-        button.setMinWidth(0);
-        button.setMinimumWidth(0);
-        button.setMinHeight(dp(44));
-        button.setMinimumHeight(dp(44));
-        button.setPadding(dp(2), 0, dp(2), 0);
-        return button;
-    }
-
-    private LinearLayout.LayoutParams weight() {
-        return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-    }
-
     private int statusBarHeight() {
         int id = activity.getResources().getIdentifier("status_bar_height", "dimen", "android");
         return id > 0 ? activity.getResources().getDimensionPixelSize(id) : 0;
@@ -685,18 +480,5 @@ public final class FieldMapPolishController {
 
     private int dp(int value) {
         return Math.round(value * activity.getResources().getDisplayMetrics().density);
-    }
-
-    private void toast(String message) {
-        Toast.makeText(activity, message == null ? "" : message, Toast.LENGTH_LONG).show();
-    }
-
-    private static final class IntentFactory {
-        static void openTracks(Activity activity) {
-            android.content.Intent intent = new android.content.Intent(activity, FieldActivity.class);
-            intent.putExtra(FieldActivity.EXTRA_SCREEN, "tracks");
-            activity.startActivity(intent);
-        }
-
     }
 }
