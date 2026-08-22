@@ -946,42 +946,37 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
             LinearLayout root = page();
             root.addView(title(FieldUiNames.EXPORT));
-            root.addView(help("Exports are created locally through Android's Save file picker. Exporting never removes or uploads RockMap data. Temporary unsaved measurements are not exported."));
+            root.addView(help("Choose what you want to export. RockMap will ask for the specific item, when needed, and then the file format. Files are saved locally through Android's Save file picker."));
 
             root.addView(action("Saved locations",
-                    waypoints.size() + " saved location" + (waypoints.size() == 1 ? "" : "s")
-                            + " · GeoJSON backup preserves RockMap marker metadata; GPX is convenient for GPS apps.",
+                    waypoints.size() + " saved location" + (waypoints.size() == 1 ? "" : "s"),
                     v -> showSavedLocationExportFormats(waypoints.size())));
 
             root.addView(action("Tracks",
-                    tracks.size() + " track" + (tracks.size() == 1 ? "" : "s")
-                            + " · Export all tracks or choose one track as GPX or GeoJSON.",
+                    tracks.size() + " track" + (tracks.size() == 1 ? "" : "s") + " · choose all or one track",
                     v -> showTrackExportPicker()));
 
             root.addView(action(FieldUiNames.FIELD_RECORDS,
-                    records.size() + " record" + (records.size() == 1 ? "" : "s")
-                            + " · CSV for spreadsheets or GeoJSON for GIS. Photo files are not embedded.",
+                    records.size() + " record" + (records.size() == 1 ? "" : "s"),
                     v -> showFieldRecordExportFormats()));
 
             root.addView(action("Prospecting areas",
-                    areas.size() + " saved area" + (areas.size() == 1 ? "" : "s")
-                            + " · Export all areas or choose one as GeoJSON or KML.",
+                    areas.size() + " saved area" + (areas.size() == 1 ? "" : "s") + " · choose all or one area",
                     v -> showAreaExportPicker()));
 
             root.addView(action(FieldUiNames.IMPORTED_DATA,
-                    batches.size() + " managed batch" + (batches.size() == 1 ? "" : "es")
-                            + " · Export the remaining contents of one batch as normalized GeoJSON.",
+                    batches.size() + " managed batch" + (batches.size() == 1 ? "" : "es") + " · choose one batch",
                     v -> showImportExportPicker()));
 
             int total = waypoints.size() + tracks.size() + records.size() + areas.size();
             root.addView(action("All field map data",
-                    total + " saved object" + (total == 1 ? "" : "s")
-                            + " · One mixed GeoJSON file for GIS/sharing. This is not a full RockMap restore backup and does not embed photos or Trips.",
+                    total + " saved object" + (total == 1 ? "" : "s") + " · combined GeoJSON",
                     v -> beginFieldExport(EXPORT_ALL, FORMAT_GEOJSON, -1L,
                             "RockMap-All-Field-Data.geojson", "application/geo+json")));
 
             root.addView(section("Trips"));
-            root.addView(help("Trip exports remain under Main map → Trips → open a trip → Export, with CSV, RockMap XML, GPX and GeoJSON options."));
+            root.addView(help("Trip exports stay under Main map → Trips → open a trip → Export."));
+            root.addView(help("Exporting never removes or uploads RockMap data. Temporary unsaved measurements are not exported. Photos are referenced by Field Record exports but are not embedded. All field map data is a GIS export, not a full restore backup."));
             root.addView(nav("Back to Field", v -> showHub()));
             setContentView(scroll(root));
         });
@@ -997,7 +992,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "GPX\nPortable waypoint file for GPS and mapping apps."
         };
         new AlertDialog.Builder(this)
-                .setTitle("Export saved locations")
+                .setTitle("Choose format · Saved locations")
                 .setItems(rows, (d, which) -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_SAVED, FORMAT_GEOJSON, -1L,
@@ -1028,7 +1023,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             rows[i + 1] = track.name + "\n" + trackStatus(track, db.getTrackPoints(track.id));
         }
         new AlertDialog.Builder(this)
-                .setTitle("Export tracks")
+                .setTitle("Choose tracks")
                 .setItems(rows, (d, which) -> {
                     long id = which == 0 ? -1L : tracks.get(which - 1).id;
                     String name = which == 0 ? "RockMap-Tracks" : "RockMap-Track-" + safeExportFilename(tracks.get(which - 1).name);
@@ -1044,7 +1039,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "GeoJSON\nBest for GIS and mapping software; includes RockMap track metadata."
         };
         new AlertDialog.Builder(this)
-                .setTitle(trackId < 0L ? "Export all tracks" : "Export track")
+                .setTitle(trackId < 0L ? "Choose format · All tracks" : "Choose format · Track")
                 .setItems(rows, (d, which) -> {
                     String kind = trackId < 0L ? EXPORT_TRACKS : EXPORT_TRACK;
                     if (which == 0) {
@@ -1067,7 +1062,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "GeoJSON\nGIS-ready point features with the same RockMap metadata. Photo files are not embedded."
         };
         new AlertDialog.Builder(this)
-                .setTitle("Export Field Records")
+                .setTitle("Choose format · Field Records")
                 .setItems(rows, (d, which) -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_RECORDS, FORMAT_CSV, -1L,
@@ -1095,7 +1090,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(area.points));
         }
         new AlertDialog.Builder(this)
-                .setTitle("Export prospecting areas")
+                .setTitle("Choose prospecting areas")
                 .setItems(rows, (d, which) -> {
                     long id = which == 0 ? -1L : areas.get(which - 1).id;
                     String name = which == 0 ? "RockMap-Prospecting-Areas"
@@ -1112,7 +1107,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "KML\nConvenient for Google Earth and other KML-compatible mapping tools."
         };
         new AlertDialog.Builder(this)
-                .setTitle(areaId < 0L ? "Export all areas" : "Export area")
+                .setTitle(areaId < 0L ? "Choose format · All areas" : "Choose format · Area")
                 .setItems(rows, (d, which) -> {
                     String kind = areaId < 0L ? EXPORT_AREAS : EXPORT_AREA;
                     if (which == 0) {
@@ -1138,7 +1133,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     + batch.trackCount + " tracks · " + batch.areaCount + " areas";
         }
         new AlertDialog.Builder(this)
-                .setTitle("Export imported data")
+                .setTitle("Choose imported batch")
                 .setMessage("Exports the remaining objects currently associated with the selected managed batch, not the original file bytes.")
                 .setItems(rows, (d, which) -> {
                     FieldDatabase.ImportBatch batch = batches.get(which);
