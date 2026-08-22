@@ -151,7 +151,7 @@ public final class ResearchActivity extends Activity {
                 "Search installed mineral, locality, and evidence records across Colorado or the Visible Area.",
                 v -> returnAction(ACTION_MINERALS, null)));
         if (visibleBounds != null) {
-            root.addView(action("Analyze Visible Area",
+            root.addView(action("Visible Area — Mineral Evidence",
                     "Summarize mineral evidence in the area currently visible on the map.",
                     v -> returnBoundsAction(ACTION_MINERALS_AREA, visibleBounds)));
         }
@@ -162,22 +162,22 @@ public final class ResearchActivity extends Activity {
                     "Search formation and unit names, rock types, and geologic ages.",
                     v -> showSearch()));
             if (visibleBounds != null) {
-                root.addView(action("Analyze Visible Area",
+                root.addView(action("Visible Area — Geology",
                         "See the mapped geologic units intersecting the area currently visible on the map.",
                         v -> runBoundsQuery(visibleBounds, "Geology — Visible Area")));
             }
-            root.addView(action("Analyze Around a Point",
+            root.addView(action("Geology Around a Point",
                     "Choose Map Center, Current GPS, Saved Location, Field Record, or entered coordinates, then choose a radius.",
                     v -> showPointSourcePicker()));
 
             root.addView(section("Combined Area Analysis"));
-            root.addView(action("Prospecting Areas",
+            root.addView(action("Analyze a Prospecting Area",
                     "Choose a saved Prospecting Area and analyze its geology, then continue into Mineral Evidence and historic activity.",
                     v -> showAreaPicker()));
             if (visibleBounds != null) {
-                root.addView(action("Analyze Visible Area",
+                root.addView(action("Visible Area — Combined Analysis",
                         "Start with geology for the Visible Area, then continue into Mineral Evidence and Historic Mines & Workings.",
-                        v -> runBoundsQuery(visibleBounds, "Geology — Visible Area")));
+                        v -> runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area")));
             }
         } else {
             root.addView(help("Colorado geology is not installed. Mineral Evidence remains available above."));
@@ -381,11 +381,11 @@ public final class ResearchActivity extends Activity {
         String[] labels = new String[areas.size()];
         for (int i = 0; i < areas.size(); i++) {
             FieldDatabase.Area a = areas.get(i);
-            labels[i] = a.name + "\n" + a.points.size() + " vertices";
+            labels[i] = a.name + "\n" + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points))
+                    + " · " + a.points.size() + " vertices";
         }
         new AlertDialog.Builder(this)
-                .setTitle("Prospecting Areas")
-                .setMessage("Choose a saved area to analyze.")
+                .setTitle("Choose Prospecting Area")
                 .setItems(labels, (d, which) -> analyzeArea(areas.get(which).id))
                 .setNegativeButton("Cancel", (d, w) -> showHub())
                 .show();
@@ -402,13 +402,13 @@ public final class ResearchActivity extends Activity {
         for (GeoMath.Point p : area.points) polygon.add(new GeologyRepository.Point(p.lat, p.lon));
         GeologyRepository.Bounds bounds = boundsOf(polygon);
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
-                results -> showResults(results, "Geology — Prospecting Area: " + area.name, bounds,
+                results -> showResults(results, "Combined Area Analysis — " + area.name, bounds,
                         queryPolygonContext(polygon, area.name)));
     }
 
     private void showPointSourcePicker() {
         LinearLayout root = page();
-        root.addView(title("Analyze Around a Point"));
+        root.addView(title("Geology Around a Point"));
         root.addView(help("Choose the location first, then choose how far around it to analyze."));
         if (visibleBounds != null) {
             final double lat = (visibleBounds.south + visibleBounds.north) / 2d;

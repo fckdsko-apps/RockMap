@@ -4,6 +4,7 @@ import android.graphics.Color;
 import android.graphics.PointF;
 
 import com.rockmap.app.map.MapController;
+import com.rockmap.app.map.MapContextCloseController;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -76,6 +77,7 @@ public final class MineralOverlayController {
     private final MapView mapView;
     private final Listener listener;
     private MapLibreMap map;
+    private MapContextCloseController closeController;
     private List<MineralSearchEngine.Hit> activeHits = new ArrayList<>();
     private List<MineralAreaAnalyzer.EvidencePoint> activeHeatmapPoints = new ArrayList<>();
     private MineralSearchEngine.Bounds activeAreaBounds;
@@ -90,7 +92,11 @@ public final class MineralOverlayController {
     }
 
     public void initialize() {
-        mapView.getMapAsync(mapLibreMap -> map = mapLibreMap);
+        closeController = MapContextCloseController.forMap(mapView);
+        mapView.getMapAsync(mapLibreMap -> {
+            map = mapLibreMap;
+            if (closeController != null) closeController.refresh();
+        });
     }
 
     public void show(List<MineralSearchEngine.Hit> hits) {
@@ -98,6 +104,7 @@ public final class MineralOverlayController {
         searchVisible = true;
         if (hasHeatmap()) heatmapVisible = false;
         areaVisible = false;
+        syncAreaCloseTarget();
         renderSearch();
         applyCurrentVisibility();
     }
@@ -106,6 +113,7 @@ public final class MineralOverlayController {
         activeAreaBounds = bounds;
         areaVisible = bounds != null;
         if (hasResults()) searchVisible = false;
+        syncAreaCloseTarget();
         renderAreaBounds();
         applyCurrentVisibility();
     }
@@ -119,6 +127,7 @@ public final class MineralOverlayController {
         heatmapVisible = !activeHeatmapPoints.isEmpty();
         areaVisible = bounds != null;
         if (heatmapVisible && hasResults()) searchVisible = false;
+        syncAreaCloseTarget();
         renderHeatmap();
         renderAreaBounds();
         applyCurrentVisibility();
@@ -129,6 +138,7 @@ public final class MineralOverlayController {
         if (hasResults()) renderSearch();
         if (hasHeatmap()) renderHeatmap();
         if (activeAreaBounds != null) renderAreaBounds();
+        syncAreaCloseTarget();
         applyCurrentVisibility();
     }
 
@@ -149,6 +159,7 @@ public final class MineralOverlayController {
         activeHeatmapLabel = "";
         heatmapVisible = false;
         areaVisible = false;
+        if (closeController != null) closeController.clearMineralTarget();
         mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(style -> {
             GeoJsonSource heatmapSource = style.getSourceAs(HEATMAP_SOURCE_ID);
             if (heatmapSource != null) heatmapSource.setGeoJson(emptyCollection());
@@ -199,6 +210,7 @@ public final class MineralOverlayController {
             renderHeatmap();
             renderAreaBounds();
         }
+        syncAreaCloseTarget();
         applyCurrentVisibility();
     }
 
@@ -261,6 +273,19 @@ public final class MineralOverlayController {
             }
         }
         return false;
+    }
+
+    private void syncAreaCloseTarget() {
+        if (closeController == null) closeController = MapContextCloseController.forMap(mapView);
+        if (closeController == null) return;
+        if (areaVisible && activeAreaBounds != null) {
+            closeController.setMineralTarget(
+                    activeAreaBounds.south, activeAreaBounds.west,
+                    activeAreaBounds.north, activeAreaBounds.east,
+                    this::clearAreaAnalysis);
+        } else {
+            closeController.clearMineralTarget();
+        }
     }
 
     private MineralSearchEngine.Hit findSearchHit(Feature feature) {

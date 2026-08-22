@@ -4,6 +4,7 @@ import android.graphics.Color;
 import android.graphics.PointF;
 
 import com.rockmap.app.map.MapController;
+import com.rockmap.app.map.MapContextCloseController;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -56,6 +57,7 @@ public final class GeologyOverlayController {
     private final MapView mapView;
     private final Listener listener;
     private MapLibreMap map;
+    private MapContextCloseController closeController;
     private String geoJson = emptyCollection();
     private String queryGeoJson = emptyCollection();
     private String label = "";
@@ -71,7 +73,11 @@ public final class GeologyOverlayController {
     }
 
     public void initialize() {
-        mapView.getMapAsync(mapLibreMap -> map = mapLibreMap);
+        closeController = MapContextCloseController.forMap(mapView);
+        mapView.getMapAsync(mapLibreMap -> {
+            map = mapLibreMap;
+            if (closeController != null) closeController.refresh();
+        });
     }
 
     public void show(String geoJson, String label, int count) {
@@ -83,6 +89,7 @@ public final class GeologyOverlayController {
         this.label = label == null ? "" : label.trim();
         this.count = Math.max(0, count);
         this.visible = this.count > 0;
+        syncCloseTarget();
         render();
     }
 
@@ -95,6 +102,7 @@ public final class GeologyOverlayController {
         label = "";
         count = 0;
         visible = false;
+        if (closeController != null) closeController.clearGeologyTarget();
         mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(style -> {
             GeoJsonSource source = style.getSourceAs(SOURCE_ID);
             if (source != null) source.setGeoJson(geoJson);
@@ -106,6 +114,7 @@ public final class GeologyOverlayController {
 
     public void refreshStyle() {
         if (count > 0) render();
+        if (closeController != null) closeController.refresh();
     }
 
     public boolean hasResults() { return count > 0; }
@@ -116,8 +125,26 @@ public final class GeologyOverlayController {
 
     public void setVisible(boolean show) {
         visible = show && hasResults();
-        if (visible) render();
-        else mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(this::applyVisibility));
+        if (visible) {
+            syncCloseTarget();
+            render();
+        } else {
+            if (closeController != null) closeController.clearGeologyTarget();
+            mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(this::applyVisibility));
+        }
+    }
+
+
+    private void syncCloseTarget() {
+        if (closeController == null) closeController = MapContextCloseController.forMap(mapView);
+        if (closeController == null) return;
+        if (visible && count > 0 && hasQueryGeometry && queryBounds != null) {
+            closeController.setGeologyTarget(
+                    queryBounds.south, queryBounds.west, queryBounds.north, queryBounds.east,
+                    this::clear);
+        } else {
+            closeController.clearGeologyTarget();
+        }
     }
 
     public boolean handleTap(LatLng coordinate) {
