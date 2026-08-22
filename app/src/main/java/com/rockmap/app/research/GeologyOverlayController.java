@@ -33,6 +33,8 @@ public final class GeologyOverlayController {
     public static final String SOURCE_ID = "rockmap-geology-research-source";
     public static final String FILL_ID = "rockmap-geology-research-fill";
     public static final String LINE_ID = "rockmap-geology-research-outline";
+    public static final int FILL_COLOR = Color.rgb(224, 151, 42);
+    public static final int OUTLINE_COLOR = Color.rgb(120, 74, 18);
 
     private final MapView mapView;
     private final Listener listener;
@@ -110,14 +112,14 @@ public final class GeologyOverlayController {
             if (style.getLayer(FILL_ID) == null) {
                 FillLayer fill = new FillLayer(FILL_ID, SOURCE_ID);
                 fill.setProperties(
-                        fillColor(Color.rgb(224, 151, 42)),
+                        fillColor(FILL_COLOR),
                         fillOpacity(0.28f));
                 addBelowSafety(style, fill);
             }
             if (style.getLayer(LINE_ID) == null) {
                 LineLayer line = new LineLayer(LINE_ID, SOURCE_ID);
                 line.setProperties(
-                        lineColor(Color.rgb(120, 74, 18)),
+                        lineColor(OUTLINE_COLOR),
                         lineWidth(1.4f));
                 addBelowSafety(style, line);
             }

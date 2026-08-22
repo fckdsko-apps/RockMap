@@ -611,28 +611,31 @@ public final class FieldMapController implements LocationRepository.Listener {
         box.addView(dialogAction(FieldUiNames.TRACK, "Record a track and see it build live on this map.", v -> {
             holder[0].dismiss(); openFieldScreen("tracks");
         }));
-        box.addView(dialogAction(FieldUiNames.NAVIGATE, "Choose a saved marker, Field Record, or coordinate and follow a live map line.", v -> {
+        box.addView(dialogAction(FieldUiNames.NAVIGATE, "Choose a Saved Location, Field Record, or coordinate and follow a live map line.", v -> {
             holder[0].dismiss(); showNavigateMenu();
         }));
         box.addView(dialogAction(FieldUiNames.MEASURE, "Tap map points or use GPS/saved records; see distance and area directly here.", v -> {
             holder[0].dismiss(); startMeasurement();
         }));
-        box.addView(dialogAction(FieldUiNames.FIELD_RECORDS, "Create, edit, photograph, navigate to, and map richer field observations.", v -> {
+        box.addView(dialogAction(FieldUiNames.FIELD_RECORDS, "Create, edit, photograph, navigate to, and research saved field observations.", v -> {
             holder[0].dismiss(); openFieldScreen("records");
         }));
-        box.addView(dialogAction(FieldUiNames.IMPORT, "Import waypoints, tracks, and areas, then immediately show them on this map.", v -> {
+        box.addView(dialogAction(FieldUiNames.PROSPECTING_AREAS, "Create, open, analyze, and manage saved prospecting areas.", v -> {
+            holder[0].dismiss(); openFieldScreen("areas");
+        }));
+        box.addView(dialogAction(FieldUiNames.IMPORT, "Import GPX, KML, or GeoJSON files into RockMap.", v -> {
             holder[0].dismiss(); openFieldScreen("import");
         }));
-        box.addView(dialogAction(FieldUiNames.IMPORTED_DATA, "Review managed imports, show a batch on the map, delete a batch, or import another file.", v -> {
+        box.addView(dialogAction(FieldUiNames.IMPORTED_DATA, "Review imported files, show their contents on the map, or remove one import safely.", v -> {
             holder[0].dismiss(); openFieldScreen("imports");
         }));
-        box.addView(dialogAction(FieldUiNames.EXPORT, "Export saved locations, tracks, Field Records, prospecting areas, managed imports, or combined field map data.", v -> {
+        box.addView(dialogAction(FieldUiNames.EXPORT, "Export Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, or combined field data.", v -> {
             holder[0].dismiss(); openFieldScreen("export");
         }));
-        box.addView(dialogAction(FieldUiNames.COORDINATES, "Convert decimal, DDM, DMS, UTM and MGRS coordinates.", v -> {
+        box.addView(dialogAction(FieldUiNames.COORDINATES, "Convert decimal, DDM, DMS, UTM, and MGRS coordinates.", v -> {
             holder[0].dismiss(); openFieldScreen("coordinates");
         }));
-        box.addView(dialogAction(FieldUiNames.VISIBILITY, "Show or hide tracks, prospecting areas, Field Records, and marker labels.", v -> {
+        box.addView(dialogAction(FieldUiNames.VISIBILITY, "Choose which Tracks, Prospecting Areas, Field Records, and Saved Location labels appear on the map.", v -> {
             holder[0].dismiss(); showVisibilityMenu();
         }));
         holder[0] = new AlertDialog.Builder(activity)
@@ -651,7 +654,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 holder[0].dismiss(); stopNavigation();
             }));
         }
-        box.addView(dialogAction("Saved marker", "Choose one of your normal RockMap saved markers.", v -> {
+        box.addView(dialogAction("Saved Location", "Choose one of your normal RockMap Saved Locations.", v -> {
             holder[0].dismiss(); chooseSavedNavigation();
         }));
         box.addView(dialogAction("Field Record", "Choose a field observation or sample record.", v -> {
@@ -667,13 +670,13 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void showVisibilityMenu() {
         LinearLayout box = dialogBox();
-        CheckBox tracks = check("Tracks", FieldMapState.tracksVisible(activity),
+        CheckBox tracks = check(FieldUiNames.TRACK, FieldMapState.tracksVisible(activity),
                 "Recorded and imported tracks stay visible until you hide them or delete them.");
-        CheckBox areas = check("Prospecting areas", FieldMapState.areasVisible(activity),
-                "Saved/imported polygon areas.");
-        CheckBox records = check("Field Records", FieldMapState.fieldRecordsVisible(activity),
+        CheckBox areas = check(FieldUiNames.PROSPECTING_AREAS, FieldMapState.areasVisible(activity),
+                "Saved prospecting polygons and imported polygon areas.");
+        CheckBox records = check(FieldUiNames.FIELD_RECORDS, FieldMapState.fieldRecordsVisible(activity),
                 "Mapped field observations and samples.");
-        CheckBox labels = check("Marker labels", FieldMapState.labelsVisible(activity),
+        CheckBox labels = check("Saved Location Labels", FieldMapState.labelsVisible(activity),
                 "Names for saved/imported RockMap markers. Labels also hide when the normal marker layer is hidden.");
         box.addView(tracks); box.addView(areas); box.addView(records); box.addView(labels);
         new AlertDialog.Builder(activity)
@@ -780,7 +783,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 for (WaypointEntity waypoint : items) {
                     JSONObject props = new JSONObject();
                     props.put("id", waypoint.id);
-                    props.put("name", waypoint.name == null || waypoint.name.trim().isEmpty() ? "Saved marker" : waypoint.name.trim());
+                    props.put("name", waypoint.name == null || waypoint.name.trim().isEmpty() ? "Saved Location" : waypoint.name.trim());
                     features.put(pointFeature(new GeoMath.Point(waypoint.latitude, waypoint.longitude), props));
                 }
             }
@@ -1089,16 +1092,16 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void chooseSavedNavigation() {
         waypointRepository.getAll(items -> {
             if (items == null || items.isEmpty()) {
-                toast("No saved markers yet.");
+                toast("No Saved Locations yet.");
                 return;
             }
             String[] labels = new String[items.size()];
             for (int i = 0; i < items.size(); i++) {
                 WaypointEntity w = items.get(i);
-                labels[i] = (w.name == null || w.name.trim().isEmpty() ? "Saved marker" : w.name.trim())
+                labels[i] = (w.name == null || w.name.trim().isEmpty() ? "Saved Location" : w.name.trim())
                         + "\n" + String.format(Locale.US, "%.6f, %.6f", w.latitude, w.longitude);
             }
-            new AlertDialog.Builder(activity).setTitle("Navigate to saved marker")
+            new AlertDialog.Builder(activity).setTitle("Navigate to Saved Location")
                     .setItems(labels, (d, which) -> {
                         WaypointEntity w = items.get(which);
                         startNavigation(w.name, new GeoMath.Point(w.latitude, w.longitude));
@@ -1206,13 +1209,13 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void chooseSavedMeasurement() {
         waypointRepository.getAll(items -> {
-            if (items == null || items.isEmpty()) { toast("No saved markers yet."); return; }
+            if (items == null || items.isEmpty()) { toast("No Saved Locations yet."); return; }
             String[] labels = new String[items.size()];
             for (int i = 0; i < items.size(); i++) {
                 String name = items.get(i).name;
-                labels[i] = name == null || name.trim().isEmpty() ? "Saved marker" : name.trim();
+                labels[i] = name == null || name.trim().isEmpty() ? "Saved Location" : name.trim();
             }
-            new AlertDialog.Builder(activity).setTitle("Add saved marker to measurement")
+            new AlertDialog.Builder(activity).setTitle("Add Saved Location to Measurement")
                     .setItems(labels, (d, which) -> {
                         WaypointEntity w = items.get(which);
                         addMeasurementPoint(new GeoMath.Point(w.latitude, w.longitude), true);
@@ -1226,9 +1229,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         String[] labels = new String[items.size()];
         for (int i = 0; i < items.size(); i++) {
                 String name = items.get(i).name;
-                labels[i] = name == null || name.trim().isEmpty() ? "Saved marker" : name.trim();
+                labels[i] = name == null || name.trim().isEmpty() ? "Saved Location" : name.trim();
             }
-        new AlertDialog.Builder(activity).setTitle("Add Field Record to measurement")
+        new AlertDialog.Builder(activity).setTitle("Add Field Record to Measurement")
                 .setItems(labels, (d, which) -> {
                     FieldDatabase.FieldRecord r = items.get(which);
                     addMeasurementPoint(new GeoMath.Point(r.lat, r.lon), true);
@@ -1239,7 +1242,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         EditText input = new EditText(activity);
         input.setHint("Latitude, longitude");
         input.setSingleLine(true);
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Add coordinate")
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Add Coordinate")
                 .setView(input).setPositiveButton("Add", null).setNegativeButton("Cancel", null).create();
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             try {
@@ -1273,7 +1276,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (measurement.size() < 3) { toast("Add at least 3 points before saving an area."); return; }
         EditText name = new EditText(activity);
         name.setHint("Area name");
-        new AlertDialog.Builder(activity).setTitle("Save prospecting area")
+        new AlertDialog.Builder(activity).setTitle("Save Prospecting Area")
                 .setMessage(measurementSummary())
                 .setView(name)
                 .setPositiveButton("Save", (d, w) -> {

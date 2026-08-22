@@ -122,25 +122,25 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "Richer saved observations with category, mineral, sample ID, notes, photo, GPS accuracy and elevation.",
                 v -> showFieldRecords()));
         root.addView(action(FieldUiNames.SAVED_LOCATIONS,
-                "View the existing RockMap saved-marker database or copy a marker into a richer field record.",
+                "View your existing RockMap Saved Locations or copy one into a richer Field Record.",
                 v -> showLegacyWaypoints()));
-        root.addView(action("Prospecting Areas",
-                "Create, reopen, analyze, map and manage saved prospecting polygons.",
+        root.addView(action(FieldUiNames.PROSPECTING_AREAS,
+                "Create, open, analyze, map, and manage saved prospecting areas.",
                 v -> showProspectingAreas()));
         root.addView(action(FieldUiNames.MEASURE,
                 "Start a temporary map measurement. Save it as a Prospecting Area when you want to keep and analyze the polygon.",
                 v -> { FieldMapState.requestMeasurement(this); returnToMap(); }));
         root.addView(action(FieldUiNames.IMPORT,
-                "Import waypoints, tracks and areas as a managed batch, then show or remove that batch cleanly.",
+                "Import GPX, KML, or GeoJSON files into RockMap.",
                 v -> beginImport()));
         root.addView(action(FieldUiNames.IMPORTED_DATA,
-                "Review imported batches, show a batch on the map, or delete only the data created by that import.",
+                "Review imported files, show their contents on the map, or remove one import without affecting unrelated data.",
                 v -> showImports()));
         root.addView(action("Research",
-                "Open Mineral Evidence, Geology and Area Research without hiding them inside the measurement tools.",
+                "Open Mineral Evidence, Geology, and Combined Area Analysis.",
                 v -> startResearch(new Intent(this, ResearchActivity.class))));
         root.addView(action(FieldUiNames.EXPORT,
-                "Export saved locations, tracks, Field Records, prospecting areas, managed import batches, or a combined GIS file.",
+                "Export Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, or combined field data.",
                 v -> showExportHub()));
         root.addView(action(FieldUiNames.COORDINATES,
                 "Convert one location between decimal degrees, DDM, DMS, WGS84 UTM and MGRS.",
@@ -288,7 +288,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
         List<FieldDatabase.FieldRecord> records = db.listFieldRecords();
         if (records.isEmpty()) {
-            root.addView(help("No field records yet."));
+            root.addView(help("No Field Records yet."));
         } else {
             for (FieldDatabase.FieldRecord r : records) {
                 String detail = (r.category == null || r.category.isEmpty() ? "Field record" : r.category)
@@ -413,7 +413,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (r.photoUri != null && !r.photoUri.isEmpty()) {
             root.addView(action("Open attached photo", r.photoUri, v -> openPhoto(r.photoUri)));
         }
-        root.addView(action("Show on map",
+        root.addView(action("Show on Map",
                 "Center this Field Record on the main map without starting navigation.",
                 v -> {
                     FieldMapState.clearViewedMapContext(this);
@@ -442,7 +442,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setNegativeButton("Cancel", null)
                 .show()), weight());
         root.addView(row);
-        root.addView(nav("Back to field records", v -> showFieldRecords()));
+        root.addView(nav("Back to Field Records", v -> showFieldRecords()));
         setContentView(scroll(root));
     }
 
@@ -467,10 +467,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showLegacyWaypoints() {
         waypointRepository.getAll(items -> {
             LinearLayout root = page();
-            root.addView(title("Saved locations"));
-            root.addView(help("These are the existing RockMap markers used by the main map. Their symbols and labels follow Layers > Saved locations."));
+            root.addView(title(FieldUiNames.SAVED_LOCATIONS));
+            root.addView(help("These are the existing RockMap Saved Locations used by the main map. Their symbols and labels follow Layers > Saved Locations."));
             if (items.isEmpty()) {
-                root.addView(help("No saved locations yet."));
+                root.addView(help("No Saved Locations yet."));
             } else {
                 for (WaypointEntity w : items) {
                     root.addView(action(w.name, CoordinateFormats.decimal(w.latitude, w.longitude),
@@ -488,8 +488,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(help(CoordinateFormats.decimal(w.latitude, w.longitude)
                 + (w.accuracyMeters >= 0 ? String.format(Locale.US, "\nGPS accuracy: ±%.1f m", w.accuracyMeters) : "")
                 + (w.notes == null || w.notes.trim().isEmpty() ? "" : "\n\n" + w.notes)));
-        root.addView(action("Show on map",
-                "Center this labeled saved marker on the main map.",
+        root.addView(action("Show on Map",
+                "Center this Saved Location on the main map.",
                 v -> {
                     FieldMapState.clearViewedMapContext(this);
                     FieldMapState.requestFocusBounds(this,
@@ -500,16 +500,16 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(w.name, new GeoMath.Point(w.latitude, w.longitude))));
         root.addView(action("Copy to Field Record",
-                "Creates a richer editable field record; the original map marker remains.",
+                "Creates a richer editable Field Record; the original Saved Location remains.",
                 v -> {
                     long now = System.currentTimeMillis();
                     FieldDatabase.FieldRecord r = new FieldDatabase.FieldRecord(
-                            0, w.name, "Saved location", "", "", w.notes,
+                            0, w.name, "Saved Location", "", "", w.notes,
                             w.latitude, w.longitude, Double.NaN, w.accuracyMeters, "", now, now);
                     r.id = db.insertFieldRecord(r);
                     showFieldRecord(r.id);
                 }));
-        root.addView(nav("Back to saved locations", v -> showLegacyWaypoints()));
+        root.addView(nav("Back to Saved Locations", v -> showLegacyWaypoints()));
         setContentView(scroll(root));
     }
 
@@ -521,10 +521,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showProspectingAreas() {
         LinearLayout root = page();
-        root.addView(title("Prospecting Areas"));
+        root.addView(title(FieldUiNames.PROSPECTING_AREAS));
         root.addView(help("Saved polygons live here. Create one on the map, then reopen it for map view, analysis, export or deletion."));
-        root.addView(action("Create area on map",
-                "Open the map measurement tool. Add points, then use Save area to keep the polygon as a Prospecting Area.",
+        root.addView(action("Create Prospecting Area",
+                "Draw the boundary on the map, then save it as a Prospecting Area.",
                 v -> {
                     FieldMapState.requestMeasurement(this);
                     returnToMap();
@@ -558,12 +558,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title(a.name));
         root.addView(help(a.points.size() + " vertices\n" + measurementText(a.points)
                 + (a.notes == null || a.notes.isEmpty() ? "" : "\n\n" + a.notes)
-                + "\n\nUse Show on map for the geographic view."));
-        root.addView(action("Analyze this area",
-                "Use this saved polygon for Area Research: geology first, with Mineral Evidence and historic activity immediately available from the result.",
+                + "\n\nUse Show on Map for the geographic view."));
+        root.addView(action("Analyze This Area",
+                "Use this saved area for Combined Area Analysis: geology first, with Mineral Evidence and historic activity immediately available from the result.",
                 v -> startResearch(new Intent(this, ResearchActivity.class)
                         .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))));
-        root.addView(action("Show on map",
+        root.addView(action("Show on Map",
                 "Zoom to this saved area and keep the polygon visible in geographic context.",
                 v -> {
                     FieldMapState.clearViewedMapContext(this);
@@ -571,9 +571,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
                     returnToMap();
                 }));
-        Button del = button("Delete area");
+        Button del = button("Delete Area");
         del.setOnClickListener(v -> new AlertDialog.Builder(this)
-                .setTitle("Delete area?")
+                .setTitle("Delete Area?")
                 .setPositiveButton("Delete", (d, w) -> {
                     db.deleteArea(a.id);
                     showProspectingAreas();
@@ -607,9 +607,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         .setTitle("This file was already imported")
                         .setMessage(previous.sourceName + " was imported on "
                                 + DateFormat.getDateTimeInstance().format(new Date(previous.importedAt))
-                                + ".\n\nTo test a clean re-import, remove that batch first. You can still intentionally import another copy.")
-                        .setPositiveButton("Manage existing", (d, w) -> showImportBatch(previous.id))
-                        .setNeutralButton("Import another copy", (d, w) -> confirmImport(result, name, sha))
+                                + ".\n\nTo test a clean re-import, remove that import first. You can still intentionally import another copy.")
+                        .setPositiveButton("Open Existing Import", (d, w) -> showImportBatch(previous.id))
+                        .setNeutralButton("Import Another Copy", (d, w) -> confirmImport(result, name, sha))
                         .setNegativeButton("Cancel", null)
                         .show();
                 return;
@@ -622,11 +622,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void confirmImport(FieldImport.Result result, String name, String sha) {
         String summary = "Found:\n"
-                + result.waypoints.size() + " waypoints\n"
+                + result.waypoints.size() + " Saved Locations\n"
                 + result.tracks.size() + " tracks\n"
-                + result.areas.size() + " polygon areas\n"
+                + result.areas.size() + " Prospecting Areas\n"
                 + result.pointCount + " total geometry points\n\n"
-                + "This import will be stored as one removable batch. Existing unrelated RockMap data will not be replaced.";
+                + "RockMap will track this file as one removable import. Existing unrelated RockMap data will not be replaced.";
         new AlertDialog.Builder(this)
                 .setTitle("Import " + name + "?")
                 .setMessage(summary)
@@ -678,21 +678,21 @@ public final class FieldActivity extends Activity implements LocationRepository.
         LinearLayout box = page();
         box.setPadding(dp(14), dp(6), dp(14), dp(6));
 
-        box.addView(help("Imported " + r.waypoints.size() + " waypoint" + (r.waypoints.size() == 1 ? "" : "s")
-                + ", " + r.tracks.size() + " track" + (r.tracks.size() == 1 ? "" : "s")
-                + ", and " + r.areas.size() + " area" + (r.areas.size() == 1 ? "" : "s")
-                + ". This batch can now be shown, reviewed, or removed as one unit."));
+        box.addView(help("Imported " + r.waypoints.size() + " Saved Location" + (r.waypoints.size() == 1 ? "" : "s")
+                + ", " + r.tracks.size() + " Track" + (r.tracks.size() == 1 ? "" : "s")
+                + ", and " + r.areas.size() + " Prospecting Area" + (r.areas.size() == 1 ? "" : "s")
+                + ". This import can now be shown, reviewed, or removed as one unit."));
 
-        box.addView(action("Show import on map",
-                "Zoom to all imported geometry. Tracks, areas and labeled waypoints are visible immediately.",
+        box.addView(action("Show Import on Map",
+                "Zoom to all imported geometry. Tracks, Prospecting Areas, and Saved Locations are visible immediately.",
                 v -> {
                     holder[0].dismiss();
                     focusImportBatch(batchId);
                 }));
 
         if (!r.waypoints.isEmpty()) {
-            box.addView(action("View imported waypoints",
-                    r.waypoints.size() + " imported saved marker" + (r.waypoints.size() == 1 ? "" : "s") + ".",
+            box.addView(action("Saved Locations from This File",
+                    r.waypoints.size() + " imported Saved Location" + (r.waypoints.size() == 1 ? "" : "s") + ".",
                     v -> {
                         holder[0].dismiss();
                         showImportedWaypoints(r.waypoints);
@@ -701,7 +701,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
         List<Long> trackIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_TRACK);
         if (!trackIds.isEmpty()) {
-            box.addView(action("View imported tracks",
+            box.addView(action("Tracks from This File",
                     trackIds.size() + " imported track" + (trackIds.size() == 1 ? "" : "s") + ".",
                     v -> {
                         holder[0].dismiss();
@@ -711,30 +711,30 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
         List<Long> areaIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_AREA);
         if (!areaIds.isEmpty()) {
-            box.addView(action("View imported areas",
-                    areaIds.size() + " imported area" + (areaIds.size() == 1 ? "" : "s") + ".",
+            box.addView(action("Prospecting Areas from This File",
+                    areaIds.size() + " imported Prospecting Area" + (areaIds.size() == 1 ? "" : "s") + ".",
                     v -> {
                         holder[0].dismiss();
                         showImportedAreas(areaIds);
                     }));
         }
 
-        box.addView(action("Manage this import",
-                "See the batch later or remove only the objects created by this import.",
+        box.addView(action("Manage This Import",
+                "Open this import later or remove only the objects created by this file.",
                 v -> {
                     holder[0].dismiss();
                     showImportBatch(batchId);
                 }));
 
-        box.addView(action("Delete this import",
-                "Remove this batch's remaining waypoints, tracks and areas without touching unrelated RockMap data.",
+        box.addView(action("Remove This Import",
+                "Remove this import’s remaining Saved Locations, Tracks, and Prospecting Areas without touching unrelated RockMap data.",
                 v -> {
                     holder[0].dismiss();
                     confirmDeleteImportBatch(batchId);
                 }));
 
         holder[0] = new AlertDialog.Builder(this)
-                .setTitle("Import complete — " + displayName)
+                .setTitle("Import Complete — " + displayName)
                 .setView(scroll(box))
                 .setNegativeButton("Done", (d, w) -> showHub())
                 .create();
@@ -744,32 +744,32 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showImports() {
         LinearLayout root = page();
         root.addView(title(FieldUiNames.IMPORTED_DATA));
-        root.addView(help("Each new GPX/KML/GeoJSON import is tracked as its own batch. Deleting a batch removes only the remaining objects created by that import."));
+        root.addView(help("Each GPX, KML, or GeoJSON file you import is tracked separately. Removing an import removes only the objects created by that file."));
 
         List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
-        root.addView(section("Managed imports"));
+        root.addView(section("Imported Files"));
         if (batches.isEmpty()) {
-            root.addView(help("No managed import batches yet. You can import one directly from this screen."));
-            root.addView(action("Import a file",
-                    "Choose a GPX, KML or GeoJSON file and create a managed import batch.",
+            root.addView(help("No imported files yet."));
+            root.addView(action("Import File",
+                    "Choose a GPX, KML, or GeoJSON file.",
                     v -> beginImport()));
         } else {
-            root.addView(action("Import another file",
-                    "Choose another GPX, KML or GeoJSON file.",
+            root.addView(action("Import Another File",
+                    "Choose another GPX, KML, or GeoJSON file.",
                     v -> beginImport()));
             for (FieldDatabase.ImportBatch batch : batches) {
                 String detail = DateFormat.getDateTimeInstance().format(new Date(batch.importedAt))
-                        + "\n" + batch.waypointCount + " waypoints · "
-                        + batch.trackCount + " tracks · " + batch.areaCount + " areas";
+                        + "\n" + batch.waypointCount + " Saved Locations · "
+                        + batch.trackCount + " Tracks · " + batch.areaCount + " Prospecting Areas";
                 root.addView(action(batch.sourceName, detail, v -> showImportBatch(batch.id)));
             }
         }
 
-        root.addView(section("Imports from the previous build"));
-        root.addView(help("Files imported before this update were not assigned batch IDs, so RockMap will not guess which older saved data is safe to bulk-delete. Remove those once from Saved locations / Tracks / Areas if needed. Every new import from this build forward is batch-managed."));
-        root.addView(action("Review saved locations", "Delete any older imported waypoint manually if you need a completely clean first re-test.", v -> showLegacyWaypoints()));
-        root.addView(action("Review tracks", "Open or remove older untracked imported tracks.", v -> showTracks()));
-        root.addView(action("Review areas", "Open or remove older untracked imported polygon areas.", v -> showMeasure()));
+        root.addView(section("Older Imports"));
+        root.addView(help("Older imports created before RockMap began tracking each imported file separately cannot be safely removed as one group. Manage those older items from Saved Locations, Tracks, or Prospecting Areas. New imports are tracked individually."));
+        root.addView(action("Review Saved Locations", "Delete any older imported Saved Location manually if you need a completely clean first re-test.", v -> showLegacyWaypoints()));
+        root.addView(action("Review Tracks", "Open or remove older untracked imported tracks.", v -> showTracks()));
+        root.addView(action("Review Prospecting Areas", "Open or remove older Prospecting Areas.", v -> showMeasure()));
         root.addView(nav("Back to Field", v -> showHub()));
         setContentView(scroll(root));
     }
@@ -777,7 +777,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showImportBatch(long batchId) {
         FieldDatabase.ImportBatch batch = db.getImportBatch(batchId);
         if (batch == null) {
-            toast("Import batch not found.");
+            toast("Import not found.");
             showImports();
             return;
         }
@@ -787,12 +787,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
         String fingerprint = batch.sha256 == null || batch.sha256.length() < 12
                 ? batch.sha256 : batch.sha256.substring(0, 12) + "…";
         root.addView(help("Imported: " + DateFormat.getDateTimeInstance().format(new Date(batch.importedAt))
-                + "\nOriginally imported: " + batch.waypointCount + " waypoints · "
-                + batch.trackCount + " tracks · " + batch.areaCount + " areas"
+                + "\nOriginally imported: " + batch.waypointCount + " Saved Locations · "
+                + batch.trackCount + " Tracks · " + batch.areaCount + " Prospecting Areas"
                 + "\nFile fingerprint: " + fingerprint
-                + "\n\nIf an item was already deleted individually, batch deletion simply removes the remaining members."));
+                + "\n\nIf an item was already deleted individually, removing this import simply removes the remaining items."));
 
-        root.addView(action("Show batch on map",
+        root.addView(action("Show Import on Map",
                 "Zoom to all remaining geometry that belongs to this import.",
                 v -> focusImportBatch(batchId)));
 
@@ -801,22 +801,22 @@ public final class FieldActivity extends Activity implements LocationRepository.
         List<Long> areaIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_AREA);
 
         if (!waypointIds.isEmpty()) {
-            root.addView(action("Imported waypoints", waypointIds.size() + " tracked waypoint IDs.",
+            root.addView(action("Saved Locations from This File", waypointIds.size() + " Saved Location" + (waypointIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedWaypointsByIds(waypointIds)));
         }
         if (!trackIds.isEmpty()) {
-            root.addView(action("Imported tracks", trackIds.size() + " tracked track IDs.",
+            root.addView(action("Tracks from This File", trackIds.size() + " track" + (trackIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedTracks(trackIds)));
         }
         if (!areaIds.isEmpty()) {
-            root.addView(action("Imported areas", areaIds.size() + " tracked area IDs.",
+            root.addView(action("Prospecting Areas from This File", areaIds.size() + " Prospecting Area" + (areaIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedAreas(areaIds)));
         }
 
-        Button delete = button("Delete this import");
+        Button delete = button("Remove This Import");
         delete.setOnClickListener(v -> confirmDeleteImportBatch(batchId));
         root.addView(delete);
-        root.addView(nav("Back to imported data", v -> showImports()));
+        root.addView(nav("Back to Manage Imports", v -> showImports()));
         setContentView(scroll(root));
     }
 
@@ -827,10 +827,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
             return;
         }
         new AlertDialog.Builder(this)
-                .setTitle("Delete imported batch?")
+                .setTitle("Remove This Import?")
                 .setMessage("Remove the remaining data created by “" + batch.sourceName + "”?\n\n"
-                        + "This does not delete unrelated saved markers, recorded tracks, prospecting areas, or Field Records.")
-                .setPositiveButton("Delete import", (d, w) -> deleteImportBatch(batchId))
+                        + "This does not delete unrelated Saved Locations, recorded Tracks, Prospecting Areas, or Field Records.")
+                .setPositiveButton("Remove Import", (d, w) -> deleteImportBatch(batchId))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -846,7 +846,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             waypointRepository.deleteAll(owned, count -> {
                 if (count > 0) waypointDataChanged = true;
                 db.deleteImportBatchFieldItems(batchId);
-                toast("Imported batch removed.");
+                toast("Import removed.");
                 showImports();
             });
         });
@@ -892,28 +892,28 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showImportedWaypoints(List<WaypointEntity> items) {
         LinearLayout root = page();
-        root.addView(title("Imported waypoints"));
-        root.addView(help("These are normal RockMap saved markers, but their import batch remembers which file created them."));
+        root.addView(title("Saved Locations from This File"));
+        root.addView(help("These are normal RockMap Saved Locations. RockMap remembers which imported file created them."));
         if (items.isEmpty()) {
-            root.addView(help("No remaining waypoints in this batch."));
+            root.addView(help("No remaining Saved Locations in this import."));
         } else {
             for (WaypointEntity w : items) {
                 root.addView(action(w.name, CoordinateFormats.decimal(w.latitude, w.longitude) + "\nTap for map and navigation options.",
                         v -> showImportedWaypoint(w)));
             }
         }
-        root.addView(nav("Back to imported data", v -> showImports()));
+        root.addView(nav("Back to Manage Imports", v -> showImports()));
         setContentView(scroll(root));
     }
 
     private void showImportedWaypoint(WaypointEntity w) {
         LinearLayout root = page();
-        root.addView(title(w.name == null || w.name.trim().isEmpty() ? "Imported waypoint" : w.name));
+        root.addView(title(w.name == null || w.name.trim().isEmpty() ? "Imported Saved Location" : w.name));
         root.addView(help(CoordinateFormats.decimal(w.latitude, w.longitude)
                 + (w.accuracyMeters >= 0 ? String.format(Locale.US, "\nGPS accuracy: ±%.1f m", w.accuracyMeters) : "")
                 + (w.notes == null || w.notes.trim().isEmpty() ? "" : "\n\n" + w.notes)));
-        root.addView(action("Show on map",
-                "Center this imported saved marker without changing any active navigation target.",
+        root.addView(action("Show on Map",
+                "Center this imported Saved Location without changing any active navigation target.",
                 v -> {
                     FieldMapState.clearViewedMapContext(this);
                     FieldMapState.requestFocusBounds(this,
@@ -923,13 +923,13 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Navigate to this point",
                 "Make this marker the active navigation target.",
                 v -> showPointNavigation(w.name, new GeoMath.Point(w.latitude, w.longitude))));
-        root.addView(nav("Back to imported data", v -> showImports()));
+        root.addView(nav("Back to Manage Imports", v -> showImports()));
         setContentView(scroll(root));
     }
 
     private void showImportedTracks(List<Long> ids) {
         LinearLayout root = page();
-        root.addView(title("Imported tracks"));
+        root.addView(title("Tracks from This File"));
         boolean any = false;
         for (Long id : ids) {
             FieldDatabase.Track t = db.getTrack(id);
@@ -938,14 +938,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
             root.addView(action(t.name, trackStatus(t, db.getTrackPoints(t.id)) + "\nTap to open on the real map.",
                     v -> showTrackOnMap(t.id)));
         }
-        if (!any) root.addView(help("No remaining tracks in this batch."));
-        root.addView(nav("Back to imported data", v -> showImports()));
+        if (!any) root.addView(help("No remaining tracks in this import."));
+        root.addView(nav("Back to Manage Imports", v -> showImports()));
         setContentView(scroll(root));
     }
 
     private void showImportedAreas(List<Long> ids) {
         LinearLayout root = page();
-        root.addView(title("Imported areas"));
+        root.addView(title("Prospecting Areas from This File"));
         boolean any = false;
         for (Long id : ids) {
             FieldDatabase.Area a = db.getArea(id);
@@ -954,8 +954,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
             root.addView(action(a.name, GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points)),
                     v -> showArea(a)));
         }
-        if (!any) root.addView(help("No remaining areas in this batch."));
-        root.addView(nav("Back to imported data", v -> showImports()));
+        if (!any) root.addView(help("No remaining Prospecting Areas in this import."));
+        root.addView(nav("Back to Manage Imports", v -> showImports()));
         setContentView(scroll(root));
     }
 
@@ -973,7 +973,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             root.addView(title(FieldUiNames.EXPORT));
             root.addView(help("Choose what you want to export. RockMap will ask for the specific item, when needed, and then the file format. Files are saved locally through Android's Save file picker."));
 
-            root.addView(action("Saved locations",
+            root.addView(action(FieldUiNames.SAVED_LOCATIONS,
                     waypoints.size() + " saved location" + (waypoints.size() == 1 ? "" : "s"),
                     v -> showSavedLocationExportFormats(waypoints.size())));
 
@@ -985,28 +985,28 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     records.size() + " record" + (records.size() == 1 ? "" : "s"),
                     v -> showFieldRecordExportFormats()));
 
-            root.addView(action("Prospecting areas",
-                    areas.size() + " saved area" + (areas.size() == 1 ? "" : "s") + " · choose all or one area",
+            root.addView(action(FieldUiNames.PROSPECTING_AREAS,
+                    areas.size() + " Prospecting Area" + (areas.size() == 1 ? "" : "s") + " · choose all or one",
                     v -> showAreaExportPicker()));
 
-            root.addView(action(FieldUiNames.IMPORTED_DATA,
-                    batches.size() + " managed batch" + (batches.size() == 1 ? "" : "es") + " · choose one batch",
+            root.addView(action("Imported Files",
+                    batches.size() + " imported file" + (batches.size() == 1 ? "" : "s") + " · choose one",
                     v -> showImportExportPicker()));
 
             if (ResearchResultStore.exists(this)) {
                 ResearchResultStore.Summary research = ResearchResultStore.summary(this);
-                root.addView(action("Research result",
-                        research.title + " · " + research.count + " mapped geology polygon" + (research.count == 1 ? "" : "s")
+                root.addView(action("Last Analysis",
+                        research.title + " · " + research.count + " mapped geology area" + (research.count == 1 ? "" : "s")
                                 + " · GeoJSON or CSV",
                         v -> showResearchExportFormats()));
             } else {
-                root.addView(action("Research result",
-                        "No Research result saved yet · run Research first",
-                        v -> toast("Run a geology Research query first, then return to Export data.")));
+                root.addView(action("Last Analysis",
+                        "No analysis saved yet · run Research first",
+                        v -> toast("Run a geology analysis first, then return to Export Data.")));
             }
 
             int total = waypoints.size() + tracks.size() + records.size() + areas.size();
-            root.addView(action("All field map data",
+            root.addView(action("All Field Data",
                     total + " saved object" + (total == 1 ? "" : "s") + " · combined GeoJSON",
                     v -> beginFieldExport(EXPORT_ALL, FORMAT_GEOJSON, -1L,
                             "RockMap-All-Field-Data.geojson", "application/geo+json")));
@@ -1021,15 +1021,15 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showSavedLocationExportFormats(int count) {
         if (count <= 0) {
-            toast("There are no saved locations to export.");
+            toast("There are no Saved Locations to export.");
             return;
         }
         String[] rows = {
-                "GeoJSON backup\nPreserves names, notes, timestamps and accuracy; compatible with RockMap's Saved locations backup import.",
+                "GeoJSON backup\nPreserves names, notes, timestamps and accuracy; compatible with RockMap's Saved Locations backup import.",
                 "GPX\nPortable waypoint file for GPS and mapping apps."
         };
         new AlertDialog.Builder(this)
-                .setTitle("Choose format · Saved locations")
+                .setTitle("Choose format · Saved Locations")
                 .setItems(rows, (d, which) -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_SAVED, FORMAT_GEOJSON, -1L,
@@ -1116,18 +1116,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showAreaExportPicker() {
         List<FieldDatabase.Area> areas = db.listAreas();
         if (areas.isEmpty()) {
-            toast("There are no prospecting areas to export.");
+            toast("There are no Prospecting Areas to export.");
             return;
         }
         String[] rows = new String[areas.size() + 1];
-        rows[0] = "All prospecting areas\nExport every saved polygon area.";
+        rows[0] = "All Prospecting Areas\nExport every saved polygon area.";
         for (int i = 0; i < areas.size(); i++) {
             FieldDatabase.Area area = areas.get(i);
             rows[i + 1] = area.name + "\n" + area.points.size() + " vertices · "
                     + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(area.points));
         }
         new AlertDialog.Builder(this)
-                .setTitle("Choose prospecting areas")
+                .setTitle("Choose Prospecting Areas")
                 .setItems(rows, (d, which) -> {
                     long id = which == 0 ? -1L : areas.get(which - 1).id;
                     String name = which == 0 ? "RockMap-Prospecting-Areas"
@@ -1144,7 +1144,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "KML\nConvenient for Google Earth and other KML-compatible mapping tools."
         };
         new AlertDialog.Builder(this)
-                .setTitle(areaId < 0L ? "Choose format · All areas" : "Choose format · Area")
+                .setTitle(areaId < 0L ? "Choose Format · All Prospecting Areas" : "Choose Format · Prospecting Area")
                 .setItems(rows, (d, which) -> {
                     String kind = areaId < 0L ? EXPORT_AREAS : EXPORT_AREA;
                     if (which == 0) {
@@ -1160,18 +1160,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showImportExportPicker() {
         List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
         if (batches.isEmpty()) {
-            toast("There are no managed import batches to export.");
+            toast("There are no imported files to export.");
             return;
         }
         String[] rows = new String[batches.size()];
         for (int i = 0; i < batches.size(); i++) {
             FieldDatabase.ImportBatch batch = batches.get(i);
-            rows[i] = batch.sourceName + "\nOriginally " + batch.waypointCount + " waypoints · "
-                    + batch.trackCount + " tracks · " + batch.areaCount + " areas";
+            rows[i] = batch.sourceName + "\nOriginally " + batch.waypointCount + " Saved Locations · "
+                    + batch.trackCount + " Tracks · " + batch.areaCount + " Prospecting Areas";
         }
         new AlertDialog.Builder(this)
-                .setTitle("Choose imported batch")
-                .setMessage("Exports the remaining objects currently associated with the selected managed batch, not the original file bytes.")
+                .setTitle("Choose Imported File")
+                .setMessage("Exports the remaining RockMap objects associated with the selected imported file, not the original file bytes.")
                 .setItems(rows, (d, which) -> {
                     FieldDatabase.ImportBatch batch = batches.get(which);
                     beginFieldExport(EXPORT_IMPORT, FORMAT_GEOJSON, batch.id,
@@ -1184,18 +1184,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showResearchExportFormats() {
         if (!ResearchResultStore.exists(this)) {
-            toast("There is no saved Research result to export.");
+            toast("There is no saved analysis to export.");
             return;
         }
         ResearchResultStore.Summary summary = ResearchResultStore.summary(this);
         String base = "RockMap-Research-" + safeExportFilename(summary.title);
         String[] rows = {
-                "GeoJSON\nPreserves full mapped polygon geometry and USGS SGMC source attributes for GIS/mapping software.",
-                "CSV\nSpreadsheet-friendly geology attributes. Polygon geometry is not included in CSV."
+                "GeoJSON\nPreserves full mapped-area geometry and USGS SGMC source attributes for GIS/mapping software.",
+                "CSV\nSpreadsheet-friendly geology attributes. Mapped-area geometry is not included in CSV."
         };
         new AlertDialog.Builder(this)
-                .setTitle("Choose format · Research result")
-                .setMessage(summary.title + " · " + summary.count + " mapped geology polygon" + (summary.count == 1 ? "" : "s"))
+                .setTitle("Choose format · Last Analysis")
+                .setMessage(summary.title + " · " + summary.count + " mapped geology area" + (summary.count == 1 ? "" : "s"))
                 .setItems(rows, (d, which) -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_RESEARCH, FORMAT_GEOJSON, -1L, base + ".geojson", "application/geo+json");
@@ -1223,7 +1223,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         final String format = pendingExportFormat;
         final long id = pendingExportId;
         if (kind.isEmpty() || format.isEmpty()) {
-            toast("RockMap lost the pending export selection. Choose Export data and try again.");
+            toast("RockMap lost the pending export selection. Choose Export Data and try again.");
             clearPendingExport();
             return;
         }
@@ -1278,7 +1278,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         if (EXPORT_AREA.equals(kind)) {
             FieldDatabase.Area area = db.getArea(id);
-            if (area == null) throw new IllegalStateException("The selected prospecting area no longer exists.");
+            if (area == null) throw new IllegalStateException("The selected Prospecting Area no longer exists.");
             ArrayList<FieldDatabase.Area> one = new ArrayList<>();
             one.add(area);
             return FORMAT_KML.equals(format) ? FieldExport.areasKml(one) : FieldExport.areasGeoJson(one);
@@ -1289,7 +1289,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         if (EXPORT_IMPORT.equals(kind)) {
             FieldDatabase.ImportBatch batch = db.getImportBatch(id);
-            if (batch == null) throw new IllegalStateException("The selected import batch no longer exists.");
+            if (batch == null) throw new IllegalStateException("The selected import no longer exists.");
             Set<Long> waypointIds = new HashSet<>(db.getImportItemIds(id, FieldDatabase.IMPORT_WAYPOINT));
             ArrayList<WaypointEntity> batchWaypoints = new ArrayList<>();
             for (WaypointEntity waypoint : waypoints) if (waypointIds.contains(waypoint.id)) batchWaypoints.add(waypoint);
@@ -1339,14 +1339,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     private String exportSuccessMessage(String kind) {
-        if (EXPORT_SAVED.equals(kind)) return "Saved locations exported.";
+        if (EXPORT_SAVED.equals(kind)) return "Saved Locations exported.";
         if (EXPORT_TRACK.equals(kind)) return "Track exported.";
         if (EXPORT_TRACKS.equals(kind)) return "Tracks exported.";
         if (EXPORT_RECORDS.equals(kind)) return "Field Records exported.";
-        if (EXPORT_AREA.equals(kind)) return "Prospecting area exported.";
-        if (EXPORT_AREAS.equals(kind)) return "Prospecting areas exported.";
-        if (EXPORT_IMPORT.equals(kind)) return "Imported batch exported.";
-        if (EXPORT_RESEARCH.equals(kind)) return "Research result exported.";
+        if (EXPORT_AREA.equals(kind)) return "Prospecting Area exported.";
+        if (EXPORT_AREAS.equals(kind)) return "Prospecting Areas exported.";
+        if (EXPORT_IMPORT.equals(kind)) return "Imported file data exported.";
+        if (EXPORT_RESEARCH.equals(kind)) return "Analysis exported.";
         return "Field data exported.";
     }
 

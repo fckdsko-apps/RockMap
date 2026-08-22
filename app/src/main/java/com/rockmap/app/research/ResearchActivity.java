@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,6 +23,8 @@ import android.widget.Toast;
 
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.GeoMath;
+import com.rockmap.app.waypoints.WaypointEntity;
+import com.rockmap.app.waypoints.WaypointRepository;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,15 +60,17 @@ public final class ResearchActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private GeologyRepository geology;
     private FieldDatabase fieldDb;
+    private WaypointRepository waypointRepository;
     private GeologyRepository.Bounds visibleBounds;
     private List<GeologyUnit> currentResults = new ArrayList<>();
-    private String currentResultTitle = "Research result";
+    private String currentResultTitle = "Analysis";
     private GeologyRepository.Bounds currentResultBounds;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         geology = new GeologyRepository(this);
         fieldDb = FieldDatabase.get(this);
+        waypointRepository = new WaypointRepository(this);
         visibleBounds = readBounds(getIntent());
         setTitle("RockMap Research");
 
@@ -112,10 +117,10 @@ public final class ResearchActivity extends Activity {
         root.addView(section("Colorado geology is not installed"));
         root.addView(help("RockMap will not start an additional geology-data download unless the download size is known and shown before you confirm it. Unknown-size live-service downloads are disabled in this build."));
         root.addView(help("Existing RockMap maps, mineral evidence, saved data and Field tools remain usable. Colorado geology will be distributed as a versioned offline data pack with a declared byte size and checksum before download."));
-        root.addView(action("Mineral Evidence",
-                "Mineral search does not depend on the geology pack.",
+        root.addView(action("Search Mineral Evidence",
+                "Mineral Evidence does not depend on the geology pack.",
                 v -> returnAction(ACTION_MINERALS, null)));
-        root.addView(action("Open Data",
+        root.addView(action("Manage Geology Data",
                 "Check the currently published RockMap offline-data pack and its disclosed download size.",
                 v -> returnAction(ACTION_DATA, null)));
         root.addView(nav("Back", v -> finish()));
@@ -125,60 +130,59 @@ public final class ResearchActivity extends Activity {
     private void showHub() {
         LinearLayout root = page();
         root.addView(title("Research"));
-        root.addView(help("Choose what you want to investigate. Geology and mineral evidence stay separate until you deliberately combine them in an area analysis."));
+        root.addView(help("Choose what you want to investigate. Mineral Evidence and Geology stay distinct until you deliberately combine them in an area analysis."));
 
         root.addView(section("Mineral Evidence"));
-        root.addView(action("Search minerals / materials",
-                "Search the existing installed mineral, locality and evidence records.",
+        root.addView(action("Search Mineral Evidence",
+                "Search installed mineral, locality, and evidence records across Colorado or the Visible Area.",
                 v -> returnAction(ACTION_MINERALS, null)));
         if (visibleBounds != null) {
-            root.addView(action("Analyze visible mineral evidence",
-                    "Analyze the mineral evidence in the map area you were just viewing.",
+            root.addView(action("Analyze Visible Area",
+                    "Summarize mineral evidence in the area currently visible on the map.",
                     v -> returnBoundsAction(ACTION_MINERALS_AREA, visibleBounds)));
         }
 
         root.addView(section("Geology"));
         if (geology.isReady()) {
-            root.addView(action("Search geology",
-                    "Search formation/unit names, rock types and ages in the installed Colorado geology.",
+            root.addView(action("Search Geology",
+                    "Search formation and unit names, rock types, and geologic ages.",
                     v -> showSearch()));
             if (visibleBounds != null) {
-                root.addView(action("Explore visible-map geology",
-                        "See the mapped geologic units intersecting the area currently on screen.",
-                        v -> runBoundsQuery(visibleBounds, "Visible-map geology")));
+                root.addView(action("Analyze Visible Area",
+                        "See the mapped geologic units intersecting the area currently visible on the map.",
+                        v -> runBoundsQuery(visibleBounds, "Geology — Visible Area")));
             }
-            root.addView(action("Analyze around a point",
-                    "Choose the map center, current GPS, a Field Record, or entered coordinates, then choose a radius.",
+            root.addView(action("Analyze Around a Point",
+                    "Choose Map Center, Current GPS, Saved Location, Field Record, or entered coordinates, then choose a radius.",
                     v -> showPointSourcePicker()));
 
-            root.addView(section("Area Research"));
+            root.addView(section("Combined Area Analysis"));
             root.addView(action("Prospecting Areas",
-                    "Choose a saved prospecting polygon and analyze the actual polygon against geology, then cross-reference mineral evidence and historic activity.",
+                    "Choose a saved Prospecting Area and analyze its geology, then continue into Mineral Evidence and historic activity.",
                     v -> showAreaPicker()));
             if (visibleBounds != null) {
-                root.addView(action("Analyze current map area",
-                        "Start with geology for the visible area, with mineral evidence and historic activity immediately available from the result.",
-                        v -> runBoundsQuery(visibleBounds, "Current map area")));
+                root.addView(action("Analyze Visible Area",
+                        "Start with geology for the Visible Area, then continue into Mineral Evidence and Historic Mines & Workings.",
+                        v -> runBoundsQuery(visibleBounds, "Geology — Visible Area")));
             }
         } else {
             root.addView(help("Colorado geology is not installed. Mineral Evidence remains available above."));
-            root.addView(action("Geology data",
-                    "Open the data screen. RockMap will not begin a geology download unless its size is disclosed before confirmation.",
+            root.addView(action("Manage Geology Data",
+                    "Open Data. RockMap will not begin an additional geology download unless its size is disclosed before you confirm it.",
                     v -> returnAction(ACTION_DATA, null)));
         }
 
-        root.addView(section("Offline data"));
         if (geology.isReady()) {
-            root.addView(help(geology.getRecordCount() + " mapped geology polygons installed · "
-                    + formatBytes(geology.getDatabaseBytes()) + " local database. Detailed source fields remain available on demand and in export."));
+            root.addView(help(geology.getRecordCount() + " mapped geology areas installed · "
+                    + formatBytes(geology.getDatabaseBytes()) + " local database."));
+            root.addView(action("Manage Geology Data",
+                    "Review RockMap offline data and future geology-pack updates.",
+                    v -> returnAction(ACTION_DATA, null)));
         }
-        root.addView(action("Data & geology pack",
-                "Manage RockMap offline data. Any additional geology pack must disclose its download size before download begins.",
-                v -> returnAction(ACTION_DATA, null)));
         if (ResearchResultStore.exists(this)) {
             ResearchResultStore.Summary r = ResearchResultStore.summary(this);
-            root.addView(action("Last Research result",
-                    r.title + " · " + r.count + " mapped polygon" + (r.count == 1 ? "" : "s") + " · export from Field → Export data.",
+            root.addView(action("Last Analysis",
+                    r.title + " · " + r.count + " mapped area" + (r.count == 1 ? "" : "s") + " · export from Field → Export Data.",
                     v -> showStoredResult()));
         }
         root.addView(nav("Back", v -> finish()));
@@ -191,7 +195,7 @@ public final class ResearchActivity extends Activity {
         EditText lith = input("Lithology filter (optional)", "");
         EditText age = input("Age filter (optional)", "");
         CheckBox visible = new CheckBox(this);
-        visible.setText("Limit to current visible map");
+        visible.setText("Search Visible Area Only");
         visible.setChecked(visibleBounds != null);
         visible.setEnabled(visibleBounds != null);
         visible.setMinHeight(dp(48));
@@ -211,7 +215,7 @@ public final class ResearchActivity extends Activity {
         });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Search Colorado geology")
+                .setTitle("Search Geology")
                 .setView(scroll(box))
                 .setPositiveButton("Search", null)
                 .setNegativeButton("Cancel", (d, w) -> showHub())
@@ -227,7 +231,7 @@ public final class ResearchActivity extends Activity {
             dialog.dismiss();
             runAsync("Searching geology…", () -> geology.search(filter, bounds, 0),
                     results -> showResults(results,
-                            "Geology search" + (filter.text.isEmpty() ? "" : ": " + text.getText().toString().trim()),
+                            "Geology Search" + (filter.text.isEmpty() ? "" : ": " + text.getText().toString().trim()),
                             bounds));
         }));
         dialog.show();
@@ -237,8 +241,8 @@ public final class ResearchActivity extends Activity {
     private String suggestionText(String prefix) {
         try {
             List<String> suggestions = geology.suggestions(prefix, 8);
-            if (suggestions.isEmpty()) return "Suggestions are generated from terms present in the installed geology snapshot.";
-            return "Installed-data suggestions: " + String.join(" · ", suggestions);
+            if (suggestions.isEmpty()) return "Try a formation name, rock type, or geologic age.";
+            return "Try: " + String.join(" · ", suggestions);
         } catch (RuntimeException ex) {
             return "Suggestions unavailable.";
         }
@@ -254,7 +258,7 @@ public final class ResearchActivity extends Activity {
         if (areas.isEmpty()) {
             new AlertDialog.Builder(this)
                     .setTitle("No Prospecting Areas yet")
-                    .setMessage("Open Field → Prospecting Areas → Create area on map. Saved prospecting polygons then appear here for one-tap analysis.")
+                    .setMessage("Open Field → Prospecting Areas → Create Prospecting Area. Saved areas then appear here for one-tap analysis.")
                     .setPositiveButton("Back", (d, w) -> showHub())
                     .show();
             return;
@@ -266,7 +270,7 @@ public final class ResearchActivity extends Activity {
         }
         new AlertDialog.Builder(this)
                 .setTitle("Prospecting Areas")
-                .setMessage("Choose an area to analyze its saved polygon.")
+                .setMessage("Choose a saved area to analyze.")
                 .setItems(labels, (d, which) -> analyzeArea(areas.get(which).id))
                 .setNegativeButton("Cancel", (d, w) -> showHub())
                 .show();
@@ -283,27 +287,30 @@ public final class ResearchActivity extends Activity {
         for (GeoMath.Point p : area.points) polygon.add(new GeologyRepository.Point(p.lat, p.lon));
         GeologyRepository.Bounds bounds = boundsOf(polygon);
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
-                results -> showResults(results, "Prospecting Area: " + area.name, bounds));
+                results -> showResults(results, "Geology — Prospecting Area: " + area.name, bounds));
     }
 
     private void showPointSourcePicker() {
         LinearLayout root = page();
-        root.addView(title("Analyze around a point"));
-        root.addView(help("Choose the point first. RockMap asks for the radius next—no nested geology menus."));
+        root.addView(title("Analyze Around a Point"));
+        root.addView(help("Choose the location first, then choose how far around it to analyze."));
         if (visibleBounds != null) {
             final double lat = (visibleBounds.south + visibleBounds.north) / 2d;
             final double lon = (visibleBounds.west + visibleBounds.east) / 2d;
-            root.addView(action("Current map center",
-                    String.format(Locale.US, "%.5f, %.5f · pan the map first if you want a different center", lat, lon),
-                    v -> showRadiusPicker(lat, lon, "Map center")));
+            root.addView(action("Map Center",
+                    String.format(Locale.US, "%.5f, %.5f · center of the map you were viewing", lat, lon),
+                    v -> showRadiusPicker(lat, lon, "Map Center")));
         }
         root.addView(action("Current GPS",
                 "Use a fresh precise GPS fix. If precise permission is not enabled, RockMap will tell you rather than silently using an approximate point.",
                 v -> showGpsRadiusPicker()));
+        root.addView(action("Saved Location",
+                "Choose one of your normal RockMap Saved Locations.",
+                v -> showSavedLocationPointPicker()));
         root.addView(action("Field Record",
                 "Choose one of your saved Field Records.",
                 v -> showFieldRecordPointPicker()));
-        root.addView(action("Enter coordinates",
+        root.addView(action("Enter Coordinates",
                 "Paste or type latitude, longitude.",
                 v -> showCoordinatePointEntry()));
         root.addView(nav("Back to Research", v -> showHub()));
@@ -317,6 +324,34 @@ public final class ResearchActivity extends Activity {
             result.putExtra(EXTRA_RADIUS_M, meters);
             setResult(RESULT_OK, result);
             finish();
+        });
+    }
+
+    private void showSavedLocationPointPicker() {
+        waypointRepository.getAll(items -> {
+            if (items == null || items.isEmpty()) {
+                new AlertDialog.Builder(this)
+                        .setTitle("No Saved Locations")
+                        .setMessage("Save a location first, or choose another point source.")
+                        .setPositiveButton("Back", (d, w) -> showPointSourcePicker())
+                        .show();
+                return;
+            }
+            String[] labels = new String[items.size()];
+            for (int i = 0; i < items.size(); i++) {
+                WaypointEntity item = items.get(i);
+                String name = item.name == null || item.name.trim().isEmpty() ? "Saved Location" : item.name.trim();
+                labels[i] = name + String.format(Locale.US, "\n%.5f, %.5f", item.latitude, item.longitude);
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Choose Saved Location")
+                    .setItems(labels, (d, which) -> {
+                        WaypointEntity item = items.get(which);
+                        String name = item.name == null || item.name.trim().isEmpty() ? "Saved Location" : item.name.trim();
+                        showRadiusPicker(item.latitude, item.longitude, name);
+                    })
+                    .setNegativeButton("Cancel", (d, w) -> showPointSourcePicker())
+                    .show();
         });
     }
 
@@ -348,12 +383,12 @@ public final class ResearchActivity extends Activity {
     private void showCoordinatePointEntry() {
         EditText coords = input("Latitude, longitude", "");
         new AlertDialog.Builder(this)
-                .setTitle("Enter point")
+                .setTitle("Enter Coordinates")
                 .setView(coords)
                 .setPositiveButton("Next", (d, w) -> {
                     try {
                         double[] ll = parseLatLon(coords.getText().toString());
-                        showRadiusPicker(ll[0], ll[1], "Entered coordinate");
+                        showRadiusPicker(ll[0], ll[1], "Entered Coordinate");
                     } catch (RuntimeException ex) {
                         toast(ex.getMessage() == null ? "Invalid coordinate." : ex.getMessage());
                         showCoordinatePointEntry();
@@ -370,9 +405,9 @@ public final class ResearchActivity extends Activity {
     private interface RadiusChoice { void choose(double meters); }
 
     private void showRadiusChoices(String label, RadiusChoice choice) {
-        String[] rows = {"At point", "250 m", "500 m", "1 km", "5 km", "Custom…"};
+        String[] rows = {"Exact Point", "250 m", "500 m", "1 km", "5 km", "Custom…"};
         new AlertDialog.Builder(this)
-                .setTitle("Radius · " + blank(label, "Selected point"))
+                .setTitle("Choose Radius — " + blank(label, "Selected Point"))
                 .setItems(rows, (d, which) -> {
                     if (which == 0) choice.choose(0d);
                     else if (which == 1) choice.choose(250d);
@@ -388,7 +423,7 @@ public final class ResearchActivity extends Activity {
     private void showCustomRadius(String label, RadiusChoice choice) {
         EditText input = input("Radius in meters (0–100000)", "1000");
         new AlertDialog.Builder(this)
-                .setTitle("Custom radius")
+                .setTitle("Custom Radius")
                 .setView(input)
                 .setPositiveButton("Analyze", (d, w) -> {
                     try {
@@ -414,11 +449,13 @@ public final class ResearchActivity extends Activity {
                     / (111320d * Math.max(0.1d, Math.cos(Math.toRadians(lat)))));
             GeologyRepository.Bounds bounds = new GeologyRepository.Bounds(
                     lat - latDelta, lon - lonDelta, lat + latDelta, lon + lonDelta);
-            String distance = radiusMeters <= 0d ? "at point" : radiusLabel(radiusMeters);
+            String distance = radiusMeters <= 0d ? "Exact Point" : radiusLabel(radiusMeters);
+            String pointName = blank(pointLabel, "Selected Point");
+            String resultTitle = radiusMeters <= 0d
+                    ? "Geology — Exact Point at " + pointName
+                    : "Geology — " + distance + " Around " + pointName;
             runAsync("Querying geology " + distance + "…", () -> geology.queryPointRadius(point, radiusMeters, 0),
-                    results -> showResults(results,
-                            "Geology " + distance + " · " + blank(pointLabel, "Selected point"),
-                            bounds));
+                    results -> showResults(results, resultTitle, bounds));
         } catch (RuntimeException ex) {
             toast(ex.getMessage());
             showHub();
@@ -439,67 +476,113 @@ public final class ResearchActivity extends Activity {
         }
 
         List<UnitGroup> groups = groupUnits(safe);
-        LinearLayout root = page();
-        root.addView(title(resultTitle));
-        root.addView(help(compactSummary(safe, groups)));
 
+        LinearLayout screen = new LinearLayout(this);
+        screen.setOrientation(LinearLayout.VERTICAL);
+        screen.setBackgroundColor(0xfffafafa);
+        screen.setOnApplyWindowInsetsListener((v, i) -> {
+            v.setPadding(i.getSystemWindowInsetLeft(), i.getSystemWindowInsetTop(),
+                    i.getSystemWindowInsetRight(), i.getSystemWindowInsetBottom());
+            return i;
+        });
+
+        // Keep the result identity and map action visible while the unit list scrolls independently.
+        LinearLayout top = page();
+        top.setPadding(dp(18), dp(12), dp(18), dp(4));
+        top.addView(title(resultTitle));
+        top.addView(help(compactSummary(safe, groups)));
+        if (!safe.isEmpty()) {
+            Button showMap = button("Show Geology on Map");
+            showMap.setOnClickListener(v -> returnGeology(
+                    geoJson, resultTitle, safe.size(), boundsOfUnits(safe)));
+            top.addView(showMap);
+        }
+        top.addView(section("Geologic Units"));
+        screen.addView(top, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Only the potentially long geology-unit list scrolls.
+        LinearLayout unitList = new LinearLayout(this);
+        unitList.setOrientation(LinearLayout.VERTICAL);
+        unitList.setPadding(dp(8), dp(6), dp(8), dp(6));
         if (safe.isEmpty()) {
-            root.addView(help("No installed mapped geology matched this query. This is absence of matching mapped evidence, not proof that a rock, mineral or unit is absent on the ground."));
+            unitList.addView(help("No installed mapped geology matched this query. This is absence of matching mapped evidence, not proof that a rock, mineral, or unit is absent on the ground."));
         } else {
-            root.addView(action("Show all geology on map",
-                    safe.size() + " mapped polygon" + (safe.size() == 1 ? "" : "s") + " · grouped below into "
-                            + groups.size() + " geologic unit" + (groups.size() == 1 ? "" : "s"),
-                    v -> returnGeology(geoJson, resultTitle, safe.size(), boundsOfUnits(safe))));
-
-            root.addView(section("Geologic units"));
-            root.addView(help("Repeated source polygons are grouped here. Every underlying polygon remains in the map result and GeoJSON export."));
+            unitList.addView(help("Repeated mapped areas are grouped by geologic unit. Full source geometry remains available on the map and in export."));
             for (UnitGroup group : groups) {
-                root.addView(action(group.name,
+                unitList.addView(action(group.name,
                         group.detailLine(),
                         v -> showUnitGroup(group, resultTitle)));
             }
         }
 
+        ScrollView unitScroll = new ScrollView(this);
+        unitScroll.setFillViewport(true);
+        unitScroll.addView(unitList, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout frame = new LinearLayout(this);
+        frame.setOrientation(LinearLayout.VERTICAL);
+        frame.setPadding(dp(2), dp(2), dp(2), dp(2));
+        GradientDrawable frameBackground = new GradientDrawable();
+        frameBackground.setColor(Color.WHITE);
+        frameBackground.setStroke(dp(1), 0xffd2d2d2);
+        frameBackground.setCornerRadius(dp(8));
+        frame.setBackground(frameBackground);
+        frame.addView(unitScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout.LayoutParams frameParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        frameParams.setMargins(dp(18), 0, dp(18), dp(6));
+        screen.addView(frame, frameParams);
+
+        // Keep continuation and navigation controls visible regardless of result count.
+        LinearLayout bottom = page();
+        bottom.setPadding(dp(18), 0, dp(18), dp(10));
         if (queryBounds != null) {
-            root.addView(section("Continue this area analysis"));
-            root.addView(action("Mineral Evidence",
-                    "Analyze the existing installed mineral/locality evidence in these geographic bounds.",
-                    v -> returnBoundsAction(ACTION_MINERALS_AREA, queryBounds)));
-            root.addView(action("Historic mines / workings",
-                    "Show the existing historic mine/workings evidence for this area on the map.",
-                    v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds)));
+            bottom.addView(section("Analyze This Area Further"));
+            Button minerals = button("Mineral Evidence");
+            minerals.setOnClickListener(v -> returnBoundsAction(ACTION_MINERALS_AREA, queryBounds));
+            bottom.addView(minerals);
+            Button mines = button("Historic Mines & Workings");
+            mines.setOnClickListener(v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds));
+            bottom.addView(mines);
         }
-        root.addView(nav("Back to Research", v -> showHub()));
-        setContentView(scroll(root));
+        bottom.addView(nav("Back to Research", v -> showHub()));
+        screen.addView(bottom, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        setContentView(screen);
+        screen.requestApplyInsets();
     }
 
     private void showUnitGroup(UnitGroup group, String resultTitle) {
         LinearLayout root = page();
         root.addView(title(group.name));
         root.addView(help(group.detailLine()));
-        root.addView(action("Show mapped areas on map",
-                group.units.size() + " source polygon" + (group.units.size() == 1 ? "" : "s") + " for this unit.",
+        root.addView(action("Show Unit on Map",
+                group.units.size() + " mapped area" + (group.units.size() == 1 ? "" : "s") + " for this unit.",
                 v -> returnGeology(geology.toGeoJson(group.units), group.name, group.units.size(), boundsOfUnits(group.units))));
-        root.addView(action("Technical & source details",
+        root.addView(action("Source & Technical Details",
                 "View raw SGMC labels, full age hierarchy, references and source identifiers.",
                 v -> showTechnicalDetails(group.representative())));
         if (group.units.size() > 1) {
-            root.addView(help(group.units.size() + " separate mapped source areas are represented by this grouped unit. Individual polygons stay available on the map and in GeoJSON export; they are not repeated here."));
+            root.addView(help(group.units.size() + " separate mapped areas are represented by this grouped unit. Their individual source geometry remains available on the map and in GeoJSON export."));
         }
-        root.addView(nav("Back to results", v -> showResults(currentResults, currentResultTitle, currentResultBounds)));
+        root.addView(nav("Back to Results", v -> showResults(currentResults, currentResultTitle, currentResultBounds)));
         setContentView(scroll(root));
     }
 
     private String compactSummary(List<GeologyUnit> polygons, List<UnitGroup> groups) {
-        if (polygons == null || polygons.isEmpty()) return "0 mapped geology polygons in this result.";
+        if (polygons == null || polygons.isEmpty()) return "0 mapped geology areas in this result.";
         LinkedHashMap<String, Integer> lith = new LinkedHashMap<>();
         for (UnitGroup group : groups) addCount(lith, group.lithology);
         StringBuilder out = new StringBuilder();
         out.append(groups.size()).append(" geologic unit").append(groups.size() == 1 ? "" : "s")
-                .append(" · ").append(polygons.size()).append(" mapped polygon").append(polygons.size() == 1 ? "" : "s").append('.');
+                .append(" · ").append(polygons.size()).append(" mapped area").append(polygons.size() == 1 ? "" : "s").append('.');
         String rocks = topNames(lith, 3);
-        if (!rocks.isEmpty()) out.append("\nCommon rock types in the grouped results: ").append(rocks).append('.');
-        out.append("\nPolygon counts are not percentages of ground area.");
+        if (!rocks.isEmpty()) out.append("\nCommon rock types: ").append(rocks).append('.');
+        out.append("\nMapped-area counts do not indicate land coverage.");
         return out.toString();
     }
 
@@ -587,7 +670,7 @@ public final class ResearchActivity extends Activity {
                 .append("\n").append(GeologyRepository.SOURCE_NOTE)
                 .append("\n\nMapped geology is interpretive source data. It does not determine land ownership, access, mining-claim status, hazards, or collecting permission.");
         new AlertDialog.Builder(this)
-                .setTitle("Technical geology details")
+                .setTitle("Source & Technical Details")
                 .setMessage(text.toString())
                 .setPositiveButton("Close", null)
                 .show();
@@ -599,9 +682,9 @@ public final class ResearchActivity extends Activity {
             String geoJson = ResearchResultStore.geoJson(this);
             new AlertDialog.Builder(this)
                     .setTitle(s.title)
-                    .setMessage(s.count + " mapped geology polygon" + (s.count == 1 ? "" : "s")
-                            + " saved as the current Research export. Field → Export data can save the complete underlying records as GeoJSON or CSV.")
-                    .setPositiveButton("Show on map", (d, w) -> returnGeology(geoJson, s.title, s.count, null))
+                    .setMessage(s.count + " mapped geology area" + (s.count == 1 ? "" : "s")
+                            + " saved as the current analysis. Field → Export Data can save the complete underlying records as GeoJSON or CSV.")
+                    .setPositiveButton("Show on Map", (d, w) -> returnGeology(geoJson, s.title, s.count, null))
                     .setNeutralButton("Clear", (d, w) -> {
                         ResearchResultStore.clear(this);
                         showHub();
@@ -609,7 +692,7 @@ public final class ResearchActivity extends Activity {
                     .setNegativeButton("Close", null)
                     .show();
         } catch (IOException ex) {
-            toast("Stored research result could not be read.");
+            toast("Stored analysis could not be read.");
             showHub();
         }
     }
@@ -652,7 +735,7 @@ public final class ResearchActivity extends Activity {
         try {
             ResearchResultStore.save(this, title, geoJson, count);
         } catch (IOException ex) {
-            toast("Could not stage the Research result for the map: " + ex.getMessage());
+            toast("Could not stage the analysis for the map: " + ex.getMessage());
             return;
         }
         Intent result = new Intent();
@@ -887,6 +970,7 @@ public final class ResearchActivity extends Activity {
 
     @Override protected void onDestroy() {
         executor.shutdownNow();
+        if (waypointRepository != null) waypointRepository.close();
         super.onDestroy();
     }
 }
