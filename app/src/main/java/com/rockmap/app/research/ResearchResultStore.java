@@ -82,7 +82,7 @@ public final class ResearchResultStore {
             JSONObject root = new JSONObject(geoJson(context));
             JSONArray features = root.optJSONArray("features");
             StringBuilder out = new StringBuilder();
-            out.append("object_id,unit_name,sgmc_label,original_label,age_min,age_max,generalized_lithology,major1,major2,major3,reference_id,reference,digital_url,source_doi\n");
+            out.append("object_id,unit_name,sgmc_label,original_label,age_min,age_max,generalized_lithology,major1,major2,major3,reference_id,reference,digital_url,source_doi,source_scale\n");
             if (features == null) return out.toString();
             for (int i = 0; i < features.length(); i++) {
                 JSONObject feature = features.optJSONObject(i);
@@ -102,6 +102,7 @@ public final class ResearchResultStore {
                 appendCsv(out, p.optString("REFERENCE"));
                 appendCsv(out, p.optString("DIGITAL_URL"));
                 appendCsv(out, p.optString("rockmap_source_doi"));
+                appendCsv(out, p.optString("rockmap_source_scale"));
                 out.setLength(out.length() - 1);
                 out.append('\n');
             }

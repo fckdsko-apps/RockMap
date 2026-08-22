@@ -1,64 +1,68 @@
-ROCKMAP P0–P3 — COMMIT 2
-SPATIAL RESEARCH QUERY UPGRADE
+ROCKMAP — COMMIT 2 UX CLEANUP
 
-BASELINE VERIFIED AGAINST CURRENT MAIN
-5491ca1acb67b0340e5e7d7c4b564e75a2b38123
-Redesign Field export flow for clear selection
+BASELINE
+7e54489b6ff3b8eb1d68acc9f4c9f44559a75031
+Fix Commit 2 preflight compatibility
 
 EXACT COMMIT NAME
-Add spatial geology research and area queries
+Improve Commit 2 research navigation and geology UX
 
-UPLOAD METHOD
-1. Extract this ZIP locally.
-2. In the RockMap GitHub repository, upload/replace the files using the exact paths in this package.
-3. Do not add or change anything under .github. This package intentionally contains no .github directory.
-4. Commit all packaged changes together with the exact commit name above.
-5. Run the existing Build RockMap APK workflow as usual.
-6. Do not uninstall the existing RockMap app before installing the resulting APK; install it as an update so existing offline/user data remains available.
+UPLOAD
+1. Extract the ZIP.
+2. GitHub → fckdsko-apps/RockMap → Add file → Upload files.
+3. Upload the CONTENTS of the extracted package, preserving app/ and docs/ paths.
+4. There is NO .github folder. Do not add or modify any workflow.
+5. Commit directly to main with the exact commit name above.
+6. Let the existing Build RockMap APK workflow run normally.
+7. If green, install the APK OVER the current RockMap installation. DO NOT uninstall or clear app data.
 
-WHAT CHANGES
-- Main map Minerals button becomes Research; the existing mineral search remains available inside Research.
-- Adds a local queryable Colorado geology database installed explicitly from Research.
-- First geology install/refresh downloads Colorado-only USGS SGMC polygons from the public ArcGIS FeatureServer, validates the state/count/required geometry, then atomically activates the local SQLite snapshot.
-- Geology queries are offline after installation.
-- Search supports unit/label/lithology/age terms, installed-data suggestions, optional filters, and visible-map scope.
-- Spatial queries support visible map bounds, saved prospecting polygons, and coordinate/radius searches.
-- Research results map as a temporary geology overlay below land/claim/saved-location safety layers.
-- Research can cross-reference the existing mineral evidence and historic mine/workings systems without duplicating those datasets.
-- Field Records gain Research geology here.
-- Saved prospecting areas gain Analyze geology & evidence using the actual saved polygon.
-- Field > Export data gains Research result export as GeoJSON or CSV.
-- The last Research result is stored locally rather than passed through Android Intent extras, avoiding Binder-size crashes on polygon results.
-- Downloadable geology and reproducible Research-result files are excluded from Android cloud backup/device transfer; user-created Field/Trip/Saved data remains backup-eligible.
-- Privacy policy now accurately distinguishes release-managed pack SHA/size verification from the live USGS geology snapshot validation.
+WHY YOU MUST INSTALL OVER THE CURRENT APP FOR THIS TEST
+The first Commit 2 build already installed the local Colorado geology snapshot on the phone. This cleanup intentionally disables the old unknown-size live FeatureServer download path. A future geology release must be a versioned RockMap offline-data asset with a declared byte size and checksum shown before the user confirms the download. Until that pack is published, uninstalling/clearing RockMap would also remove the currently installed geology test snapshot.
 
-UNCHANGED ON PURPOSE
-- Precise GPS centering implementation
+WHAT THIS FIX CHANGES
+- Research is organized into Mineral Evidence, Geology, and Area Research.
+- Mineral search and Analyze visible mineral evidence are immediate first-level actions.
+- Field now has an explicit Prospecting Areas screen.
+- A saved Prospecting Area has an immediate Analyze this area action.
+- Field Records use Research this location and then ask for radius.
+- Analyze around a point explicitly offers map center, Current GPS, Field Record, and entered coordinates, then radius choices.
+- Geology results group repeated source polygons by geologic unit instead of repeating the same unit hundreds of times.
+- Normal geology rows use compact rock/lithology and the most-specific age; raw SGMC hierarchy/provenance is under Technical & source details.
+- The grouped-unit screen does not dump individual source-polygon rows; all polygons remain on the map and in export.
+- Geology searches/spatial queries no longer impose the old artificial 500/1000/3000 result caps. All grouped results remain browseable in the page scroll.
+- Research GeoJSON/CSV keep the underlying source polygons and provenance, including source scale.
+- The old unknown-size live geology install/refresh path is removed from the Android runtime. If geology is absent, Mineral Evidence still works and the app directs users to Data rather than starting an undisclosed download.
+- Privacy copy now states that additional RockMap data packs disclose size before download and are size/SHA-256 verified before activation.
+
+MAIN-MAP ENTRY NOTE
+The existing main-map button still says Minerals because current preflight explicitly protects that established control. It now opens the redesigned Research hub. Field also has a direct Research entry. This cleanup does not weaken or spoof the existing preflight invariant merely to rename a button.
+
+UNCHANGED / PROTECTED
+- MainActivity.locate()
+- centerOnGpsFix(...)
 - Save GPS implementation
-- Location permission behavior
-- Field precise-location helper
-- Track start/recording command logic
-- Existing signing identity/configuration
-- Existing GitHub Actions workflows
-- Existing Gradle dependencies
-- Existing mineral evidence dataset
-- Existing land-management and mining-claim datasets
-- Existing Trips / Find / saved-marker / import-export systems
+- track start/recording commands
+- Android manifest permissions
+- signing configuration
+- existing GitHub workflows
+- existing mineral, land, claims, Find, Trips, saved-marker and Field export datasets/systems
 
-FIRST TEST AFTER A GREEN BUILD
-1. Install the APK over the existing app. Do not uninstall first.
-2. Verify GPS centers accurately at your real position.
-3. Verify Save GPS still works.
-4. Open Research. On first use, choose Download Colorado geology while online/Wi-Fi.
-5. Record the installed Colorado unit count and local database size shown by RockMap.
-6. Search geology for a common term such as granite; open a unit and show the result on the map.
-7. Open Layers and toggle the Research geology result off/on; verify land status and claims remain separate and above it.
-8. Pan/zoom somewhere useful, open Research, and run Analyze visible map.
-9. Open a saved prospecting area in Field and run Analyze geology & evidence.
-10. Open a Field Record and run Research geology here.
-11. From a Research result, test Mineral evidence in these bounds and Historic mines / workings in these bounds.
-12. Go to Field > Export data > Research result and test both GeoJSON and CSV.
-13. Regression-check Find, Trips, Markers, Layers, Data, tracks, measurement, managed imports, and normal Field exports.
+A small additive Current GPS Research path uses the existing fresh-precise LocationRepository flow. Existing GPS-center and Save GPS actions are not replaced.
 
-IF THE BUILD FAILS
-Send the GitHub Actions log ZIP from this exact commit. Do not start changing workflows or data builders preemptively.
+FIRST PHONE TEST AFTER GREEN
+1. Install over the current app; do not uninstall.
+2. Confirm GPS still centers precisely and Save GPS still works.
+3. Tap Minerals. Confirm the Research hub clearly shows Mineral Evidence, Geology, and Area Research.
+4. Tap Analyze visible mineral evidence. It should be obvious and launch directly into the existing mineral-area analysis.
+5. Open Geology → Explore visible-map geology. Confirm repeated units such as Sawatch Quartzite are grouped once and the page is much less verbose.
+6. Scroll through the entire grouped result list. There should be no hidden permanent display cap.
+7. Open a grouped geology unit. Confirm it shows one concise unit view, Show mapped areas on map, and Technical & source details rather than hundreds of polygon rows.
+8. Field → Prospecting Areas. Confirm saved areas are easy to find.
+9. Open one → Analyze this area. Confirm the saved polygon is used.
+10. Open a Field Record → Research this location → choose a radius.
+11. Minerals/Research → Geology → Analyze around a point. Test map center and Current GPS.
+12. Field → Export data → Research result. Export GeoJSON and CSV; verify the files are non-empty and retain source/provenance.
+13. Airplane mode → force-stop → reopen → repeat geology search/area analysis using the already-installed snapshot.
+
+IF RED
+Send the Actions log ZIP from this exact commit. Do not change workflows or rerun unrelated data builds.

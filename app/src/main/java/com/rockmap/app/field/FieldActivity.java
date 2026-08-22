@@ -99,6 +99,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         else if ("imports".equals(screen)) showImports();
         else if ("export".equals(screen)) showExportHub();
         else if ("coordinates".equals(screen)) showCoordinates();
+        else if ("areas".equals(screen)) showProspectingAreas();
         else if ("measure".equals(screen)) {
             FieldMapState.requestMeasurement(this);
             returnToMap();
@@ -123,8 +124,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action(FieldUiNames.SAVED_LOCATIONS,
                 "View the existing RockMap saved-marker database or copy a marker into a richer field record.",
                 v -> showLegacyWaypoints()));
+        root.addView(action("Prospecting Areas",
+                "Create, reopen, analyze, map and manage saved prospecting polygons.",
+                v -> showProspectingAreas()));
         root.addView(action(FieldUiNames.MEASURE,
-                "Add points by map tap, GPS, saved marker, Field Record, or pasted coordinate. Segment distances and polygon area are labeled directly on the map.",
+                "Start a temporary map measurement. Save it as a Prospecting Area when you want to keep and analyze the polygon.",
                 v -> { FieldMapState.requestMeasurement(this); returnToMap(); }));
         root.addView(action(FieldUiNames.IMPORT,
                 "Import waypoints, tracks and areas as a managed batch, then show or remove that batch cleanly.",
@@ -132,8 +136,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action(FieldUiNames.IMPORTED_DATA,
                 "Review imported batches, show a batch on the map, or delete only the data created by that import.",
                 v -> showImports()));
-        root.addView(action("Research geology",
-                "Search and spatially query the installed Colorado geology snapshot, then cross-reference existing mineral and historic-mine evidence.",
+        root.addView(action("Research",
+                "Open Mineral Evidence, Geology and Area Research without hiding them inside the measurement tools.",
                 v -> startResearch(new Intent(this, ResearchActivity.class))));
         root.addView(action(FieldUiNames.EXPORT,
                 "Export saved locations, tracks, Field Records, prospecting areas, managed import batches, or a combined GIS file.",
@@ -416,12 +420,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     FieldMapState.requestFocusBounds(this, new FieldMapState.Bounds(r.lat, r.lon, r.lat, r.lon));
                     returnToMap();
                 }));
-        root.addView(action("Research geology here",
-                "Query mapped geology within 1 km of this Field Record, then cross-reference RockMap evidence.",
+        root.addView(action("Research this location",
+                "Choose a radius, then inspect mapped geology and continue into mineral evidence or historic activity.",
                 v -> startResearch(new Intent(this, ResearchActivity.class)
                         .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
-                        .putExtra(ResearchActivity.EXTRA_RADIUS_M, 1000d))));
+                        .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name))));
         root.addView(action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon))));
@@ -512,19 +516,23 @@ public final class FieldActivity extends Activity implements LocationRepository.
     // ---------- MEASURE / AREAS ----------
 
     private void showMeasure() {
+        showProspectingAreas();
+    }
+
+    private void showProspectingAreas() {
         LinearLayout root = page();
-        root.addView(title("Measure & prospecting areas"));
-        root.addView(help("Measurement happens on the main map. Distance values appear directly on the line in a contrasting label color; with 3+ points, the polygon area is labeled too."));
-        root.addView(action("Start measurement on map",
-                "Open the clearly labeled measurement HUD with Tap map, GPS, Saved, Field, Paste, Undo, Save area and Done.",
+        root.addView(title("Prospecting Areas"));
+        root.addView(help("Saved polygons live here. Create one on the map, then reopen it for map view, analysis, export or deletion."));
+        root.addView(action("Create area on map",
+                "Open the map measurement tool. Add points, then use Save area to keep the polygon as a Prospecting Area.",
                 v -> {
                     FieldMapState.requestMeasurement(this);
                     returnToMap();
                 }));
-        root.addView(section("Saved areas"));
         List<FieldDatabase.Area> areas = db.listAreas();
+        root.addView(section("Saved Prospecting Areas"));
         if (areas.isEmpty()) {
-            root.addView(help("No saved prospecting areas yet."));
+            root.addView(help("No saved Prospecting Areas yet."));
         } else {
             for (FieldDatabase.Area a : areas) {
                 root.addView(action(a.name,
@@ -532,7 +540,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         v -> showArea(a)));
             }
         }
-        root.addView(back());
+        root.addView(nav("Back to Field", v -> showHub()));
         setContentView(scroll(root));
     }
 
@@ -551,6 +559,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(help(a.points.size() + " vertices\n" + measurementText(a.points)
                 + (a.notes == null || a.notes.isEmpty() ? "" : "\n\n" + a.notes)
                 + "\n\nUse Show on map for the geographic view."));
+        root.addView(action("Analyze this area",
+                "Use this saved polygon for Area Research: geology first, with Mineral Evidence and historic activity immediately available from the result.",
+                v -> startResearch(new Intent(this, ResearchActivity.class)
+                        .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))));
         root.addView(action("Show on map",
                 "Zoom to this saved area and keep the polygon visible in geographic context.",
                 v -> {
@@ -559,21 +571,17 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
                     returnToMap();
                 }));
-        root.addView(action("Analyze geology & evidence",
-                "Query geology against this saved polygon itself, then cross-reference existing mineral evidence and historic mines/workings.",
-                v -> startResearch(new Intent(this, ResearchActivity.class)
-                        .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))));
         Button del = button("Delete area");
         del.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("Delete area?")
                 .setPositiveButton("Delete", (d, w) -> {
                     db.deleteArea(a.id);
-                    showMeasure();
+                    showProspectingAreas();
                 })
                 .setNegativeButton("Cancel", null)
                 .show());
         root.addView(del);
-        root.addView(nav("Back to areas", v -> showMeasure()));
+        root.addView(nav("Back to Prospecting Areas", v -> showProspectingAreas()));
         setContentView(scroll(root));
     }
 

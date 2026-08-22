@@ -111,6 +111,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int LOCATION_ACTION_NONE = 0;
     private static final int LOCATION_ACTION_CENTER = 1;
     private static final int LOCATION_ACTION_SAVE = 2;
+    private static final int LOCATION_ACTION_RESEARCH_GPS = 3;
 
     private MapView mapView;
     private MapController mapController;
@@ -136,6 +137,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private boolean started;
     private long pendingTripExportId = -1L;
     private int pendingLocationAction = LOCATION_ACTION_NONE;
+    private double pendingResearchRadiusMeters = 1000d;
     private Intent pendingResearchLaunchIntent;
 
     @Override
@@ -284,6 +286,26 @@ public final class MainActivity extends Activity implements LocationRepository.L
             intent.putExtra(ResearchActivity.EXTRA_EAST, bounds.east);
         }
         startActivityForResult(intent, RESEARCH_REQUEST);
+    }
+
+    private void startResearchAtPoint(double lat, double lon, double radiusMeters, String label) {
+        Intent intent = new Intent(this, ResearchActivity.class);
+        intent.putExtra(ResearchActivity.EXTRA_POINT_LAT, lat);
+        intent.putExtra(ResearchActivity.EXTRA_POINT_LON, lon);
+        intent.putExtra(ResearchActivity.EXTRA_RADIUS_M, radiusMeters);
+        intent.putExtra(ResearchActivity.EXTRA_POINT_LABEL, label == null ? "Selected point" : label);
+        startActivityForResult(intent, RESEARCH_REQUEST);
+    }
+
+    private void researchAtFreshGps(double radiusMeters) {
+        pendingResearchRadiusMeters = radiusMeters;
+        pendingLocationAction = LOCATION_ACTION_RESEARCH_GPS;
+        if (!ensureLocationPermission(true)) return;
+        pendingLocationAction = LOCATION_ACTION_NONE;
+        locationRepository.requestFreshPrecise(
+                location -> startResearchAtPoint(location.getLatitude(), location.getLongitude(),
+                        radiusMeters, "Current GPS"),
+                this::showMessage);
     }
 
     private void showMineralSearch() {
@@ -3072,6 +3094,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
             }
             return;
         }
+        if (ResearchActivity.ACTION_DATA.equals(action)) {
+            showData();
+            return;
+        }
+        if (ResearchActivity.ACTION_GPS_POINT.equals(action)) {
+            researchAtFreshGps(data.getDoubleExtra(ResearchActivity.EXTRA_RADIUS_M, 1000d));
+            return;
+        }
         if (ResearchActivity.ACTION_MINERALS.equals(action)) {
             showMineralSearch();
             return;
@@ -3300,11 +3330,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (precise ? fine : (coarse || fine)) return true;
 
         boolean centering = pendingLocationAction == LOCATION_ACTION_CENTER;
+        boolean researchPoint = pendingLocationAction == LOCATION_ACTION_RESEARCH_GPS;
         String title = precise ? "Allow precise location?" : "Allow location?";
         String message = precise
                 ? (centering
                     ? "RockMap needs Android's precise location permission to center the map on your actual GPS position. Location is used only while the app is open and is not sent to RockMap servers. RockMap does not request background location."
-                    : "RockMap uses precise location only while the app is open so you can save a field waypoint at your current GPS position. The waypoint stays on this device unless you export it. RockMap does not request background location.")
+                    : researchPoint
+                        ? "RockMap needs Android's precise location permission to run Research around your current GPS position. The GPS coordinate is used locally for the query and is not sent to RockMap servers. RockMap does not request background location."
+                        : "RockMap uses precise location only while the app is open so you can save a field waypoint at your current GPS position. The waypoint stays on this device unless you export it. RockMap does not request background location.")
                 : "RockMap uses location only while the app is open. Your location is not sent to RockMap servers.";
         new AlertDialog.Builder(this)
                 .setTitle(title)
@@ -3363,6 +3396,20 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 new AlertDialog.Builder(this)
                         .setTitle("Precise location required")
                         .setMessage("Approximate location is enough for GPS viewing, but Save GPS requires Android's precise-location permission.")
+                        .setPositiveButton("App settings", (d, w) -> openAppSettings())
+                        .setNegativeButton("Close", null)
+                        .show();
+            }
+            return;
+        }
+        if (requestedAction == LOCATION_ACTION_RESEARCH_GPS) {
+            if (fine) {
+                final double radius = pendingResearchRadiusMeters;
+                mapView.post(() -> researchAtFreshGps(radius));
+            } else {
+                new AlertDialog.Builder(this)
+                        .setTitle("Precise location required")
+                        .setMessage("Research around Current GPS requires Android's Precise location setting. RockMap will not substitute an approximate location for this query.")
                         .setPositiveButton("App settings", (d, w) -> openAppSettings())
                         .setNegativeButton("Close", null)
                         .show();

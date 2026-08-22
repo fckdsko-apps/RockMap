@@ -1,101 +1,124 @@
 # RockMap P0–P3 — Commit 2: Spatial Research Query
 
-**Commit:** `Add spatial geology research and area queries`
+**Original Commit 2:** `Add spatial geology research and area queries`
 
-**Baseline:** `5491ca1acb67b0340e5e7d7c4b564e75a2b38123` (`Redesign Field export flow for clear selection`)
+**UX cleanup commit:** `Improve Commit 2 research navigation and geology UX`
 
-## Scope
+## What this cleanup fixes
 
-This commit adds a Colorado-first, offline-after-install spatial geology research system while preserving the existing mineral, mine, land, claim, GPS, Field, Trip, Find, and export systems.
+The first Commit 2 build proved the geology/search engine worked, but phone testing exposed an information-architecture problem: mineral analysis was buried, Prospecting Areas were difficult to find, point/radius analysis required too much menu knowledge, and raw SGMC polygon output was too verbose and repetitive.
 
-### Queryable geology
+This cleanup keeps the underlying research/export data intact while changing the default experience around the user’s task.
 
-RockMap stores a Colorado-only local SQLite snapshot of polygon geology. The source is the USGS **State Geologic Map Compilation (SGMC)** data release, DOI `10.5066/F7WH2N65`, published through the ArcGIS FeatureServer layer used by the USGS/ArcGIS map product.
 
-The app deliberately identifies this as the 2017 SGMC lineage. It does **not** label these records as the separate 2026 GeMS SGMC release.
+## Entry point
 
-The first install is user-triggered from Research. RockMap:
+The existing main-map **Minerals** control remains in place for this cleanup because it is part of the current RockMap preflight/regression contract. Tapping it now opens the redesigned **Research** hub, where Mineral Evidence, Geology, and Area Research are separate first-level sections. Field also has a direct **Research** entry. This patch does not weaken the existing preflight guard merely to rename a button.
 
-1. queries the source for the Colorado record count;
-2. rejects counts outside a broad fail-closed sanity range;
-3. downloads the Colorado source in bounded pages;
-4. rejects any returned non-Colorado feature;
-5. requires an object identifier and polygon geometry;
-6. requires the number of records received to exactly match the count observed at the beginning of the download;
-7. writes to a temporary SQLite database;
-8. replaces the prior local geology database only after the complete replacement passes validation.
+## Research information architecture
 
-A failed refresh preserves the existing local snapshot.
+Research is split into three explicit jobs:
 
-Because the source is a live feature service rather than a RockMap release artifact, exact transfer bytes and a RockMap SHA-256 cannot be known before transfer. The app says this explicitly and reports local database size after activation. This is intentionally separate from the existing release-managed offline-pack updater, which retains its size/SHA behavior.
+### Mineral Evidence
 
-### Search and filters
+- Search minerals / materials
+- Analyze visible mineral evidence
 
-Search covers the installed source's unit names, original/standardized labels, generalized/major/minor lithology, incidental/indeterminate lithology, and age fields. Suggestions are generated only from terms present in the installed local database.
+These actions reuse the existing RockMap mineral/locality/evidence index and area analyzer. They are no longer hidden behind geology actions.
 
-Search can be statewide or limited to the map bounds that were visible when Research was opened. Optional lithology and age filters can be combined with the general text query.
+### Geology
 
-### Spatial queries
+- Search geology
+- Explore visible-map geology
+- Analyze around a point
 
-Research supports:
+Point analysis offers direct sources instead of a hidden coordinate/radius dialog:
 
-- visible map rectangle;
-- an actual saved Field prospecting polygon;
-- a coordinate with a radius from 0 m through 100 km.
+- current map center;
+- current precise GPS;
+- saved Field Record;
+- entered coordinates.
 
-Saved-area geology is clipped logically against the saved polygon rather than merely treating the polygon's rectangle as the geology query. Existing mineral-area analysis currently accepts rectangular bounds, so the Research UI explicitly labels that mineral cross-reference as the saved polygon's **bounding rectangle** rather than pretending it is exact polygon clipping.
+The radius is then chosen explicitly: at point, 250 m, 500 m, 1 km, 5 km, or custom.
 
-### Results and map behavior
+### Area Research
 
-Results include source polygon geometry and SGMC attributes needed for geology research and provenance. A selected result can be shown as a translucent temporary map overlay.
+- Prospecting Areas
+- Analyze current map area
 
-Research geology is deliberately inserted beneath land-status, mining-claim, and saved-location safety/user layers. It does not change their meaning or visibility logic.
+A saved Prospecting Area queries its actual polygon for geology. Mineral evidence and historic activity remain distinct source families and are exposed immediately as continuation actions rather than being mixed into a misleading single “probability” result.
 
-The last Research result is staged as an app-private local GeoJSON file. Main/Field handoff sends only small metadata through Android Intents and reads the geometry from that local result file. This avoids Android Binder transaction failures from large polygon GeoJSON extras.
+## Prospecting Areas in Field
 
-### Existing evidence cross-reference
+Field now has an explicit **Prospecting Areas** entry. It is no longer necessary to know that saved areas were previously buried under Measure.
 
-Research reuses rather than duplicates:
+The Prospecting Areas screen provides:
 
-- RockMap mineral/locality evidence;
-- mineral-area analysis/heatmap behavior;
-- historic mine/workings overlay.
+- Create area on map
+- Saved Prospecting Areas
+- Open an area
+- Analyze this area
+- Show on map
+- Delete
 
-### Field integration
+The existing Field export hub remains the export owner for saved areas and Research results.
 
-- **Field Record → Research geology here:** starts a 1 km geology query around the Field Record.
-- **Saved prospecting area → Analyze geology & evidence:** queries the actual saved polygon.
-- **Field → Research geology:** opens the general Research workspace.
-- **Field → Export data → Research result:** exports the most recent Research result as GeoJSON or CSV.
+Field Records now expose **Research this location**. RockMap asks for a radius rather than silently assuming 1 km.
 
-### Data retention / backup
+## Geology result presentation
 
-The downloadable geology database is replaceable public reference data, so it is excluded from Android cloud backup/device transfer. The reproducible last Research-result GeoJSON/meta files are also excluded. Existing user-created waypoints, trips, Field Records, tracks, areas, notes, and related user data remain subject to the existing backup behavior.
+The source data remains polygon-level and complete, but the normal UI no longer dumps one row for every source polygon.
 
-## Source / commercial-use note
+RockMap now groups repeated polygons into user-facing geologic units. A result such as Sawatch Quartzite appears once with:
 
-The USGS data-release page for `10.5066/F7WH2N65` currently marks the work **CC0 1.0 Universal**. The ArcGIS item metadata also contains standard language noting that some information products may contain copyrighted material as noted in source text. RockMap preserves source provenance. This source should remain on the pre-public-launch licensing audit rather than treating “publicly available” as a substitute for commercial-rights review.
+- concise rock/lithology;
+- concise most-specific age;
+- number of mapped source areas.
 
-## Deliberately out of this commit
+The underlying polygons remain separate in the map result and GeoJSON export.
 
-- satellite imagery downloads;
-- LiDAR / 3D terrain;
-- private parcels;
-- a major terrain/elevation/slope/aspect/hillshade package;
-- full mining-claim history/change detection;
-- migration of the geology source to the separate 2026 GeMS SGMC release.
+Full SGMC hierarchy, labels, references, unit/source IDs and provenance are available only through **Technical & source details**.
 
-## Regression guard
+Age paths are shortened for the normal UI (for example, `Pennsylvanian` instead of the complete hierarchy). Raw values remain unchanged in export.
 
-The Commit 2 patch was constructed from the current post-Commit-1 source. Static comparison confirmed that these existing methods were unchanged:
+## Complete result browsing
 
-- Main `locate()`;
-- Main fresh precise `centerOnGpsFix(...)` path;
-- Main `saveLocation()`;
-- Main location permission helper/result handling;
-- Main location update callback;
-- Field precise-location helper;
-- Field track-start logic;
-- Field track-command logic.
+Search, visible-area, saved-polygon and point/radius geology queries no longer use the former 250/500/1000/3000 display/query caps. A zero limit means no artificial result limit in the local SQLite query. Repeated polygons are grouped for usability rather than silently discarded.
 
-No new Android permission, Gradle dependency, signing change, or `.github` workflow file is included.
+## Additional-resource download policy
+
+The former Research-screen live FeatureServer install/refresh path is disabled.
+
+RockMap must not begin an additional geology-resource download unless the resource has a known declared byte size that can be shown to the user before confirmation. New geology installs/updates are to be distributed as versioned RockMap offline data-pack assets with a declared byte count and SHA-256, using the same user-confirmed update model as the existing offline pack system.
+
+An already installed local geology snapshot remains usable offline. Mineral Evidence remains usable even when geology is not installed.
+
+## Source / scale
+
+The currently installed Commit 2 geology snapshot retains its source identity:
+
+- USGS State Geologic Map Compilation (SGMC)
+- DOI `10.5066/F7WH2N65`
+- Colorado source map scale: 1:500,000
+
+The app does not relabel this source as the separate 2026 GeMS release.
+
+Source scale and detailed provenance remain available in technical details/export so generalized statewide mapping is not presented as site-scale precision.
+
+## Export
+
+UI simplification does not simplify the exported dataset. The existing Field → Export data pipeline continues to export the complete underlying Research result, including source polygon geometry and source attributes.
+
+## Regression boundaries
+
+This cleanup does not change:
+
+- `MainActivity.locate()`;
+- `centerOnGpsFix(...)`;
+- Save GPS behavior;
+- track start/recording commands;
+- Android permissions declared in the manifest;
+- signing configuration;
+- `.github` workflows.
+
+A new additive precise-GPS Research action reuses `LocationRepository.requestFreshPrecise(...)`. Existing center/save permission actions retain their existing behavior; the permission handler adds a separate Research-GPS branch rather than replacing those flows.

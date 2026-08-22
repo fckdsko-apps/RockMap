@@ -1,57 +1,38 @@
 package com.rockmap.app.research;
 
-import android.content.ContentValues;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
-import android.os.Handler;
-import android.os.Looper;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * Offline Colorado geology store used by Commit 2 research queries.
  *
- * The first install is intentionally user-triggered. RockMap downloads Colorado-only polygon
- * records from the USGS SGMC ArcGIS service, validates the schema/state, and writes a local SQLite
- * snapshot. Once that succeeds, search/spatial queries operate without a network connection.
+ * Geology queries read a local Colorado SQLite snapshot. Unknown-size live-service installation is
+ * intentionally disabled: new snapshots must be distributed as versioned RockMap offline resources
+ * with a disclosed byte size/checksum before download. Existing installed snapshots remain usable.
  */
 public final class GeologyRepository {
     public static final String SOURCE_TITLE = "USGS State Geologic Map Compilation (SGMC)";
     public static final String SOURCE_DOI = "10.5066/F7WH2N65";
+    public static final String SOURCE_SCALE = "1:500,000 Colorado source map";
     public static final String SOURCE_NOTE = "2017 USGS SGMC source polygons published through an ArcGIS FeatureServer; RockMap stores a Colorado-only local snapshot and reports the source exactly rather than relabeling it as the separate 2026 GeMS release.";
     public static final String SOURCE_SERVICE = "https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/SGMC_featureservice/FeatureServer/0/query";
 
     private static final String DB_NAME = "rockmap-geology.db";
-    private static final int PAGE_SIZE = 500;
     private static final int MIN_EXPECTED_COLORADO_RECORDS = 500;
     private static final int MAX_EXPECTED_COLORADO_RECORDS = 100000;
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
-
-    public interface ProgressCallback {
-        void onProgress(int downloaded, int expected);
-        void onComplete(int records, long bytes);
-        void onError(String message);
-    }
 
     public static final class Bounds {
         public final double south;
@@ -98,7 +79,6 @@ public final class GeologyRepository {
     }
 
     private final Context context;
-    private final Handler main = new Handler(Looper.getMainLooper());
 
     public GeologyRepository(Context context) {
         this.context = context.getApplicationContext();
@@ -151,98 +131,10 @@ public final class GeologyRepository {
         }
     }
 
-    public void downloadColoradoSnapshot(ProgressCallback callback) {
-        EXECUTOR.execute(() -> {
-            File target = getDatabaseFile();
-            File parent = target.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                postError(callback, "RockMap could not create the geology data directory.");
-                return;
-            }
-            File temp = new File(target.getAbsolutePath() + ".download");
-            if (temp.exists() && !temp.delete()) {
-                postError(callback, "RockMap could not replace an incomplete geology download.");
-                return;
-            }
-
-            SQLiteDatabase db = null;
-            try {
-                int expected = fetchColoradoCount();
-                if (expected < MIN_EXPECTED_COLORADO_RECORDS || expected > MAX_EXPECTED_COLORADO_RECORDS) {
-                    throw new IOException("USGS returned an unexpected Colorado geology count (" + expected
-                            + "). RockMap rejected the snapshot rather than trusting a changed/partial source.");
-                }
-
-                db = SQLiteDatabase.openOrCreateDatabase(temp, null);
-                createSchema(db);
-                int inserted = 0;
-                int offset = 0;
-                while (offset < expected) {
-                    JSONObject page = fetchPage(offset, PAGE_SIZE);
-                    JSONArray features = page.optJSONArray("features");
-                    if (features == null) throw new IOException("USGS response did not contain GeoJSON features.");
-                    if (features.length() == 0 && offset < expected) {
-                        throw new IOException("USGS pagination ended early at " + inserted + " of " + expected + " records.");
-                    }
-
-                    db.beginTransaction();
-                    try {
-                        for (int i = 0; i < features.length(); i++) {
-                            JSONObject feature = features.optJSONObject(i);
-                            if (feature == null) continue;
-                            insertFeature(db, feature);
-                            inserted++;
-                        }
-                        db.setTransactionSuccessful();
-                    } finally {
-                        db.endTransaction();
-                    }
-                    offset += features.length();
-                    int progress = inserted;
-                    main.post(() -> callback.onProgress(progress, expected));
-                    if (features.length() < PAGE_SIZE) break;
-                }
-
-                if (inserted != expected) {
-                    throw new IOException("USGS count changed during download (expected " + expected
-                            + ", received " + inserted + "). RockMap rejected the mixed snapshot.");
-                }
-                putMeta(db, "record_count", Integer.toString(inserted));
-                putMeta(db, "source_title", SOURCE_TITLE);
-                putMeta(db, "source_doi", SOURCE_DOI);
-                putMeta(db, "source_service", SOURCE_SERVICE);
-                putMeta(db, "source_note", SOURCE_NOTE);
-                putMeta(db, "downloaded_at", Long.toString(System.currentTimeMillis()));
-                db.execSQL("PRAGMA user_version=1");
-                db.execSQL("ANALYZE");
-                db.close();
-                db = null;
-
-                File backup = new File(target.getAbsolutePath() + ".bak");
-                if (backup.exists()) backup.delete();
-                if (target.exists() && !target.renameTo(backup)) {
-                    throw new IOException("RockMap could not stage the existing geology database for replacement.");
-                }
-                if (!temp.renameTo(target)) {
-                    if (backup.exists()) backup.renameTo(target);
-                    throw new IOException("RockMap could not activate the completed geology snapshot.");
-                }
-                if (backup.exists()) backup.delete();
-                long bytes = target.length();
-                int finalInserted = inserted;
-                main.post(() -> callback.onComplete(finalInserted, bytes));
-            } catch (Exception ex) {
-                if (db != null && db.isOpen()) db.close();
-                temp.delete();
-                postError(callback, ex.getMessage() == null ? "Colorado geology download failed safely." : ex.getMessage());
-            }
-        });
-    }
-
     public List<GeologyUnit> search(Filter filter, Bounds bounds, int limit) {
         ensureReady();
         Filter actual = filter == null ? new Filter("", "", "") : filter;
-        int safeLimit = limit <= 0 ? 500 : Math.min(limit, 2000);
+        int safeLimit = limit <= 0 ? 0 : Math.min(limit, 100000);
         ArrayList<String> clauses = new ArrayList<>();
         ArrayList<String> args = new ArrayList<>();
         if (!actual.text.isEmpty()) {
@@ -268,15 +160,15 @@ public final class GeologyRepository {
         ArrayList<String> args = new ArrayList<>();
         appendBounds(clauses, args, bounds);
         return query(join(clauses, " AND "), args.toArray(new String[0]), "object_id ASC",
-                limit <= 0 ? 1000 : Math.min(limit, 3000));
+                limit <= 0 ? 0 : Math.min(limit, 100000));
     }
 
     public List<GeologyUnit> queryPolygon(List<Point> polygon, int limit) {
         if (polygon == null || polygon.size() < 3) throw new IllegalArgumentException("Area query needs at least 3 vertices.");
         Bounds bounds = boundsOfPoints(polygon);
-        List<GeologyUnit> candidates = queryBounds(bounds, 3000);
+        List<GeologyUnit> candidates = queryBounds(bounds, 0);
         ArrayList<GeologyUnit> out = new ArrayList<>();
-        int max = limit <= 0 ? 1000 : Math.min(limit, 3000);
+        int max = limit <= 0 ? Integer.MAX_VALUE : Math.min(limit, 100000);
         for (GeologyUnit unit : candidates) {
             if (geometryIntersectsPolygon(unit.geometryJson, polygon)) {
                 out.add(unit);
@@ -296,9 +188,9 @@ public final class GeologyRepository {
         double lonDelta = Math.max(0.00001d, radiusMeters / (111320d * lonScale));
         Bounds bounds = new Bounds(point.lat - latDelta, point.lon - lonDelta,
                 point.lat + latDelta, point.lon + lonDelta);
-        List<GeologyUnit> candidates = queryBounds(bounds, 3000);
+        List<GeologyUnit> candidates = queryBounds(bounds, 0);
         ArrayList<GeologyUnit> out = new ArrayList<>();
-        int max = limit <= 0 ? 1000 : Math.min(limit, 3000);
+        int max = limit <= 0 ? Integer.MAX_VALUE : Math.min(limit, 100000);
         for (GeologyUnit unit : candidates) {
             if (geometryWithinRadius(unit.geometryJson, point, radiusMeters)) {
                 out.add(unit);
@@ -338,6 +230,7 @@ public final class GeologyRepository {
             root.put("rockmapResearchSchema", 1);
             root.put("source", SOURCE_TITLE);
             root.put("sourceDOI", SOURCE_DOI);
+            root.put("sourceScale", SOURCE_SCALE);
             root.put("sourceNote", SOURCE_NOTE);
             JSONArray features = new JSONArray();
             if (units != null) {
@@ -384,141 +277,16 @@ public final class GeologyRepository {
         p.put("rgba", unit.rgba);
         p.put("rockmap_source", SOURCE_TITLE);
         p.put("rockmap_source_doi", SOURCE_DOI);
+        p.put("rockmap_source_scale", SOURCE_SCALE);
         feature.put("properties", p);
         return feature;
-    }
-
-    private int fetchColoradoCount() throws IOException, JSONException {
-        String url = SOURCE_SERVICE + "?where=" + enc("STATE='CO'")
-                + "&returnCountOnly=true&f=json";
-        JSONObject json = fetchJson(url);
-        int count = json.optInt("count", -1);
-        if (count < 0) throw new IOException("USGS did not return a Colorado geology record count.");
-        return count;
-    }
-
-    private JSONObject fetchPage(int offset, int count) throws IOException, JSONException {
-        String fields = "OBJECTID,STATE,ORIG_LABEL,SGMC_LABEL,UNIT_LINK,UNIT_NAME,AGE_MIN,AGE_MAX,"
-                + "MAJOR1,MAJOR2,MAJOR3,MINOR1,MINOR2,MINOR3,MINOR4,MINOR5,INCIDENTAL,INDETERMINATE,"
-                + "REF_ID,REFERENCE,GENERALIZED_LITH,DIGITAL_URL,NGMDB1,NGMDB2,NGMDB3,rgba";
-        String url = SOURCE_SERVICE + "?where=" + enc("STATE='CO'")
-                + "&outFields=" + enc(fields)
-                + "&returnGeometry=true&outSR=4326&orderByFields=OBJECTID"
-                + "&resultOffset=" + offset + "&resultRecordCount=" + count + "&f=geojson";
-        return fetchJson(url);
-    }
-
-    private JSONObject fetchJson(String urlText) throws IOException, JSONException {
-        HttpURLConnection connection = (HttpURLConnection) new URL(urlText).openConnection();
-        connection.setConnectTimeout(20000);
-        connection.setReadTimeout(60000);
-        connection.setRequestProperty("Accept", "application/json, application/geo+json");
-        connection.setRequestProperty("User-Agent", "RockMap-Android");
-        int code = connection.getResponseCode();
-        if (code < 200 || code >= 300) {
-            connection.disconnect();
-            throw new IOException("USGS geology service returned HTTP " + code + ".");
-        }
-        try (InputStream input = new BufferedInputStream(connection.getInputStream())) {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[32768];
-            int n;
-            int total = 0;
-            while ((n = input.read(buffer)) != -1) {
-                total += n;
-                if (total > 80 * 1024 * 1024) {
-                    throw new IOException("A USGS geology page exceeded RockMap's safety size limit.");
-                }
-                out.write(buffer, 0, n);
-            }
-            JSONObject json = new JSONObject(out.toString(StandardCharsets.UTF_8.name()));
-            JSONObject error = json.optJSONObject("error");
-            if (error != null) throw new IOException("USGS geology service error: " + error.optString("message", "unknown error"));
-            return json;
-        } finally {
-            connection.disconnect();
-        }
-    }
-
-    private void insertFeature(SQLiteDatabase db, JSONObject feature) throws JSONException, IOException {
-        JSONObject p = feature.optJSONObject("properties");
-        JSONObject geometry = feature.optJSONObject("geometry");
-        if (p == null || geometry == null) throw new IOException("USGS geology feature is missing properties or geometry.");
-        String state = p.optString("STATE", "").trim();
-        if (!"CO".equalsIgnoreCase(state)) throw new IOException("USGS Colorado query returned a non-Colorado geology feature.");
-        long objectId = p.optLong("OBJECTID", -1L);
-        if (objectId <= 0L) throw new IOException("USGS geology feature is missing OBJECTID.");
-        Bounds bbox = geometryBounds(geometry);
-
-        ContentValues v = new ContentValues();
-        v.put("object_id", objectId);
-        v.put("state", state);
-        put(v, "orig_label", p, "ORIG_LABEL");
-        put(v, "sgmc_label", p, "SGMC_LABEL");
-        put(v, "unit_link", p, "UNIT_LINK");
-        put(v, "unit_name", p, "UNIT_NAME");
-        put(v, "age_min", p, "AGE_MIN");
-        put(v, "age_max", p, "AGE_MAX");
-        put(v, "generalized_lith", p, "GENERALIZED_LITH");
-        put(v, "major1", p, "MAJOR1");
-        put(v, "major2", p, "MAJOR2");
-        put(v, "major3", p, "MAJOR3");
-        put(v, "minor1", p, "MINOR1");
-        put(v, "minor2", p, "MINOR2");
-        put(v, "minor3", p, "MINOR3");
-        put(v, "minor4", p, "MINOR4");
-        put(v, "minor5", p, "MINOR5");
-        put(v, "incidental", p, "INCIDENTAL");
-        put(v, "indeterminate", p, "INDETERMINATE");
-        put(v, "ref_id", p, "REF_ID");
-        put(v, "reference_text", p, "REFERENCE");
-        put(v, "digital_url", p, "DIGITAL_URL");
-        put(v, "ngmdb1", p, "NGMDB1");
-        put(v, "ngmdb2", p, "NGMDB2");
-        put(v, "ngmdb3", p, "NGMDB3");
-        put(v, "rgba", p, "rgba");
-        v.put("south", bbox.south);
-        v.put("west", bbox.west);
-        v.put("north", bbox.north);
-        v.put("east", bbox.east);
-        v.put("geometry_json", geometry.toString());
-
-        String search = combine(
-                p.optString("UNIT_NAME"), p.optString("ORIG_LABEL"), p.optString("SGMC_LABEL"),
-                p.optString("GENERALIZED_LITH"), p.optString("MAJOR1"), p.optString("MAJOR2"), p.optString("MAJOR3"),
-                p.optString("MINOR1"), p.optString("MINOR2"), p.optString("MINOR3"), p.optString("MINOR4"), p.optString("MINOR5"),
-                p.optString("INCIDENTAL"), p.optString("INDETERMINATE"), p.optString("AGE_MIN"), p.optString("AGE_MAX"));
-        String lith = combine(p.optString("GENERALIZED_LITH"), p.optString("MAJOR1"), p.optString("MAJOR2"), p.optString("MAJOR3"),
-                p.optString("MINOR1"), p.optString("MINOR2"), p.optString("MINOR3"), p.optString("MINOR4"), p.optString("MINOR5"),
-                p.optString("INCIDENTAL"), p.optString("INDETERMINATE"));
-        String age = combine(p.optString("AGE_MIN"), p.optString("AGE_MAX"));
-        v.put("search_text", search);
-        v.put("lithology_text", lith);
-        v.put("age_text", age);
-        db.insertOrThrow("units", null, v);
-    }
-
-    private static void createSchema(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE units (object_id INTEGER PRIMARY KEY, state TEXT NOT NULL, "
-                + "orig_label TEXT NOT NULL, sgmc_label TEXT NOT NULL, unit_link TEXT NOT NULL, unit_name TEXT NOT NULL, "
-                + "age_min TEXT NOT NULL, age_max TEXT NOT NULL, generalized_lith TEXT NOT NULL, "
-                + "major1 TEXT NOT NULL, major2 TEXT NOT NULL, major3 TEXT NOT NULL, "
-                + "minor1 TEXT NOT NULL, minor2 TEXT NOT NULL, minor3 TEXT NOT NULL, minor4 TEXT NOT NULL, minor5 TEXT NOT NULL, "
-                + "incidental TEXT NOT NULL, indeterminate TEXT NOT NULL, ref_id TEXT NOT NULL, reference_text TEXT NOT NULL, "
-                + "digital_url TEXT NOT NULL, ngmdb1 TEXT NOT NULL, ngmdb2 TEXT NOT NULL, ngmdb3 TEXT NOT NULL, rgba TEXT NOT NULL, "
-                + "south REAL NOT NULL, west REAL NOT NULL, north REAL NOT NULL, east REAL NOT NULL, geometry_json TEXT NOT NULL, "
-                + "search_text TEXT NOT NULL, lithology_text TEXT NOT NULL, age_text TEXT NOT NULL)");
-        db.execSQL("CREATE INDEX units_bounds_lat ON units(south,north)");
-        db.execSQL("CREATE INDEX units_bounds_lon ON units(west,east)");
-        db.execSQL("CREATE INDEX units_lith ON units(generalized_lith)");
-        db.execSQL("CREATE INDEX units_age ON units(age_min,age_max)");
-        db.execSQL("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     }
 
     private List<GeologyUnit> query(String where, String[] args, String order, int limit) {
         ArrayList<GeologyUnit> out = new ArrayList<>();
         try (SQLiteDatabase db = openRead();
-             Cursor c = db.query("units", UNIT_COLUMNS, where, args, null, null, order, Integer.toString(limit))) {
+             Cursor c = db.query("units", UNIT_COLUMNS, where, args, null, null, order,
+                     limit <= 0 ? null : Integer.toString(limit))) {
             while (c.moveToNext()) out.add(fromCursor(c));
         }
         return out;
@@ -554,42 +322,6 @@ public final class GeologyRepository {
         args.add(Double.toString(bounds.south));
         args.add(Double.toString(bounds.east));
         args.add(Double.toString(bounds.west));
-    }
-
-    private static Bounds geometryBounds(JSONObject geometry) throws JSONException, IOException {
-        JSONArray coordinates = geometry.optJSONArray("coordinates");
-        if (coordinates == null) throw new IOException("Geology geometry has no coordinates.");
-        double[] box = new double[]{90d, 180d, -90d, -180d};
-        collectBounds(coordinates, box);
-        if (box[2] < box[0] || box[3] < box[1]) throw new IOException("Geology geometry bounds are invalid.");
-        return new Bounds(box[0], box[1], box[2], box[3]);
-    }
-
-    private static void collectBounds(JSONArray array, double[] box) throws JSONException {
-        if (array.length() >= 2 && array.opt(0) instanceof Number && array.opt(1) instanceof Number) {
-            double lon = array.getDouble(0);
-            double lat = array.getDouble(1);
-            box[0] = Math.min(box[0], lat);
-            box[1] = Math.min(box[1], lon);
-            box[2] = Math.max(box[2], lat);
-            box[3] = Math.max(box[3], lon);
-            return;
-        }
-        for (int i = 0; i < array.length(); i++) {
-            JSONArray child = array.optJSONArray(i);
-            if (child != null) collectBounds(child, box);
-        }
-    }
-
-    private static Bounds boundsOfPoints(List<Point> points) {
-        double south = 90d, west = 180d, north = -90d, east = -180d;
-        for (Point point : points) {
-            south = Math.min(south, point.lat);
-            north = Math.max(north, point.lat);
-            west = Math.min(west, point.lon);
-            east = Math.max(east, point.lon);
-        }
-        return new Bounds(south, west, north, east);
     }
 
     private static boolean geometryIntersectsPolygon(String geometryJson, List<Point> polygon) {
@@ -740,21 +472,6 @@ public final class GeologyRepository {
         out.add(value);
     }
 
-    private static void put(ContentValues v, String column, JSONObject p, String key) {
-        v.put(column, p.optString(key, "").trim());
-    }
-
-    private static void putMeta(SQLiteDatabase db, String key, String value) {
-        ContentValues v = new ContentValues();
-        v.put("key", key);
-        v.put("value", value == null ? "" : value);
-        db.insertWithOnConflict("metadata", null, v, SQLiteDatabase.CONFLICT_REPLACE);
-    }
-
-    private static String enc(String value) throws IOException {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8.name());
-    }
-
     private static String normalize(String value) {
         return value == null ? "" : value.trim().toLowerCase(Locale.US);
     }
@@ -778,7 +495,4 @@ public final class GeologyRepository {
         return out.toString();
     }
 
-    private void postError(ProgressCallback callback, String message) {
-        main.post(() -> callback.onError(message == null ? "Colorado geology download failed safely." : message));
-    }
 }

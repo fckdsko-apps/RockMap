@@ -92,6 +92,105 @@ public final class GeologyUnit {
         return "Lithology not reported";
     }
 
+    /** Compact user-facing age. Raw SGMC age strings remain available for details/export. */
+    public String compactAgeLabel() {
+        String min = mostSpecificAge(ageMin);
+        String max = mostSpecificAge(ageMax);
+        if (min.isEmpty()) return max;
+        if (max.isEmpty() || min.equalsIgnoreCase(max)) return min;
+        return min + " – " + max;
+    }
+
+    /** Prefer a human-readable rock type over a broad SGMC classification path. */
+    public String compactLithologyLabel() {
+        String fromName = rockTypeFromName(displayName());
+        if (!fromName.isEmpty()) return fromName;
+
+        String[] candidates = new String[]{major1, major2, major3, minor1, minor2, minor3, minor4, minor5};
+        String best = "";
+        int bestScore = Integer.MIN_VALUE;
+        for (String candidate : candidates) {
+            int score = lithologySpecificity(candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                best = safe(candidate);
+            }
+        }
+        if (!best.isEmpty() && bestScore > -20) return titleCase(best);
+        if (!generalizedLithology.isEmpty()) return titleCase(generalizedLithology);
+        return "Lithology not reported";
+    }
+
+    private static String rockTypeFromName(String rawName) {
+        String lower = safe(rawName).toLowerCase(java.util.Locale.US);
+        String[] rocks = new String[]{
+                "quartzite", "limestone", "dolomite", "sandstone", "siltstone", "mudstone",
+                "conglomerate", "granite", "granodiorite", "diorite", "monzonite", "gabbro",
+                "pegmatite", "rhyolite", "dacite", "andesite", "basalt", "tuff", "gneiss",
+                "schist", "marble", "phyllite", "slate", "amphibolite", "arkose"
+        };
+        for (String rock : rocks) {
+            if (lower.matches(".*\\b" + java.util.regex.Pattern.quote(rock) + "\\b.*")) {
+                return titleCase(rock);
+            }
+        }
+        return "";
+    }
+
+    private static int lithologySpecificity(String raw) {
+        String value = safe(raw);
+        if (value.isEmpty()) return Integer.MIN_VALUE;
+        String lower = value.toLowerCase(java.util.Locale.US);
+        int score = 0;
+        if (lower.contains("undifferentiated") || lower.contains("unknown")) score -= 30;
+        if (lower.contains(",") || lower.contains(" and ")) score -= 8;
+        if (value.length() <= 32) score += 4;
+        String[] specific = new String[]{
+                "quartzite", "limestone", "dolomite", "sandstone", "siltstone", "mudstone",
+                "conglomerate", "granite", "granodiorite", "diorite", "monzonite", "gabbro",
+                "pegmatite", "rhyolite", "dacite", "andesite", "basalt", "tuff", "gneiss",
+                "schist", "marble", "phyllite", "slate", "amphibolite", "arkose"
+        };
+        for (String rock : specific) if (lower.contains(rock)) score += 20;
+        return score;
+    }
+
+    /** Stable grouping identity for user-facing results; individual polygons remain separate in export. */
+    public String resultGroupKey() {
+        if (!unitLink.isEmpty()) return "link:" + unitLink.toLowerCase(java.util.Locale.US);
+        return (displayName() + "|" + compactAgeLabel() + "|" + compactLithologyLabel())
+                .toLowerCase(java.util.Locale.US);
+    }
+
+    private static String mostSpecificAge(String raw) {
+        String value = safe(raw);
+        if (value.isEmpty()) return "";
+        String[] parts = value.split("\\s+-\\s+");
+        for (int i = parts.length - 1; i >= 0; i--) {
+            String part = parts[i].trim();
+            if (!part.isEmpty()) return part;
+        }
+        return value;
+    }
+
+    private static String titleCase(String raw) {
+        String value = safe(raw);
+        if (value.isEmpty()) return value;
+        StringBuilder out = new StringBuilder(value.length());
+        boolean upper = true;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (upper && Character.isLetter(c)) {
+                out.append(Character.toUpperCase(c));
+                upper = false;
+            } else {
+                out.append(c);
+            }
+            if (c == ' ' || c == '/' || c == '-') upper = true;
+        }
+        return out.toString();
+    }
+
     private static String safe(String value) {
         return value == null ? "" : value.trim();
     }
