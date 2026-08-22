@@ -36,8 +36,12 @@ public final class ResearchResultStore {
         if (geoJson.getBytes(StandardCharsets.UTF_8).length > MAX_RESULT_BYTES) {
             throw new IOException("Research result exceeds the 64 MB local result limit. Narrow the map area or search filters.");
         }
-        File result = new File(context.getFilesDir(), RESULT_FILE);
-        File meta = new File(context.getFilesDir(), META_FILE);
+        File directory = directory(context);
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw new IOException("RockMap could not create the local Research directory.");
+        }
+        File result = new File(directory, RESULT_FILE);
+        File meta = new File(directory, META_FILE);
         write(result, geoJson);
         try {
             JSONObject m = new JSONObject();
@@ -51,13 +55,13 @@ public final class ResearchResultStore {
     }
 
     public static boolean exists(Context context) {
-        File file = new File(context.getFilesDir(), RESULT_FILE);
+        File file = new File(directory(context), RESULT_FILE);
         return file.isFile() && file.length() > 20L;
     }
 
     public static Summary summary(Context context) {
         if (!exists(context)) return new Summary("No research result", 0, 0L);
-        File meta = new File(context.getFilesDir(), META_FILE);
+        File meta = new File(directory(context), META_FILE);
         try {
             JSONObject m = new JSONObject(read(meta));
             return new Summary(m.optString("title", "Research result"),
@@ -68,7 +72,7 @@ public final class ResearchResultStore {
     }
 
     public static String geoJson(Context context) throws IOException {
-        File file = new File(context.getFilesDir(), RESULT_FILE);
+        File file = new File(directory(context), RESULT_FILE);
         if (!file.isFile()) throw new IOException("No saved research result is available.");
         return read(file);
     }
@@ -108,8 +112,12 @@ public final class ResearchResultStore {
     }
 
     public static void clear(Context context) {
-        new File(context.getFilesDir(), RESULT_FILE).delete();
-        new File(context.getFilesDir(), META_FILE).delete();
+        new File(directory(context), RESULT_FILE).delete();
+        new File(directory(context), META_FILE).delete();
+    }
+
+    private static File directory(Context context) {
+        return new File(context.getFilesDir(), "research");
     }
 
     private static void appendCsv(StringBuilder out, String value) {

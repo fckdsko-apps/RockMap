@@ -105,7 +105,10 @@ public final class GeologyRepository {
     }
 
     public File getDatabaseFile() {
-        return context.getDatabasePath(DB_NAME);
+        // Keep replaceable geology outside Android's database backup domain. User-created
+        // RockMap databases remain backup-eligible; the whole files/research directory is
+        // explicitly excluded by the existing file-domain backup rules.
+        return new File(new File(context.getFilesDir(), "research"), DB_NAME);
     }
 
     public boolean isReady() {

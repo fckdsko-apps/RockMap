@@ -181,7 +181,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         addControl(controls, "GPS", v -> locate());
         addControl(controls, "Save GPS", v -> saveLocation());
         addControl(controls, "Find", v -> showFindSearch());
-        addControl(controls, "Research", v -> showResearch());
+        addControl(controls, "Minerals", v -> showResearch());
         addControl(controls, "Layers", v -> showLayers());
         addControl(controls, "Markers", v -> showSaved());
         addControl(controls, "Trips", v -> showTrips());

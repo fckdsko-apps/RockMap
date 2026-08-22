@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Downloadable map/geology data can be fetched again. User waypoints/trips remain backup-eligible. -->
+    <!-- Downloadable map/research data can be fetched again. User databases remain backup-eligible. -->
     <exclude domain="file" path="maps/" />
-    <exclude domain="database" path="rockmap-geology.db" />
-    <exclude domain="database" path="rockmap-geology.db.download" />
-    <exclude domain="database" path="rockmap-geology.db.bak" />
-    <!-- The last Research result is reproducible/exportable and can be regenerated from local geology. -->
-    <exclude domain="file" path="rockmap-research-last.geojson" />
-    <exclude domain="file" path="rockmap-research-last-meta.json" />
+    <exclude domain="file" path="research/" />
     <!-- Safety acknowledgment tokens are deliberately device/install-local and never backed up. -->
     <exclude domain="sharedpref" path="rockmap_safety.xml" />
 </full-backup-content>
