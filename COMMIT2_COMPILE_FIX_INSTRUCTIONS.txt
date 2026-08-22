@@ -1,0 +1,21 @@
+RockMap Commit 2 UX cleanup — compile repair
+
+CAUSE
+The previous UX-cleanup patch removed the private boundsOfPoints(List<Point>) helper while queryPolygon(...) still called it. GitHub Actions therefore stopped at :app:compileDebugJavaWithJavac before lint/sign/package.
+
+UPLOAD
+1. Extract this ZIP.
+2. Upload the contents to the RockMap repository root, preserving the app/ path.
+3. This patch replaces exactly one source file:
+   app/src/main/java/com/rockmap/app/research/GeologyRepository.java
+4. Do not change or upload anything under .github.
+5. Commit directly to main.
+
+EXACT COMMIT NAME
+Fix Commit 2 geology polygon compile error
+
+WHAT CHANGED
+Restores only boundsOfPoints(List<Point>) using the same implementation that existed in the working pre-UX Commit 2 repository. No GPS, Field recording, permissions, signing, workflow, data, UI, or export behavior is changed by this repair.
+
+EXPECTED
+The existing Build RockMap APK workflow should pass the Java compiler point that failed in logs_88248683897.zip. If another failure occurs, send the new Actions log ZIP rather than changing workflows.

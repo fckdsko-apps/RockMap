@@ -324,6 +324,17 @@ public final class GeologyRepository {
         args.add(Double.toString(bounds.west));
     }
 
+    private static Bounds boundsOfPoints(List<Point> points) {
+        double south = 90d, west = 180d, north = -90d, east = -180d;
+        for (Point point : points) {
+            south = Math.min(south, point.lat);
+            north = Math.max(north, point.lat);
+            west = Math.min(west, point.lon);
+            east = Math.max(east, point.lon);
+        }
+        return new Bounds(south, west, north, east);
+    }
+
     private static boolean geometryIntersectsPolygon(String geometryJson, List<Point> polygon) {
         try {
             JSONObject geometry = new JSONObject(geometryJson);
