@@ -172,9 +172,7 @@ public final class FieldMapPolishController {
             screenLabels.setVisibility(View.GONE);
         } else {
             screenLabels.setVisibility(View.VISIBLE);
-            screenLabels.bringToFront();
         }
-        bringMapUiToFront();
     }
 
     private void renderMeasurementLabels() {
@@ -356,20 +354,6 @@ public final class FieldMapPolishController {
         setVisible(style, TRACK_ENDPOINT_LAYER, visible);
     }
 
-    private void bringMapUiToFront() {
-        if (root == null) return;
-        View hud = root.findViewWithTag(FieldMapController.HUD_TAG);
-        if (hud != null && hud.getVisibility() == View.VISIBLE) hud.bringToFront();
-        View tabs = root.findViewWithTag(FieldMapController.COLLAPSED_TABS_TAG);
-        if (tabs != null && tabs.getVisibility() == View.VISIBLE) tabs.bringToFront();
-        View field = root.findViewWithTag(FieldMapController.FIELD_BUTTON_TAG);
-        if (field != null) field.bringToFront();
-        ViewGroup bottomControls = findBottomControls(root);
-        if (bottomControls != null) bottomControls.bringToFront();
-        if (tabs != null && tabs.getVisibility() == View.VISIBLE) tabs.bringToFront();
-        if (field != null) field.bringToFront();
-    }
-
     private void installScreenLabels() {
         if (root == null) return;
         View existing = root.findViewWithTag(SCREEN_LABELS_TAG);
@@ -384,7 +368,11 @@ public final class FieldMapPolishController {
         screenLabels.setVisibility(View.GONE);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        root.addView(screenLabels, params);
+        // Keep geographic labels immediately above the map but below all interactive controls.
+        // This prevents the polish refresh loop from competing with FieldMapController for z-order.
+        int mapIndex = root.indexOfChild(mapView);
+        int insertIndex = mapIndex >= 0 ? Math.min(mapIndex + 1, root.getChildCount()) : 0;
+        root.addView(screenLabels, insertIndex, params);
     }
 
     private void setVisible(Style style, String id, boolean visible) {

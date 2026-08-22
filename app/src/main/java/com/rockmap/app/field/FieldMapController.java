@@ -132,6 +132,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private Location latestNavigationLocation;
     private boolean navigationUpdatesStarted;
     private boolean cameraMoveListenerInstalled;
+    private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
     private long lastWaypointRefresh;
     private String trackJson = emptyCollection();
@@ -165,6 +166,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         root = findMapRoot(mapView);
         if (root == null) return;
         controls = findBottomControls(root);
+        clarifyMainGpsControl();
 
         fieldButton = (Button) root.findViewWithTag(FIELD_BUTTON_TAG);
         if (fieldButton == null) {
@@ -178,15 +180,19 @@ public final class FieldMapController implements LocationRepository.Listener {
             fieldButton.setMinHeight(dp(48));
             fieldButton.setMinimumHeight(dp(48));
             fieldButton.setContentDescription("Open map-based field tools");
+            // Do not flash the button at a guessed position before the bottom tray is measured.
+            fieldButton.setVisibility(View.INVISIBLE);
             FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                     dp(92), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
             params.setMargins(0, 0, dp(10), dp(112));
             root.addView(fieldButton, params);
         }
         fieldButton.setOnClickListener(v -> showFieldMenu());
-        positionFieldButton();
         installHud();
         installCollapsedTabs();
+        installFieldButtonLayoutTracking();
+        positionFieldButton();
+        bringFieldUiToFront();
 
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
@@ -229,23 +235,99 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     public void destroy() {
         onPause();
+        if (fieldLayoutListener != null) {
+            if (root != null) root.removeOnLayoutChangeListener(fieldLayoutListener);
+            if (controls != null) controls.removeOnLayoutChangeListener(fieldLayoutListener);
+            fieldLayoutListener = null;
+        }
         worker.shutdownNow();
         waypointRepository.close();
     }
 
+    /**
+     * Keep the Field entry anchored above MainActivity's real bottom tray. The tray height changes
+     * after window insets/layout settle, so a one-time guessed margin can briefly overlap a button
+     * or leave Field underneath the tray. Reposition whenever either container changes size.
+     */
+    private void installFieldButtonLayoutTracking() {
+        if (fieldLayoutListener != null || root == null) return;
+        fieldLayoutListener = (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            positionFieldButtonNow();
+            updateMapUiInsets();
+        };
+        root.addOnLayoutChangeListener(fieldLayoutListener);
+        if (controls != null) controls.addOnLayoutChangeListener(fieldLayoutListener);
+    }
+
     private void positionFieldButton() {
         if (fieldButton == null) return;
-        Runnable place = () -> {
-            ViewGroup.LayoutParams raw = fieldButton.getLayoutParams();
-            if (!(raw instanceof FrameLayout.LayoutParams)) return;
-            FrameLayout.LayoutParams positioned = (FrameLayout.LayoutParams) raw;
-            int controlsHeight = controls == null ? dp(104) : controls.getHeight();
-            if (controlsHeight <= 0) controlsHeight = dp(104);
-            positioned.bottomMargin = controlsHeight + dp(8);
-            positioned.rightMargin = dp(10);
+        if (controls != null) controls.post(this::positionFieldButtonNow);
+        else fieldButton.post(this::positionFieldButtonNow);
+    }
+
+    private void positionFieldButtonNow() {
+        if (fieldButton == null) return;
+        ViewGroup.LayoutParams raw = fieldButton.getLayoutParams();
+        if (!(raw instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams positioned = (FrameLayout.LayoutParams) raw;
+
+        if (controls != null && (root == null || root.getHeight() <= 0
+                || controls.getHeight() <= 0 || controls.getTop() <= 0)) {
+            // The real tray geometry is not ready yet. Keep Field hidden for this frame rather than
+            // showing it on top of another map button; the layout listener will place it next.
+            fieldButton.setVisibility(View.INVISIBLE);
+            return;
+        }
+
+        int bottomMargin = dp(112);
+        if (root != null && controls != null) {
+            bottomMargin = Math.max(dp(8), root.getHeight() - controls.getTop() + dp(8));
+        }
+        int rightMargin = dp(10);
+        if (positioned.bottomMargin != bottomMargin || positioned.rightMargin != rightMargin) {
+            positioned.bottomMargin = bottomMargin;
+            positioned.rightMargin = rightMargin;
             fieldButton.setLayoutParams(positioned);
-        };
-        if (controls != null) controls.post(place); else fieldButton.post(place);
+        }
+        fieldButton.setVisibility(View.VISIBLE);
+        bringFieldUiToFront();
+    }
+
+    /** FieldMapController is the single z-order owner for Field controls. */
+    private void bringFieldUiToFront() {
+        if (controls != null) controls.bringToFront();
+        if (hud != null && hud.getVisibility() == View.VISIBLE) hud.bringToFront();
+        if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
+        if (fieldButton != null) fieldButton.bringToFront();
+    }
+
+    /**
+     * Clarify the existing MainActivity GPS action without replacing its listener or precise-fix
+     * implementation. This is presentation only: the button still calls MainActivity.locate().
+     */
+    private void clarifyMainGpsControl() {
+        Button gps = findButtonByContentDescription(controls, "GPS");
+        if (gps == null) return;
+        gps.setText("Center GPS");
+        gps.setTextSize(10.5f);
+        gps.setContentDescription("Center GPS. Get a fresh precise GPS fix and center the map on your current location.");
+    }
+
+    private Button findButtonByContentDescription(View view, String description) {
+        if (view == null || description == null) return null;
+        CharSequence contentDescription = view.getContentDescription();
+        if (view instanceof Button && contentDescription != null
+                && description.contentEquals(contentDescription)) {
+            return (Button) view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                Button found = findButtonByContentDescription(group.getChildAt(i), description);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private void installHud() {
@@ -266,9 +348,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         params.setMargins(dp(8), statusBarHeight() + dp(8), dp(8), 0);
         root.addView(hud, params);
-        hud.bringToFront();
-        fieldButton.bringToFront();
-        if (controls != null) controls.bringToFront();
+        bringFieldUiToFront();
     }
 
     private void installCollapsedTabs() {
@@ -387,12 +467,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         hud.setVisibility(expanded ? View.VISIBLE : View.GONE);
         if (collapsedTabs != null) {
             collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
-            if (collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
         }
-        if (expanded) hud.bringToFront();
-        if (fieldButton != null) fieldButton.bringToFront();
-        if (controls != null) controls.bringToFront();
-        if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
+        bringFieldUiToFront();
+        positionFieldButton();
         if (hud != null) hud.post(this::updateMapUiInsets);
     }
 
@@ -513,7 +590,9 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (awaitingMapTap) removeTapCapture(); else beginOneShotMapTap();
             renderHud();
         }), weight());
-        first.addView(hudButton("GPS", v -> addGpsMeasurement()), weight());
+        Button addGps = hudButton("Add GPS", v -> addGpsMeasurement());
+        addGps.setContentDescription("Add GPS. Get a fresh precise GPS fix and add your current location as the next measurement point.");
+        first.addView(addGps, weight());
         first.addView(hudButton("Saved", v -> chooseSavedMeasurement()), weight());
         first.addView(hudButton("Field", v -> chooseFieldRecordMeasurement()), weight());
         hud.addView(first);
@@ -1104,9 +1183,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         root.addView(catcher, params);
         tapCapture = catcher;
         awaitingMapTap = true;
-        if (controls != null) controls.bringToFront();
-        if (fieldButton != null) fieldButton.bringToFront();
-        if (hud != null) hud.bringToFront();
+        bringFieldUiToFront();
         renderHud();
         toast("Tap once on the map to add the next measurement point. Dragging cancels the tap so you can pan normally afterward.");
     }
@@ -1471,7 +1548,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         collapsedTabs.addView(tab, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         collapsedTabs.setVisibility(View.VISIBLE);
-        collapsedTabs.bringToFront();
+        bringFieldUiToFront();
     }
 
     private void removeCollapsedTab(String tag) {
