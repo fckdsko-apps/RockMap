@@ -29,6 +29,8 @@ import com.rockmap.app.waypoints.WaypointRepository;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.DateFormat;
@@ -44,13 +46,35 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
+    private static final int REQ_EXPORT = 814;
     private static final int MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
+    private static final String STATE_EXPORT_KIND = "field.export.kind";
+    private static final String STATE_EXPORT_FORMAT = "field.export.format";
+    private static final String STATE_EXPORT_ID = "field.export.id";
+
+    private static final String EXPORT_SAVED = "saved";
+    private static final String EXPORT_TRACK = "track";
+    private static final String EXPORT_TRACKS = "tracks";
+    private static final String EXPORT_RECORDS = "records";
+    private static final String EXPORT_AREA = "area";
+    private static final String EXPORT_AREAS = "areas";
+    private static final String EXPORT_IMPORT = "import";
+    private static final String EXPORT_ALL = "all";
+
+    private static final String FORMAT_GEOJSON = "geojson";
+    private static final String FORMAT_GPX = "gpx";
+    private static final String FORMAT_CSV = "csv";
+    private static final String FORMAT_KML = "kml";
 
     private FieldDatabase db;
     private WaypointRepository waypointRepository;
     private LocationRepository locationRepository;
     private Runnable pendingLocationAction;
     private String pendingPhotoUri = "";
+    private String pendingExportKind = "";
+    private String pendingExportFormat = "";
+    private long pendingExportId = -1L;
     private boolean started;
     private boolean waypointDataChanged;
 
@@ -59,11 +83,17 @@ public final class FieldActivity extends Activity implements LocationRepository.
         db = FieldDatabase.get(this);
         waypointRepository = new WaypointRepository(this);
         locationRepository = new LocationRepository(this, this);
+        if (state != null) {
+            pendingExportKind = state.getString(STATE_EXPORT_KIND, "");
+            pendingExportFormat = state.getString(STATE_EXPORT_FORMAT, "");
+            pendingExportId = state.getLong(STATE_EXPORT_ID, -1L);
+        }
 
         String screen = getIntent() == null ? "" : getIntent().getStringExtra(EXTRA_SCREEN);
         if ("tracks".equals(screen)) showTracks();
         else if ("records".equals(screen)) showFieldRecords();
         else if ("imports".equals(screen)) showImports();
+        else if ("export".equals(screen)) showExportHub();
         else if ("coordinates".equals(screen)) showCoordinates();
         else if ("measure".equals(screen)) {
             FieldMapState.requestMeasurement(this);
@@ -98,6 +128,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action(FieldUiNames.IMPORTED_DATA,
                 "Review imported batches, show a batch on the map, or delete only the data created by that import.",
                 v -> showImports()));
+        root.addView(action(FieldUiNames.EXPORT,
+                "Export saved locations, tracks, Field Records, prospecting areas, managed import batches, or a combined GIS file.",
+                v -> showExportHub()));
         root.addView(action(FieldUiNames.COORDINATES,
                 "Convert one location between decimal degrees, DDM, DMS, WGS84 UTM and MGRS.",
                 v -> showCoordinates()));
@@ -901,6 +934,373 @@ public final class FieldActivity extends Activity implements LocationRepository.
         setContentView(scroll(root));
     }
 
+
+    // ---------- EXPORT ----------
+
+    private void showExportHub() {
+        waypointRepository.getAll(waypoints -> {
+            List<FieldDatabase.Track> tracks = db.listTracks(0);
+            List<FieldDatabase.FieldRecord> records = db.listFieldRecords();
+            List<FieldDatabase.Area> areas = db.listAreas();
+            List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
+
+            LinearLayout root = page();
+            root.addView(title(FieldUiNames.EXPORT));
+            root.addView(help("Exports are created locally through Android's Save file picker. Exporting never removes or uploads RockMap data. Temporary unsaved measurements are not exported."));
+
+            root.addView(action("Saved locations",
+                    waypoints.size() + " saved location" + (waypoints.size() == 1 ? "" : "s")
+                            + " · GeoJSON backup preserves RockMap marker metadata; GPX is convenient for GPS apps.",
+                    v -> showSavedLocationExportFormats(waypoints.size())));
+
+            root.addView(action("Tracks",
+                    tracks.size() + " track" + (tracks.size() == 1 ? "" : "s")
+                            + " · Export all tracks or choose one track as GPX or GeoJSON.",
+                    v -> showTrackExportPicker()));
+
+            root.addView(action(FieldUiNames.FIELD_RECORDS,
+                    records.size() + " record" + (records.size() == 1 ? "" : "s")
+                            + " · CSV for spreadsheets or GeoJSON for GIS. Photo files are not embedded.",
+                    v -> showFieldRecordExportFormats()));
+
+            root.addView(action("Prospecting areas",
+                    areas.size() + " saved area" + (areas.size() == 1 ? "" : "s")
+                            + " · Export all areas or choose one as GeoJSON or KML.",
+                    v -> showAreaExportPicker()));
+
+            root.addView(action(FieldUiNames.IMPORTED_DATA,
+                    batches.size() + " managed batch" + (batches.size() == 1 ? "" : "es")
+                            + " · Export the remaining contents of one batch as normalized GeoJSON.",
+                    v -> showImportExportPicker()));
+
+            int total = waypoints.size() + tracks.size() + records.size() + areas.size();
+            root.addView(action("All field map data",
+                    total + " saved object" + (total == 1 ? "" : "s")
+                            + " · One mixed GeoJSON file for GIS/sharing. This is not a full RockMap restore backup and does not embed photos or Trips.",
+                    v -> beginFieldExport(EXPORT_ALL, FORMAT_GEOJSON, -1L,
+                            "RockMap-All-Field-Data.geojson", "application/geo+json")));
+
+            root.addView(section("Trips"));
+            root.addView(help("Trip exports remain under Main map → Trips → open a trip → Export, with CSV, RockMap XML, GPX and GeoJSON options."));
+            root.addView(nav("Back to Field", v -> showHub()));
+            setContentView(scroll(root));
+        });
+    }
+
+    private void showSavedLocationExportFormats(int count) {
+        if (count <= 0) {
+            toast("There are no saved locations to export.");
+            return;
+        }
+        String[] rows = {
+                "GeoJSON backup\nPreserves names, notes, timestamps and accuracy; compatible with RockMap's Saved locations backup import.",
+                "GPX\nPortable waypoint file for GPS and mapping apps."
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Export saved locations")
+                .setItems(rows, (d, which) -> {
+                    if (which == 0) {
+                        beginFieldExport(EXPORT_SAVED, FORMAT_GEOJSON, -1L,
+                                "RockMap-Locations.geojson", "application/geo+json");
+                    } else {
+                        beginFieldExport(EXPORT_SAVED, FORMAT_GPX, -1L,
+                                "RockMap-Locations.gpx", "application/gpx+xml");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showTrackExportPicker() {
+        List<FieldDatabase.Track> stored = db.listTracks(0);
+        ArrayList<FieldDatabase.Track> tracks = new ArrayList<>();
+        for (FieldDatabase.Track track : stored) {
+            if (track != null && db.getTrackPoints(track.id).size() >= 2) tracks.add(track);
+        }
+        if (tracks.isEmpty()) {
+            toast("There are no tracks with enough recorded points to export yet.");
+            return;
+        }
+        String[] rows = new String[tracks.size() + 1];
+        rows[0] = "All exportable tracks\nExport every stored track that currently has at least 2 points.";
+        for (int i = 0; i < tracks.size(); i++) {
+            FieldDatabase.Track track = tracks.get(i);
+            rows[i + 1] = track.name + "\n" + trackStatus(track, db.getTrackPoints(track.id));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Export tracks")
+                .setItems(rows, (d, which) -> {
+                    long id = which == 0 ? -1L : tracks.get(which - 1).id;
+                    String name = which == 0 ? "RockMap-Tracks" : "RockMap-Track-" + safeExportFilename(tracks.get(which - 1).name);
+                    showTrackExportFormats(id, name);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showTrackExportFormats(long trackId, String baseName) {
+        String[] rows = {
+                "GPX\nBest for GPS apps and track exchange; includes recorded elevations/times when available.",
+                "GeoJSON\nBest for GIS and mapping software; includes RockMap track metadata."
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(trackId < 0L ? "Export all tracks" : "Export track")
+                .setItems(rows, (d, which) -> {
+                    String kind = trackId < 0L ? EXPORT_TRACKS : EXPORT_TRACK;
+                    if (which == 0) {
+                        beginFieldExport(kind, FORMAT_GPX, trackId, baseName + ".gpx", "application/gpx+xml");
+                    } else {
+                        beginFieldExport(kind, FORMAT_GEOJSON, trackId, baseName + ".geojson", "application/geo+json");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showFieldRecordExportFormats() {
+        if (db.listFieldRecords().isEmpty()) {
+            toast("There are no Field Records to export.");
+            return;
+        }
+        String[] rows = {
+                "CSV\nSpreadsheet-friendly rows with coordinates, sample/category/mineral fields, notes, accuracy, elevation and photo reference.",
+                "GeoJSON\nGIS-ready point features with the same RockMap metadata. Photo files are not embedded."
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Export Field Records")
+                .setItems(rows, (d, which) -> {
+                    if (which == 0) {
+                        beginFieldExport(EXPORT_RECORDS, FORMAT_CSV, -1L,
+                                "RockMap-Field-Records.csv", "text/csv");
+                    } else {
+                        beginFieldExport(EXPORT_RECORDS, FORMAT_GEOJSON, -1L,
+                                "RockMap-Field-Records.geojson", "application/geo+json");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showAreaExportPicker() {
+        List<FieldDatabase.Area> areas = db.listAreas();
+        if (areas.isEmpty()) {
+            toast("There are no prospecting areas to export.");
+            return;
+        }
+        String[] rows = new String[areas.size() + 1];
+        rows[0] = "All prospecting areas\nExport every saved polygon area.";
+        for (int i = 0; i < areas.size(); i++) {
+            FieldDatabase.Area area = areas.get(i);
+            rows[i + 1] = area.name + "\n" + area.points.size() + " vertices · "
+                    + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(area.points));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Export prospecting areas")
+                .setItems(rows, (d, which) -> {
+                    long id = which == 0 ? -1L : areas.get(which - 1).id;
+                    String name = which == 0 ? "RockMap-Prospecting-Areas"
+                            : "RockMap-Area-" + safeExportFilename(areas.get(which - 1).name);
+                    showAreaExportFormats(id, name);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showAreaExportFormats(long areaId, String baseName) {
+        String[] rows = {
+                "GeoJSON\nBest for GIS and for bringing polygon geometry back through RockMap's Field import.",
+                "KML\nConvenient for Google Earth and other KML-compatible mapping tools."
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(areaId < 0L ? "Export all areas" : "Export area")
+                .setItems(rows, (d, which) -> {
+                    String kind = areaId < 0L ? EXPORT_AREAS : EXPORT_AREA;
+                    if (which == 0) {
+                        beginFieldExport(kind, FORMAT_GEOJSON, areaId, baseName + ".geojson", "application/geo+json");
+                    } else {
+                        beginFieldExport(kind, FORMAT_KML, areaId, baseName + ".kml", "application/vnd.google-earth.kml+xml");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showImportExportPicker() {
+        List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
+        if (batches.isEmpty()) {
+            toast("There are no managed import batches to export.");
+            return;
+        }
+        String[] rows = new String[batches.size()];
+        for (int i = 0; i < batches.size(); i++) {
+            FieldDatabase.ImportBatch batch = batches.get(i);
+            rows[i] = batch.sourceName + "\nOriginally " + batch.waypointCount + " waypoints · "
+                    + batch.trackCount + " tracks · " + batch.areaCount + " areas";
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Export imported data")
+                .setMessage("Exports the remaining objects currently associated with the selected managed batch, not the original file bytes.")
+                .setItems(rows, (d, which) -> {
+                    FieldDatabase.ImportBatch batch = batches.get(which);
+                    beginFieldExport(EXPORT_IMPORT, FORMAT_GEOJSON, batch.id,
+                            "RockMap-Import-" + safeExportFilename(batch.sourceName) + ".geojson",
+                            "application/geo+json");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void beginFieldExport(String kind, String format, long id, String filename, String mime) {
+        pendingExportKind = kind;
+        pendingExportFormat = format;
+        pendingExportId = id;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(mime);
+        intent.putExtra(Intent.EXTRA_TITLE, filename);
+        startActivityForResult(intent, REQ_EXPORT);
+    }
+
+    private void performPendingExport(Uri uri) {
+        final String kind = pendingExportKind;
+        final String format = pendingExportFormat;
+        final long id = pendingExportId;
+        if (kind.isEmpty() || format.isEmpty()) {
+            toast("RockMap lost the pending export selection. Choose Export data and try again.");
+            clearPendingExport();
+            return;
+        }
+
+        if (EXPORT_SAVED.equals(kind) || EXPORT_IMPORT.equals(kind) || EXPORT_ALL.equals(kind)) {
+            waypointRepository.getAll(waypoints -> {
+                try {
+                    String content = buildExportContent(kind, format, id, waypoints);
+                    writeExport(uri, content);
+                    toast(exportSuccessMessage(kind));
+                } catch (Exception ex) {
+                    toast("Export failed: " + ex.getMessage());
+                } finally {
+                    clearPendingExport();
+                }
+            });
+            return;
+        }
+
+        try {
+            String content = buildExportContent(kind, format, id, new ArrayList<>());
+            writeExport(uri, content);
+            toast(exportSuccessMessage(kind));
+        } catch (Exception ex) {
+            toast("Export failed: " + ex.getMessage());
+        } finally {
+            clearPendingExport();
+        }
+    }
+
+    private String buildExportContent(String kind, String format, long id,
+                                      List<WaypointEntity> waypoints) throws Exception {
+        if (EXPORT_SAVED.equals(kind)) {
+            return FORMAT_GPX.equals(format)
+                    ? FieldExport.savedLocationsGpx(waypoints)
+                    : FieldExport.savedLocationsGeoJson(waypoints);
+        }
+        if (EXPORT_TRACK.equals(kind)) {
+            FieldDatabase.Track track = db.getTrack(id);
+            if (track == null) throw new IllegalStateException("The selected track no longer exists.");
+            ArrayList<FieldExport.TrackData> one = new ArrayList<>();
+            one.add(new FieldExport.TrackData(track, db.getTrackPoints(track.id)));
+            return FORMAT_GPX.equals(format) ? FieldExport.tracksGpx(one) : FieldExport.tracksGeoJson(one);
+        }
+        if (EXPORT_TRACKS.equals(kind)) {
+            List<FieldExport.TrackData> tracks = exportTrackData(db.listTracks(0));
+            return FORMAT_GPX.equals(format) ? FieldExport.tracksGpx(tracks) : FieldExport.tracksGeoJson(tracks);
+        }
+        if (EXPORT_RECORDS.equals(kind)) {
+            List<FieldDatabase.FieldRecord> records = db.listFieldRecords();
+            return FORMAT_CSV.equals(format) ? FieldExport.fieldRecordsCsv(records) : FieldExport.fieldRecordsGeoJson(records);
+        }
+        if (EXPORT_AREA.equals(kind)) {
+            FieldDatabase.Area area = db.getArea(id);
+            if (area == null) throw new IllegalStateException("The selected prospecting area no longer exists.");
+            ArrayList<FieldDatabase.Area> one = new ArrayList<>();
+            one.add(area);
+            return FORMAT_KML.equals(format) ? FieldExport.areasKml(one) : FieldExport.areasGeoJson(one);
+        }
+        if (EXPORT_AREAS.equals(kind)) {
+            List<FieldDatabase.Area> areas = db.listAreas();
+            return FORMAT_KML.equals(format) ? FieldExport.areasKml(areas) : FieldExport.areasGeoJson(areas);
+        }
+        if (EXPORT_IMPORT.equals(kind)) {
+            FieldDatabase.ImportBatch batch = db.getImportBatch(id);
+            if (batch == null) throw new IllegalStateException("The selected import batch no longer exists.");
+            Set<Long> waypointIds = new HashSet<>(db.getImportItemIds(id, FieldDatabase.IMPORT_WAYPOINT));
+            ArrayList<WaypointEntity> batchWaypoints = new ArrayList<>();
+            for (WaypointEntity waypoint : waypoints) if (waypointIds.contains(waypoint.id)) batchWaypoints.add(waypoint);
+
+            ArrayList<FieldExport.TrackData> batchTracks = new ArrayList<>();
+            for (Long trackId : db.getImportItemIds(id, FieldDatabase.IMPORT_TRACK)) {
+                FieldDatabase.Track track = db.getTrack(trackId);
+                if (track != null) batchTracks.add(new FieldExport.TrackData(track, db.getTrackPoints(track.id)));
+            }
+            ArrayList<FieldDatabase.Area> batchAreas = new ArrayList<>();
+            for (Long areaId : db.getImportItemIds(id, FieldDatabase.IMPORT_AREA)) {
+                FieldDatabase.Area area = db.getArea(areaId);
+                if (area != null) batchAreas.add(area);
+            }
+            return FieldExport.importBatchGeoJson(batch, batchWaypoints, batchTracks, batchAreas);
+        }
+        if (EXPORT_ALL.equals(kind)) {
+            return FieldExport.allFieldGeoJson(
+                    waypoints,
+                    exportTrackData(db.listTracks(0)),
+                    db.listFieldRecords(),
+                    db.listAreas());
+        }
+        throw new IllegalArgumentException("Unknown export selection.");
+    }
+
+    private List<FieldExport.TrackData> exportTrackData(List<FieldDatabase.Track> tracks) {
+        ArrayList<FieldExport.TrackData> out = new ArrayList<>();
+        if (tracks == null) return out;
+        for (FieldDatabase.Track track : tracks) {
+            if (track != null) out.add(new FieldExport.TrackData(track, db.getTrackPoints(track.id)));
+        }
+        return out;
+    }
+
+    private void writeExport(Uri uri, String content) throws IOException {
+        try (OutputStream output = getContentResolver().openOutputStream(uri, "wt")) {
+            if (output == null) throw new IOException("Android could not open the selected export file.");
+            output.write((content == null ? "" : content).getBytes(StandardCharsets.UTF_8));
+            output.flush();
+        }
+    }
+
+    private String exportSuccessMessage(String kind) {
+        if (EXPORT_SAVED.equals(kind)) return "Saved locations exported.";
+        if (EXPORT_TRACK.equals(kind)) return "Track exported.";
+        if (EXPORT_TRACKS.equals(kind)) return "Tracks exported.";
+        if (EXPORT_RECORDS.equals(kind)) return "Field Records exported.";
+        if (EXPORT_AREA.equals(kind)) return "Prospecting area exported.";
+        if (EXPORT_AREAS.equals(kind)) return "Prospecting areas exported.";
+        if (EXPORT_IMPORT.equals(kind)) return "Imported batch exported.";
+        return "Field data exported.";
+    }
+
+    private void clearPendingExport() {
+        pendingExportKind = "";
+        pendingExportFormat = "";
+        pendingExportId = -1L;
+    }
+
+    private String safeExportFilename(String value) {
+        String text = value == null ? "RockMap" : value.trim();
+        if (text.isEmpty()) text = "RockMap";
+        text = text.replaceAll("[^A-Za-z0-9._ -]+", "-").replaceAll("\\s+", "-");
+        if (text.length() > 72) text = text.substring(0, 72);
+        return text.isEmpty() ? "RockMap" : text;
+    }
+
     // ---------- COORDINATES ----------
 
     private void showCoordinates() {
@@ -981,7 +1381,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     @Override public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            if (requestCode == REQ_EXPORT) clearPendingExport();
+            return;
+        }
         Uri uri = data.getData();
         if (requestCode == REQ_IMPORT) {
             handleImport(uri);
@@ -991,11 +1394,20 @@ public final class FieldActivity extends Activity implements LocationRepository.
             } catch (RuntimeException ignored) {}
             pendingPhotoUri = uri.toString();
             toast("Photo attached. Tap Save to keep the field record.");
+        } else if (requestCode == REQ_EXPORT) {
+            performPendingExport(uri);
         }
     }
 
     @Override public void onLocation(Location location) {}
     @Override public void onLocationError(String message) { toast(message); }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        outState.putString(STATE_EXPORT_KIND, pendingExportKind);
+        outState.putString(STATE_EXPORT_FORMAT, pendingExportFormat);
+        outState.putLong(STATE_EXPORT_ID, pendingExportId);
+        super.onSaveInstanceState(outState);
+    }
 
     @Override protected void onStart() {
         super.onStart();

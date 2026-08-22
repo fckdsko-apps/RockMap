@@ -12,6 +12,7 @@ public final class FieldUiNames {
     public static final String SAVED_LOCATIONS = "Saved locations";
     public static final String IMPORT = "Import GPX / KML / GeoJSON";
     public static final String IMPORTED_DATA = "Imported data";
+    public static final String EXPORT = "Export data";
     public static final String COORDINATES = "Coordinate tools";
     public static final String VISIBILITY = "Field visibility";
 

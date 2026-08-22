@@ -626,6 +626,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         box.addView(dialogAction(FieldUiNames.IMPORTED_DATA, "Review managed imports, show a batch on the map, delete a batch, or import another file.", v -> {
             holder[0].dismiss(); openFieldScreen("imports");
         }));
+        box.addView(dialogAction(FieldUiNames.EXPORT, "Export saved locations, tracks, Field Records, prospecting areas, managed imports, or combined field map data.", v -> {
+            holder[0].dismiss(); openFieldScreen("export");
+        }));
         box.addView(dialogAction(FieldUiNames.COORDINATES, "Convert decimal, DDM, DMS, UTM and MGRS coordinates.", v -> {
             holder[0].dismiss(); openFieldScreen("coordinates");
         }));
