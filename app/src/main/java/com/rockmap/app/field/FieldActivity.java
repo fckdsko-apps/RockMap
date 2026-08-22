@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.net.Uri;
 import android.os.Build;
@@ -962,6 +963,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     // ---------- EXPORT ----------
 
+    private interface ExportChoiceHandler {
+        void onChoice(int which);
+    }
+
     private void showExportHub() {
         waypointRepository.getAll(waypoints -> {
             List<FieldDatabase.Track> tracks = db.listTracks(0);
@@ -971,43 +976,60 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
             LinearLayout root = page();
             root.addView(title(FieldUiNames.EXPORT));
-            root.addView(help("Choose what you want to export. RockMap will ask for the specific item, when needed, and then the file format. Files are saved locally through Android's Save file picker."));
+            root.addView(help("Every outlined box below is an export option. Tap the entire box to export that type of data. RockMap will ask for a specific item or file format when needed, then Android will ask where to save the file."));
+            root.addView(section("Export Options"));
 
-            root.addView(action(FieldUiNames.SAVED_LOCATIONS,
+            root.addView(exportOption(FieldUiNames.SAVED_LOCATIONS,
                     waypoints.size() + " saved location" + (waypoints.size() == 1 ? "" : "s"),
+                    waypoints.isEmpty() ? "Nothing to export" : "Tap this box to export ›",
+                    !waypoints.isEmpty(),
                     v -> showSavedLocationExportFormats(waypoints.size())));
 
-            root.addView(action("Tracks",
+            root.addView(exportOption("Tracks",
                     tracks.size() + " track" + (tracks.size() == 1 ? "" : "s") + " · choose all or one track",
+                    tracks.isEmpty() ? "Nothing to export" : "Tap this box to export ›",
+                    !tracks.isEmpty(),
                     v -> showTrackExportPicker()));
 
-            root.addView(action(FieldUiNames.FIELD_RECORDS,
+            root.addView(exportOption(FieldUiNames.FIELD_RECORDS,
                     records.size() + " record" + (records.size() == 1 ? "" : "s"),
+                    records.isEmpty() ? "Nothing to export" : "Tap this box to export ›",
+                    !records.isEmpty(),
                     v -> showFieldRecordExportFormats()));
 
-            root.addView(action(FieldUiNames.PROSPECTING_AREAS,
+            root.addView(exportOption(FieldUiNames.PROSPECTING_AREAS,
                     areas.size() + " Prospecting Area" + (areas.size() == 1 ? "" : "s") + " · choose all or one",
+                    areas.isEmpty() ? "Nothing to export" : "Tap this box to export ›",
+                    !areas.isEmpty(),
                     v -> showAreaExportPicker()));
 
-            root.addView(action("Imported Files",
+            root.addView(exportOption("Imported Files",
                     batches.size() + " imported file" + (batches.size() == 1 ? "" : "s") + " · choose one",
+                    batches.isEmpty() ? "Nothing to export" : "Tap this box to export ›",
+                    !batches.isEmpty(),
                     v -> showImportExportPicker()));
 
             if (ResearchResultStore.exists(this)) {
                 ResearchResultStore.Summary research = ResearchResultStore.summary(this);
-                root.addView(action("Last Analysis",
+                root.addView(exportOption("Last Analysis",
                         research.title + " · " + research.count + " mapped geology area" + (research.count == 1 ? "" : "s")
                                 + " · GeoJSON or CSV",
+                        "Tap this box to export ›",
+                        true,
                         v -> showResearchExportFormats()));
             } else {
-                root.addView(action("Last Analysis",
+                root.addView(exportOption("Last Analysis",
                         "No analysis saved yet · run Research first",
-                        v -> toast("Run a geology analysis first, then return to Export Data.")));
+                        "Unavailable until an analysis is saved",
+                        false,
+                        null));
             }
 
             int total = waypoints.size() + tracks.size() + records.size() + areas.size();
-            root.addView(action("All Field Data",
+            root.addView(exportOption("All Field Data",
                     total + " saved object" + (total == 1 ? "" : "s") + " · combined GeoJSON",
+                    total <= 0 ? "Nothing to export" : "Tap this box to export GeoJSON ›",
+                    total > 0,
                     v -> beginFieldExport(EXPORT_ALL, FORMAT_GEOJSON, -1L,
                             "RockMap-All-Field-Data.geojson", "application/geo+json")));
 
@@ -1024,13 +1046,16 @@ public final class FieldActivity extends Activity implements LocationRepository.
             toast("There are no Saved Locations to export.");
             return;
         }
-        String[] rows = {
-                "GeoJSON backup\nPreserves names, notes, timestamps and accuracy; compatible with RockMap's Saved Locations backup import.",
-                "GPX\nPortable waypoint file for GPS and mapping apps."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle("Choose format · Saved Locations")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Export Format · Saved Locations",
+                null,
+                new String[]{"GeoJSON Backup", "GPX"},
+                new String[]{
+                        "Preserves names, notes, timestamps and accuracy; compatible with RockMap's Saved Locations backup import.",
+                        "Portable waypoint file for GPS and mapping apps."
+                },
+                new String[]{"Tap this box to export GeoJSON ›", "Tap this box to export GPX ›"},
+                which -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_SAVED, FORMAT_GEOJSON, -1L,
                                 "RockMap-Locations.geojson", "application/geo+json");
@@ -1038,9 +1063,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         beginFieldExport(EXPORT_SAVED, FORMAT_GPX, -1L,
                                 "RockMap-Locations.gpx", "application/gpx+xml");
                     }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showTrackExportPicker() {
@@ -1053,40 +1076,49 @@ public final class FieldActivity extends Activity implements LocationRepository.
             toast("There are no tracks with enough recorded points to export yet.");
             return;
         }
-        String[] rows = new String[tracks.size() + 1];
-        rows[0] = "All exportable tracks\nExport every stored track that currently has at least 2 points.";
+
+        String[] labels = new String[tracks.size() + 1];
+        String[] details = new String[tracks.size() + 1];
+        String[] ctas = new String[tracks.size() + 1];
+        labels[0] = "All Exportable Tracks";
+        details[0] = "Export every stored track that currently has at least 2 points.";
+        ctas[0] = "Tap this box to choose ›";
         for (int i = 0; i < tracks.size(); i++) {
             FieldDatabase.Track track = tracks.get(i);
-            rows[i + 1] = track.name + "\n" + trackStatus(track, db.getTrackPoints(track.id));
+            labels[i + 1] = track.name;
+            details[i + 1] = trackStatus(track, db.getTrackPoints(track.id));
+            ctas[i + 1] = "Tap this box to choose ›";
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Choose tracks")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Tracks",
+                "Choose all exportable tracks or one track.",
+                labels, details, ctas,
+                which -> {
                     long id = which == 0 ? -1L : tracks.get(which - 1).id;
-                    String name = which == 0 ? "RockMap-Tracks" : "RockMap-Track-" + safeExportFilename(tracks.get(which - 1).name);
+                    String name = which == 0 ? "RockMap-Tracks"
+                            : "RockMap-Track-" + safeExportFilename(tracks.get(which - 1).name);
                     showTrackExportFormats(id, name);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showTrackExportFormats(long trackId, String baseName) {
-        String[] rows = {
-                "GPX\nBest for GPS apps and track exchange; includes recorded elevations/times when available.",
-                "GeoJSON\nBest for GIS and mapping software; includes RockMap track metadata."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle(trackId < 0L ? "Choose format · All tracks" : "Choose format · Track")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                trackId < 0L ? "Choose Export Format · All Tracks" : "Choose Export Format · Track",
+                null,
+                new String[]{"GPX", "GeoJSON"},
+                new String[]{
+                        "Best for GPS apps and track exchange; includes recorded elevations/times when available.",
+                        "Best for GIS and mapping software; includes RockMap track metadata."
+                },
+                new String[]{"Tap this box to export GPX ›", "Tap this box to export GeoJSON ›"},
+                which -> {
                     String kind = trackId < 0L ? EXPORT_TRACKS : EXPORT_TRACK;
                     if (which == 0) {
                         beginFieldExport(kind, FORMAT_GPX, trackId, baseName + ".gpx", "application/gpx+xml");
                     } else {
                         beginFieldExport(kind, FORMAT_GEOJSON, trackId, baseName + ".geojson", "application/geo+json");
                     }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showFieldRecordExportFormats() {
@@ -1094,13 +1126,16 @@ public final class FieldActivity extends Activity implements LocationRepository.
             toast("There are no Field Records to export.");
             return;
         }
-        String[] rows = {
-                "CSV\nSpreadsheet-friendly rows with coordinates, sample/category/mineral fields, notes, accuracy, elevation and photo reference.",
-                "GeoJSON\nGIS-ready point features with the same RockMap metadata. Photo files are not embedded."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle("Choose format · Field Records")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Export Format · Field Records",
+                null,
+                new String[]{"CSV", "GeoJSON"},
+                new String[]{
+                        "Spreadsheet-friendly rows with coordinates, sample/category/mineral fields, notes, accuracy, elevation and photo reference.",
+                        "GIS-ready point features with the same RockMap metadata. Photo files are not embedded."
+                },
+                new String[]{"Tap this box to export CSV ›", "Tap this box to export GeoJSON ›"},
+                which -> {
                     if (which == 0) {
                         beginFieldExport(EXPORT_RECORDS, FORMAT_CSV, -1L,
                                 "RockMap-Field-Records.csv", "text/csv");
@@ -1108,9 +1143,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         beginFieldExport(EXPORT_RECORDS, FORMAT_GEOJSON, -1L,
                                 "RockMap-Field-Records.geojson", "application/geo+json");
                     }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showAreaExportPicker() {
@@ -1119,42 +1152,50 @@ public final class FieldActivity extends Activity implements LocationRepository.
             toast("There are no Prospecting Areas to export.");
             return;
         }
-        String[] rows = new String[areas.size() + 1];
-        rows[0] = "All Prospecting Areas\nExport every saved polygon area.";
+        String[] labels = new String[areas.size() + 1];
+        String[] details = new String[areas.size() + 1];
+        String[] ctas = new String[areas.size() + 1];
+        labels[0] = "All Prospecting Areas";
+        details[0] = "Export every saved polygon area.";
+        ctas[0] = "Tap this box to choose ›";
         for (int i = 0; i < areas.size(); i++) {
             FieldDatabase.Area area = areas.get(i);
-            rows[i + 1] = area.name + "\n" + area.points.size() + " vertices · "
+            labels[i + 1] = area.name;
+            details[i + 1] = area.points.size() + " vertices · "
                     + GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(area.points));
+            ctas[i + 1] = "Tap this box to choose ›";
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Choose Prospecting Areas")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Prospecting Areas",
+                "Choose all saved Prospecting Areas or one area.",
+                labels, details, ctas,
+                which -> {
                     long id = which == 0 ? -1L : areas.get(which - 1).id;
                     String name = which == 0 ? "RockMap-Prospecting-Areas"
                             : "RockMap-Area-" + safeExportFilename(areas.get(which - 1).name);
                     showAreaExportFormats(id, name);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showAreaExportFormats(long areaId, String baseName) {
-        String[] rows = {
-                "GeoJSON\nBest for GIS and for bringing polygon geometry back through RockMap's Field import.",
-                "KML\nConvenient for Google Earth and other KML-compatible mapping tools."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle(areaId < 0L ? "Choose Format · All Prospecting Areas" : "Choose Format · Prospecting Area")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                areaId < 0L ? "Choose Export Format · All Prospecting Areas"
+                        : "Choose Export Format · Prospecting Area",
+                null,
+                new String[]{"GeoJSON", "KML"},
+                new String[]{
+                        "Best for GIS and for bringing polygon geometry back through RockMap's Field import.",
+                        "Convenient for Google Earth and other KML-compatible mapping tools."
+                },
+                new String[]{"Tap this box to export GeoJSON ›", "Tap this box to export KML ›"},
+                which -> {
                     String kind = areaId < 0L ? EXPORT_AREAS : EXPORT_AREA;
                     if (which == 0) {
                         beginFieldExport(kind, FORMAT_GEOJSON, areaId, baseName + ".geojson", "application/geo+json");
                     } else {
                         beginFieldExport(kind, FORMAT_KML, areaId, baseName + ".kml", "application/vnd.google-earth.kml+xml");
                     }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showImportExportPicker() {
@@ -1163,23 +1204,26 @@ public final class FieldActivity extends Activity implements LocationRepository.
             toast("There are no imported files to export.");
             return;
         }
-        String[] rows = new String[batches.size()];
+        String[] labels = new String[batches.size()];
+        String[] details = new String[batches.size()];
+        String[] ctas = new String[batches.size()];
         for (int i = 0; i < batches.size(); i++) {
             FieldDatabase.ImportBatch batch = batches.get(i);
-            rows[i] = batch.sourceName + "\nOriginally " + batch.waypointCount + " Saved Locations · "
+            labels[i] = batch.sourceName;
+            details[i] = "Originally " + batch.waypointCount + " Saved Locations · "
                     + batch.trackCount + " Tracks · " + batch.areaCount + " Prospecting Areas";
+            ctas[i] = "Tap this box to export GeoJSON ›";
         }
-        new AlertDialog.Builder(this)
-                .setTitle("Choose Imported File")
-                .setMessage("Exports the remaining RockMap objects associated with the selected imported file, not the original file bytes.")
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Imported File",
+                "Exports the remaining RockMap objects associated with the selected imported file, not the original file bytes.",
+                labels, details, ctas,
+                which -> {
                     FieldDatabase.ImportBatch batch = batches.get(which);
                     beginFieldExport(EXPORT_IMPORT, FORMAT_GEOJSON, batch.id,
                             "RockMap-Import-" + safeExportFilename(batch.sourceName) + ".geojson",
                             "application/geo+json");
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                });
     }
 
     private void showResearchExportFormats() {
@@ -1189,22 +1233,112 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         ResearchResultStore.Summary summary = ResearchResultStore.summary(this);
         String base = "RockMap-Research-" + safeExportFilename(summary.title);
-        String[] rows = {
-                "GeoJSON\nPreserves full mapped-area geometry and USGS SGMC source attributes for GIS/mapping software.",
-                "CSV\nSpreadsheet-friendly geology attributes. Mapped-area geometry is not included in CSV."
-        };
-        new AlertDialog.Builder(this)
-                .setTitle("Choose format · Last Analysis")
-                .setMessage(summary.title + " · " + summary.count + " mapped geology area" + (summary.count == 1 ? "" : "s"))
-                .setItems(rows, (d, which) -> {
+        showExportChoiceDialog(
+                "Choose Export Format · Last Analysis",
+                summary.title + " · " + summary.count + " mapped geology area" + (summary.count == 1 ? "" : "s"),
+                new String[]{"GeoJSON", "CSV"},
+                new String[]{
+                        "Preserves full mapped-area geometry and USGS SGMC source attributes for GIS/mapping software.",
+                        "Spreadsheet-friendly geology attributes. Mapped-area geometry is not included in CSV."
+                },
+                new String[]{"Tap this box to export GeoJSON ›", "Tap this box to export CSV ›"},
+                which -> {
                     if (which == 0) {
-                        beginFieldExport(EXPORT_RESEARCH, FORMAT_GEOJSON, -1L, base + ".geojson", "application/geo+json");
+                        beginFieldExport(EXPORT_RESEARCH, FORMAT_GEOJSON, -1L,
+                                base + ".geojson", "application/geo+json");
                     } else {
-                        beginFieldExport(EXPORT_RESEARCH, FORMAT_CSV, -1L, base + ".csv", "text/csv");
+                        beginFieldExport(EXPORT_RESEARCH, FORMAT_CSV, -1L,
+                                base + ".csv", "text/csv");
                     }
-                })
+                });
+    }
+
+    private void showExportChoiceDialog(String title, String message,
+                                        String[] labels, String[] details, String[] ctas,
+                                        ExportChoiceHandler handler) {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(20), dp(8), dp(20), dp(12));
+        content.setBackgroundColor(0xfffafafa);
+
+        String guidance = "Tap an outlined box below.";
+        if (message != null && !message.trim().isEmpty()) guidance = message.trim() + "\n\n" + guidance;
+        content.addView(help(guidance));
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int i = 0; i < labels.length; i++) {
+            final int choice = i;
+            content.addView(exportOption(
+                    labels[i],
+                    details != null && i < details.length ? details[i] : "",
+                    ctas != null && i < ctas.length ? ctas[i] : "Tap this box to select ›",
+                    true,
+                    v -> {
+                        if (holder[0] != null) holder[0].dismiss();
+                        handler.onChoice(choice);
+                    }));
+        }
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.setFillViewport(false);
+        scroller.addView(content);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(scroller)
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    private View exportOption(String title, String detail, String cta,
+                              boolean enabled, View.OnClickListener listener) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(12), dp(14), dp(12));
+
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(enabled ? 0xffffffff : 0xfff0f0f0);
+        background.setStroke(dp(2), enabled ? 0xff66829d : 0xffbdbdbd);
+        background.setCornerRadius(dp(8));
+        card.setBackground(background);
+
+        TextView heading = new TextView(this);
+        heading.setText(title);
+        heading.setTextSize(16f);
+        heading.setTextColor(enabled ? 0xff173f66 : 0xff777777);
+        heading.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        card.addView(heading);
+
+        if (detail != null && !detail.trim().isEmpty()) {
+            TextView body = new TextView(this);
+            body.setText(detail);
+            body.setTextSize(13f);
+            body.setTextColor(enabled ? 0xff555555 : 0xff888888);
+            body.setPadding(0, dp(4), 0, 0);
+            card.addView(body);
+        }
+
+        TextView actionText = new TextView(this);
+        actionText.setText(cta == null ? "" : cta);
+        actionText.setTextSize(12.5f);
+        actionText.setTextColor(enabled ? 0xff205b93 : 0xff888888);
+        actionText.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        actionText.setPadding(0, dp(8), 0, 0);
+        card.addView(actionText);
+
+        card.setMinimumHeight(dp(76));
+        card.setEnabled(enabled);
+        card.setClickable(enabled);
+        card.setFocusable(enabled);
+        if (enabled && listener != null) card.setOnClickListener(listener);
+        card.setContentDescription(title + ". " + (detail == null ? "" : detail) + ". " + (cta == null ? "" : cta));
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(0, dp(5), 0, dp(5));
+        wrap.addView(card, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return wrap;
     }
 
     private void beginFieldExport(String kind, String format, long id, String filename, String mime) {

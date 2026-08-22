@@ -1887,11 +1887,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (heatmapAvailable || geologyResultAvailable || landAvailable || claimsAvailable || historicMinesAvailable) {
             box.addView(sectionLabel("Legend & safety notes"));
         }
-        if (geologyResultAvailable) addGeologyLegend(box);
-        if (heatmapAvailable) addMineralHeatmapLegend(box);
         if (landAvailable) addLandStatusLegend(box);
         if (claimsAvailable) addMiningClaimsLegend(box);
         if (historicMinesAvailable) addHistoricMinesLegend(box);
+        if (heatmapAvailable) addMineralHeatmapLegend(box);
+        if (geologyResultAvailable) addGeologyLegend(box);
 
         new AlertDialog.Builder(this)
                 .setTitle("Layers")
