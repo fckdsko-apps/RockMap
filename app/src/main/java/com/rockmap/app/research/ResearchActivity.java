@@ -1022,7 +1022,7 @@ public final class ResearchActivity extends Activity {
         return geometry;
     }
 
-    private static JSONArray lonLat(double lon, double lat) {
+    private static JSONArray lonLat(double lon, double lat) throws JSONException {
         JSONArray pair = new JSONArray();
         pair.put(lon);
         pair.put(lat);
