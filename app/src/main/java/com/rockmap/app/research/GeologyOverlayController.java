@@ -33,8 +33,8 @@ public final class GeologyOverlayController {
     public static final String SOURCE_ID = "rockmap-geology-research-source";
     public static final String FILL_ID = "rockmap-geology-research-fill";
     public static final String LINE_ID = "rockmap-geology-research-outline";
-    public static final int FILL_COLOR = Color.rgb(224, 151, 42);
-    public static final int OUTLINE_COLOR = Color.rgb(120, 74, 18);
+    public static final int FILL_COLOR = Color.rgb(127, 140, 115);
+    public static final int OUTLINE_COLOR = Color.rgb(79, 94, 72);
 
     private final MapView mapView;
     private final Listener listener;

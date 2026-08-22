@@ -1940,7 +1940,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(row);
 
         TextView note = new TextView(this);
-        note.setText("Amber translucent mapped areas with a dark-brown outline show the current Geology result. They are interpretive geologic mapping, not property, access, hazard, or claim boundaries. Land status, mining claims, and Saved Locations remain separate layers above them.");
+        note.setText("Muted green mapped areas with a darker green outline show the current Geology result. The map fill is translucent, so its exact appearance varies slightly over the basemap. These are interpretive geologic mapping, not property, access, hazard, or claim boundaries. Land status, mining claims, and Saved Locations remain separate layers above them.");
         note.setTextSize(12f);
         note.setTextColor(Color.rgb(75, 75, 75));
         note.setPadding(0, 0, 0, dp(6));
