@@ -77,6 +77,10 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 public final class FieldMapController implements LocationRepository.Listener {
     private static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
     private static final String HUD_TAG = "rockmap-field-map-hud";
+    static final String COLLAPSED_TABS_TAG = "rockmap-field-collapsed-tabs";
+    private static final String TRACK_TAB_TAG = "rockmap-collapsed-active-track";
+    private static final String NAV_TAB_TAG = "rockmap-collapsed-navigation";
+    private static final String MEASURE_TAB_TAG = "rockmap-collapsed-measure";
     private static final String TAP_CAPTURE_TAG = "rockmap-field-tap-capture";
 
     private static final String TRACK_SOURCE = "rockmap-field-track-source";
@@ -118,9 +122,13 @@ public final class FieldMapController implements LocationRepository.Listener {
     private MapLibreMap map;
     private Button fieldButton;
     private LinearLayout hud;
+    private LinearLayout collapsedTabs;
     private boolean resumed;
     private boolean refreshRunning;
     private boolean measureActive;
+    private boolean trackPanelCollapsed;
+    private boolean navigationPanelCollapsed;
+    private boolean measurePanelCollapsed;
     private boolean awaitingMapTap;
     private View tapCapture;
     private Location latestNavigationLocation;
@@ -180,6 +188,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         fieldButton.setOnClickListener(v -> showFieldMenu());
         positionFieldButton();
         installHud();
+        installCollapsedTabs();
 
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
@@ -245,26 +254,95 @@ public final class FieldMapController implements LocationRepository.Listener {
         controls.bringToFront();
     }
 
+    private void installCollapsedTabs() {
+        if (root == null) return;
+        View existing = root.findViewWithTag(COLLAPSED_TABS_TAG);
+        if (existing instanceof LinearLayout) {
+            collapsedTabs = (LinearLayout) existing;
+            return;
+        }
+        collapsedTabs = new LinearLayout(activity);
+        collapsedTabs.setTag(COLLAPSED_TABS_TAG);
+        collapsedTabs.setOrientation(LinearLayout.VERTICAL);
+        collapsedTabs.setGravity(Gravity.END);
+        collapsedTabs.setPadding(0, dp(2), 0, dp(2));
+        collapsedTabs.setVisibility(View.GONE);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_VERTICAL | Gravity.END);
+        root.addView(collapsedTabs, params);
+    }
+
     private void renderHud() {
         if (hud == null) return;
+        installCollapsedTabs();
         hud.removeAllViews();
+        removeCollapsedTab(TRACK_TAB_TAG);
+        removeCollapsedTab(NAV_TAB_TAG);
+        removeCollapsedTab(MEASURE_TAB_TAG);
+
         FieldDatabase.Track activeTrack = db.getActiveTrack();
         FieldMapState.NavigationTarget target = FieldMapState.navigationTarget(activity);
-        boolean anything = activeTrack != null || target != null || measureActive;
-        hud.setVisibility(anything ? View.VISIBLE : View.GONE);
-        if (!anything) return;
 
-        if (activeTrack != null) addTrackHud(activeTrack);
-        if (target != null) addNavigationHud(target);
-        if (measureActive) addMeasureHud();
-        hud.bringToFront();
+        if (activeTrack == null) trackPanelCollapsed = false;
+        if (target == null) navigationPanelCollapsed = false;
+        if (!measureActive) measurePanelCollapsed = false;
+
+        boolean expanded = false;
+
+        if (activeTrack != null) {
+            if (trackPanelCollapsed) {
+                addCollapsedTab(TRACK_TAB_TAG, "Track", v -> {
+                    trackPanelCollapsed = false;
+                    renderHud();
+                });
+            } else {
+                addTrackHud(activeTrack);
+                expanded = true;
+            }
+        }
+
+        if (target != null) {
+            if (navigationPanelCollapsed) {
+                addCollapsedTab(NAV_TAB_TAG, "Navigate", v -> {
+                    navigationPanelCollapsed = false;
+                    renderHud();
+                });
+            } else {
+                addNavigationHud(target);
+                expanded = true;
+            }
+        }
+
+        if (measureActive) {
+            if (measurePanelCollapsed) {
+                addCollapsedTab(MEASURE_TAB_TAG, "Measure", v -> {
+                    measurePanelCollapsed = false;
+                    renderHud();
+                });
+            } else {
+                addMeasureHud();
+                expanded = true;
+            }
+        }
+
+        hud.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        if (collapsedTabs != null) {
+            collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+            if (collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
+        }
+        if (expanded) hud.bringToFront();
         fieldButton.bringToFront();
         controls.bringToFront();
+        if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
     }
 
     private void addTrackHud(FieldDatabase.Track track) {
-        TextView title = hudTitle("TRACK — " + track.name);
-        hud.addView(title);
+        if (hud.getChildCount() > 0) hud.addView(divider());
+        hud.addView(panelHeader("Track & backtrack — " + track.name, "Track", v -> {
+            trackPanelCollapsed = true;
+            renderHud();
+        }));
         List<GeoMath.Point> points = db.getTrackPoints(track.id);
         hud.addView(hudText((FieldDatabase.TRACK_PAUSED.equals(track.status) ? "Paused" : "Recording")
                 + " · " + points.size() + " points · " + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
@@ -282,7 +360,10 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void addNavigationHud(FieldMapState.NavigationTarget target) {
         if (hud.getChildCount() > 0) hud.addView(divider());
-        hud.addView(hudTitle("NAVIGATE — " + target.name));
+        hud.addView(panelHeader("Navigate — " + target.name, "Navigate", v -> {
+            navigationPanelCollapsed = true;
+            renderHud();
+        }));
         String status;
         if (latestNavigationLocation == null) {
             status = "Getting a GPS fix…\nTarget: " + target.point.decimal();
@@ -304,7 +385,14 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void addMeasureHud() {
         if (hud.getChildCount() > 0) hud.addView(divider());
-        hud.addView(hudTitle("MEASURE ON MAP — " + measurement.size() + " point" + (measurement.size() == 1 ? "" : "s")));
+        hud.addView(panelHeader(
+                "Measure on map — " + measurement.size() + " point" + (measurement.size() == 1 ? "" : "s"),
+                "Measure",
+                v -> {
+                    measurePanelCollapsed = true;
+                    removeTapCapture();
+                    renderHud();
+                }));
         hud.addView(hudText(measurementSummary()));
 
         LinearLayout first = buttonRow();
@@ -342,6 +430,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         }));
         box.addView(dialogAction("Import GPX / KML / GeoJSON", "Import waypoints, tracks, and areas, then immediately show them on this map.", v -> {
             holder[0].dismiss(); openFieldScreen("import");
+        }));
+        box.addView(dialogAction("Imported data", "Review managed imports, show a batch on the map, delete a batch, or import another file.", v -> {
+            holder[0].dismiss(); openFieldScreen("imports");
         }));
         box.addView(dialogAction("Coordinate tools", "Convert decimal, DDM, DMS, UTM and MGRS coordinates.", v -> {
             holder[0].dismiss(); openFieldScreen("coordinates");
@@ -720,6 +811,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void startNavigation(String name, GeoMath.Point target) {
+        navigationPanelCollapsed = false;
         FieldMapState.startNavigation(activity, name, target);
         latestNavigationLocation = null;
         navigationCameraFramed = false;
@@ -743,6 +835,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void stopNavigation() {
+        navigationPanelCollapsed = false;
         FieldMapState.stopNavigation(activity);
         latestNavigationLocation = null;
         navigationCameraFramed = false;
@@ -834,6 +927,7 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void startMeasurement() {
         if (!measureActive) measurement.clear();
+        measurePanelCollapsed = false;
         measureActive = true;
         removeTapCapture();
         renderHud();
@@ -967,6 +1061,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setView(name)
                 .setPositiveButton("Save", (d, w) -> {
                     db.insertArea(name.getText().toString().trim(), "Saved from map measurement", new ArrayList<>(measurement));
+                    measurePanelCollapsed = false;
                     measureActive = false;
                     measurement.clear();
                     removeTapCapture();
@@ -979,6 +1074,7 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void finishMeasurement() {
         if (measurement.isEmpty()) {
+            measurePanelCollapsed = false;
             measureActive = false;
             removeTapCapture();
             applyCachedSources();
@@ -988,7 +1084,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         new AlertDialog.Builder(activity).setTitle("Finish measurement?")
                 .setMessage("The temporary measurement will be cleared. Save it as a prospecting area first if you want it to remain on the map.")
                 .setPositiveButton("Clear & finish", (d, w) -> {
-                    measurement.clear(); measureActive = false; removeTapCapture(); applyCachedSources(); renderHud();
+                    measurement.clear(); measurePanelCollapsed = false; measureActive = false; removeTapCapture(); applyCachedSources(); renderHud();
                 })
                 .setNegativeButton("Keep measuring", null).show();
     }
@@ -1168,6 +1264,57 @@ public final class FieldMapController implements LocationRepository.Listener {
         view.setTextColor(Color.rgb(65, 65, 65));
         view.setPadding(0, dp(2), 0, dp(4));
         return view;
+    }
+
+    private View panelHeader(String titleText, String shortLabel, View.OnClickListener collapse) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = hudTitle(titleText);
+        row.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button arrow = new Button(activity);
+        arrow.setText("›");
+        arrow.setAllCaps(false);
+        arrow.setTextSize(20f);
+        arrow.setMinWidth(dp(44));
+        arrow.setMinimumWidth(dp(44));
+        arrow.setMinHeight(dp(40));
+        arrow.setMinimumHeight(dp(40));
+        arrow.setPadding(0, 0, 0, 0);
+        arrow.setContentDescription("Collapse " + shortLabel + " toolbar to the right edge");
+        arrow.setOnClickListener(collapse);
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    private void addCollapsedTab(String tag, String label, View.OnClickListener expand) {
+        if (collapsedTabs == null) return;
+        removeCollapsedTab(tag);
+        Button tab = new Button(activity);
+        tab.setTag(tag);
+        tab.setText("‹ " + label);
+        tab.setAllCaps(false);
+        tab.setTextSize(11f);
+        tab.setMinWidth(dp(82));
+        tab.setMinimumWidth(dp(82));
+        tab.setMinHeight(dp(40));
+        tab.setMinimumHeight(dp(40));
+        tab.setPadding(dp(5), 0, dp(5), 0);
+        tab.setContentDescription("Expand " + label + " map toolbar");
+        tab.setOnClickListener(expand);
+        collapsedTabs.addView(tab, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        collapsedTabs.setVisibility(View.VISIBLE);
+        collapsedTabs.bringToFront();
+    }
+
+    private void removeCollapsedTab(String tag) {
+        if (collapsedTabs == null) return;
+        View tab = collapsedTabs.findViewWithTag(tag);
+        if (tab != null) collapsedTabs.removeView(tab);
+        collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
     }
 
     private Button hudButton(String text, View.OnClickListener listener) {

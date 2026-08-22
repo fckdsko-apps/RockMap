@@ -48,14 +48,14 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
  * The primary FieldMapController still owns track/area/measurement geometry. This controller
  * deliberately leaves MainActivity, MapController, LocationRepository and the known-good GPS
  * centering path untouched. It supplies the pieces that need to stay visually obvious above the
- * basemap: saved-location visibility synchronization, persistent import access, readable
- * measurement labels, and completed-track context controls/endpoints.
+ * basemap: saved-location visibility synchronization, readable measurement labels, and
+ * completed-track context controls/endpoints. Import management lives permanently in Field.
  */
 public final class FieldMapPolishController {
     private static final String CONTEXT_HUD_TAG = "rockmap-track-context-hud";
     private static final String EXISTING_FIELD_HUD_TAG = "rockmap-field-map-hud";
-    private static final String IMPORTS_BUTTON_TAG = "rockmap-imports-entry";
-    private static final String TRACK_TOOLS_BUTTON_TAG = "rockmap-track-tools-entry";
+    private static final String COLLAPSED_TABS_TAG = "rockmap-field-collapsed-tabs";
+    private static final String TRACK_CONTEXT_TAB_TAG = "rockmap-collapsed-track-context";
     private static final String SCREEN_LABELS_TAG = "rockmap-field-screen-labels";
     private static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
 
@@ -76,8 +76,7 @@ public final class FieldMapPolishController {
     private MapView mapView;
     private MapLibreMap map;
     private LinearLayout contextHud;
-    private Button importsButton;
-    private Button trackToolsButton;
+    private LinearLayout collapsedTabs;
     private FrameLayout screenLabels;
     private boolean resumed;
     private boolean styleTickPending;
@@ -111,8 +110,7 @@ public final class FieldMapPolishController {
 
         installScreenLabels();
         installContextHud();
-        installImportsButton();
-        installTrackToolsButton();
+        installCollapsedTabs();
 
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
@@ -145,7 +143,6 @@ public final class FieldMapPolishController {
         map.getStyle(style -> {
             styleTickPending = false;
             ensureLayers(style);
-            updatePersistentButtons();
             syncSavedLocationVisibility(style);
             updateTrackContext(style);
             renderScreenLabels();
@@ -197,7 +194,7 @@ public final class FieldMapPolishController {
             screenLabels.setVisibility(View.VISIBLE);
             screenLabels.bringToFront();
         }
-        bringPersistentControlsToFront();
+        bringOverlayControlsToFront();
         if (contextHud != null && contextHud.getVisibility() == View.VISIBLE) contextHud.bringToFront();
     }
 
@@ -317,7 +314,7 @@ public final class FieldMapPolishController {
             if (selected >= 0L && cachedTrack == null) FieldMapState.clearSelectedTrackDetail(activity);
             setEndpointJson(style, emptyCollection(), false);
             hideContextHud();
-            updateTrackToolsButton(false);
+            updateTrackCollapsedTab(false);
             return;
         }
 
@@ -331,9 +328,9 @@ public final class FieldMapPolishController {
 
         if (contextHudDismissed) {
             hideContextHud();
-            updateTrackToolsButton(true);
+            updateTrackCollapsedTab(true);
         } else {
-            updateTrackToolsButton(false);
+            updateTrackCollapsedTab(false);
             renderContextHud(cachedTrack, cachedTrackPoints);
         }
     }
@@ -347,97 +344,59 @@ public final class FieldMapPolishController {
         setVisible(style, TRACK_ENDPOINT_LAYER, visible);
     }
 
-    private void installImportsButton() {
+    private void installCollapsedTabs() {
         if (root == null) return;
-        View existing = root.findViewWithTag(IMPORTS_BUTTON_TAG);
-        if (existing instanceof Button) {
-            importsButton = (Button) existing;
-            importsButton.setOnClickListener(v -> IntentFactory.openImports(activity));
+        View existing = root.findViewWithTag(COLLAPSED_TABS_TAG);
+        if (existing instanceof LinearLayout) {
+            collapsedTabs = (LinearLayout) existing;
             return;
         }
-
-        importsButton = persistentButton("Imports", "Open imported data management");
-        importsButton.setTag(IMPORTS_BUTTON_TAG);
-        importsButton.setOnClickListener(v -> IntentFactory.openImports(activity));
+        collapsedTabs = new LinearLayout(activity);
+        collapsedTabs.setTag(COLLAPSED_TABS_TAG);
+        collapsedTabs.setOrientation(LinearLayout.VERTICAL);
+        collapsedTabs.setGravity(Gravity.END);
+        collapsedTabs.setPadding(0, dp(2), 0, dp(2));
+        collapsedTabs.setVisibility(View.GONE);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                dp(96), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        params.setMargins(0, 0, dp(108), dp(112));
-        root.addView(importsButton, params);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_VERTICAL | Gravity.END);
+        root.addView(collapsedTabs, params);
     }
 
-    private void installTrackToolsButton() {
-        if (root == null) return;
-        View existing = root.findViewWithTag(TRACK_TOOLS_BUTTON_TAG);
-        if (existing instanceof Button) {
-            trackToolsButton = (Button) existing;
-            trackToolsButton.setOnClickListener(v -> reopenTrackToolbar());
-            return;
-        }
+    private void updateTrackCollapsedTab(boolean visible) {
+        if (collapsedTabs == null) installCollapsedTabs();
+        if (collapsedTabs == null) return;
 
-        trackToolsButton = persistentButton("Track tools", "Reopen the current track map toolbar");
-        trackToolsButton.setTag(TRACK_TOOLS_BUTTON_TAG);
-        trackToolsButton.setOnClickListener(v -> reopenTrackToolbar());
-        trackToolsButton.setVisibility(View.GONE);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                dp(104), ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        params.setMargins(0, 0, dp(208), dp(112));
-        root.addView(trackToolsButton, params);
-    }
+        View existing = collapsedTabs.findViewWithTag(TRACK_CONTEXT_TAB_TAG);
+        if (existing != null) collapsedTabs.removeView(existing);
 
-    private void updatePersistentButtons() {
-        if (importsButton != null) {
-            // Import management is a tool, not a temporary success state. Keep it reachable even
-            // with zero managed batches so the user can re-import/test again without hunting.
-            importsButton.setVisibility(View.VISIBLE);
-            positionRelativeToField(importsButton, 100);
-        }
-        updateTrackToolsButton(contextHudDismissed && FieldMapState.selectedTrackDetail(activity) >= 0L);
-        bringPersistentControlsToFront();
-    }
-
-    private void updateTrackToolsButton(boolean visible) {
-        if (trackToolsButton == null) return;
-        trackToolsButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (visible) {
-            positionRelativeToField(trackToolsButton, 200);
-            trackToolsButton.bringToFront();
+            Button tab = new Button(activity);
+            tab.setTag(TRACK_CONTEXT_TAB_TAG);
+            tab.setText("‹ Track");
+            tab.setAllCaps(false);
+            tab.setTextSize(11f);
+            tab.setMinWidth(dp(82));
+            tab.setMinimumWidth(dp(82));
+            tab.setMinHeight(dp(40));
+            tab.setMinimumHeight(dp(40));
+            tab.setPadding(dp(5), 0, dp(5), 0);
+            tab.setContentDescription("Expand Track & backtrack map toolbar");
+            tab.setOnClickListener(v -> reopenTrackToolbar());
+            collapsedTabs.addView(tab, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
+
+        collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        if (collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
     }
 
-    private void positionRelativeToField(Button button, int extraRightDp) {
-        if (button == null || root == null) return;
-        View field = root.findViewWithTag(FIELD_BUTTON_TAG);
-        if (field == null) return;
-        ViewGroup.LayoutParams raw = field.getLayoutParams();
-        ViewGroup.LayoutParams targetRaw = button.getLayoutParams();
-        if (!(raw instanceof FrameLayout.LayoutParams) || !(targetRaw instanceof FrameLayout.LayoutParams)) return;
-        FrameLayout.LayoutParams fieldParams = (FrameLayout.LayoutParams) raw;
-        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) targetRaw;
-        params.bottomMargin = fieldParams.bottomMargin;
-        params.rightMargin = fieldParams.rightMargin + dp(extraRightDp);
-        button.setLayoutParams(params);
-    }
-
-    private void bringPersistentControlsToFront() {
-        if (importsButton != null) importsButton.bringToFront();
-        if (trackToolsButton != null && trackToolsButton.getVisibility() == View.VISIBLE) trackToolsButton.bringToFront();
+    private void bringOverlayControlsToFront() {
+        if (collapsedTabs != null && collapsedTabs.getVisibility() == View.VISIBLE) collapsedTabs.bringToFront();
         if (root != null) {
             View field = root.findViewWithTag(FIELD_BUTTON_TAG);
             if (field != null) field.bringToFront();
         }
-    }
-
-    private Button persistentButton(String text, String description) {
-        Button button = new Button(activity);
-        button.setText(text);
-        button.setAllCaps(false);
-        button.setTextSize(11.5f);
-        button.setMinWidth(dp(88));
-        button.setMinimumWidth(dp(88));
-        button.setMinHeight(dp(48));
-        button.setMinimumHeight(dp(48));
-        button.setContentDescription(description);
-        return button;
     }
 
     private void installContextHud() {
@@ -487,7 +446,25 @@ public final class FieldMapPolishController {
         }
 
         contextHud.removeAllViews();
-        contextHud.addView(text("TRACK MAP — " + track.name, 13.5f, true));
+
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(text("Track & backtrack — " + track.name, 13.5f, true),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button collapse = button("›");
+        collapse.setTextSize(20f);
+        collapse.setContentDescription("Collapse Track & backtrack toolbar to the right edge");
+        collapse.setOnClickListener(v -> {
+            contextHudDismissed = true;
+            hideContextHud();
+            updateTrackCollapsedTab(true);
+            renderScreenLabels();
+        });
+        header.addView(collapse, new LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT));
+        contextHud.addView(header);
+
         contextHud.addView(text(points.size() + " points · "
                         + GeoMath.distanceLabel(GeoMath.pathDistanceMeters(points))
                         + "\nSTART and END are labeled directly on the basemap.",
@@ -549,14 +526,11 @@ public final class FieldMapPolishController {
         });
         secondRow.addView(tracks, weight());
 
-        Button close = button("Hide toolbar");
+        Button close = button("Close map view");
         close.setOnClickListener(v -> {
-            // Keep the selected track and its START/END context. Only dismiss the large toolbar.
-            // A persistent Track tools button now resurrects it immediately.
-            contextHudDismissed = true;
-            hideContextHud();
-            updateTrackToolsButton(true);
-            renderScreenLabels();
+            FieldMapState.clearSelectedTrackDetail(activity);
+            resetTrackContext();
+            applyPolish();
         });
         secondRow.addView(close, weight());
 
@@ -564,16 +538,17 @@ public final class FieldMapPolishController {
         positionContextHud();
         contextHud.setVisibility(View.VISIBLE);
         contextHud.bringToFront();
-        bringPersistentControlsToFront();
+        bringOverlayControlsToFront();
     }
 
     private void reopenTrackToolbar() {
         if (FieldMapState.selectedTrackDetail(activity) < 0L) {
-            updateTrackToolsButton(false);
+            updateTrackCollapsedTab(false);
             toast("No track map is currently selected.");
             return;
         }
         contextHudDismissed = false;
+        updateTrackCollapsedTab(false);
         applyPolish();
     }
 
@@ -583,7 +558,7 @@ public final class FieldMapPolishController {
         cachedTrackPoints = new ArrayList<>();
         contextHudDismissed = false;
         hideContextHud();
-        updateTrackToolsButton(false);
+        updateTrackCollapsedTab(false);
     }
 
     private void positionContextHud() {
@@ -723,10 +698,5 @@ public final class FieldMapPolishController {
             activity.startActivity(intent);
         }
 
-        static void openImports(Activity activity) {
-            android.content.Intent intent = new android.content.Intent(activity, FieldActivity.class);
-            intent.putExtra(FieldActivity.EXTRA_SCREEN, "imports");
-            activity.startActivity(intent);
-        }
     }
 }

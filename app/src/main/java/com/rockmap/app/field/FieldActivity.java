@@ -682,15 +682,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
         LinearLayout root = page();
         root.addView(title("Imported data"));
         root.addView(help("Each new GPX/KML/GeoJSON import is tracked as its own batch. Deleting a batch removes only the remaining objects created by that import."));
-        root.addView(action("Import another file",
-                "Choose a GPX, KML or GeoJSON file.",
-                v -> beginImport()));
 
         List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
         root.addView(section("Managed imports"));
         if (batches.isEmpty()) {
-            root.addView(help("No managed import batches yet."));
+            root.addView(help("No managed import batches yet. You can import one directly from this screen."));
+            root.addView(action("Import a file",
+                    "Choose a GPX, KML or GeoJSON file and create a managed import batch.",
+                    v -> beginImport()));
         } else {
+            root.addView(action("Import another file",
+                    "Choose another GPX, KML or GeoJSON file.",
+                    v -> beginImport()));
             for (FieldDatabase.ImportBatch batch : batches) {
                 String detail = DateFormat.getDateTimeInstance().format(new Date(batch.importedAt))
                         + "\n" + batch.waypointCount + " waypoints · "
