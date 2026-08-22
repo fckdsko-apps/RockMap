@@ -40,6 +40,11 @@
             android:exported="false"
             android:screenOrientation="unspecified" />
 
+        <activity
+            android:name=".research.ResearchActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+
         <service
             android:name=".field.TrackRecordingService"
             android:exported="false"

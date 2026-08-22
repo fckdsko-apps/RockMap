@@ -1,0 +1,64 @@
+ROCKMAP P0–P3 — COMMIT 2
+SPATIAL RESEARCH QUERY UPGRADE
+
+BASELINE VERIFIED AGAINST CURRENT MAIN
+5491ca1acb67b0340e5e7d7c4b564e75a2b38123
+Redesign Field export flow for clear selection
+
+EXACT COMMIT NAME
+Add spatial geology research and area queries
+
+UPLOAD METHOD
+1. Extract this ZIP locally.
+2. In the RockMap GitHub repository, upload/replace the files using the exact paths in this package.
+3. Do not add or change anything under .github. This package intentionally contains no .github directory.
+4. Commit all packaged changes together with the exact commit name above.
+5. Run the existing Build RockMap APK workflow as usual.
+6. Do not uninstall the existing RockMap app before installing the resulting APK; install it as an update so existing offline/user data remains available.
+
+WHAT CHANGES
+- Main map Minerals button becomes Research; the existing mineral search remains available inside Research.
+- Adds a local queryable Colorado geology database installed explicitly from Research.
+- First geology install/refresh downloads Colorado-only USGS SGMC polygons from the public ArcGIS FeatureServer, validates the state/count/required geometry, then atomically activates the local SQLite snapshot.
+- Geology queries are offline after installation.
+- Search supports unit/label/lithology/age terms, installed-data suggestions, optional filters, and visible-map scope.
+- Spatial queries support visible map bounds, saved prospecting polygons, and coordinate/radius searches.
+- Research results map as a temporary geology overlay below land/claim/saved-location safety layers.
+- Research can cross-reference the existing mineral evidence and historic mine/workings systems without duplicating those datasets.
+- Field Records gain Research geology here.
+- Saved prospecting areas gain Analyze geology & evidence using the actual saved polygon.
+- Field > Export data gains Research result export as GeoJSON or CSV.
+- The last Research result is stored locally rather than passed through Android Intent extras, avoiding Binder-size crashes on polygon results.
+- Downloadable geology and reproducible Research-result files are excluded from Android cloud backup/device transfer; user-created Field/Trip/Saved data remains backup-eligible.
+- Privacy policy now accurately distinguishes release-managed pack SHA/size verification from the live USGS geology snapshot validation.
+
+UNCHANGED ON PURPOSE
+- Precise GPS centering implementation
+- Save GPS implementation
+- Location permission behavior
+- Field precise-location helper
+- Track start/recording command logic
+- Existing signing identity/configuration
+- Existing GitHub Actions workflows
+- Existing Gradle dependencies
+- Existing mineral evidence dataset
+- Existing land-management and mining-claim datasets
+- Existing Trips / Find / saved-marker / import-export systems
+
+FIRST TEST AFTER A GREEN BUILD
+1. Install the APK over the existing app. Do not uninstall first.
+2. Verify GPS centers accurately at your real position.
+3. Verify Save GPS still works.
+4. Open Research. On first use, choose Download Colorado geology while online/Wi-Fi.
+5. Record the installed Colorado unit count and local database size shown by RockMap.
+6. Search geology for a common term such as granite; open a unit and show the result on the map.
+7. Open Layers and toggle the Research geology result off/on; verify land status and claims remain separate and above it.
+8. Pan/zoom somewhere useful, open Research, and run Analyze visible map.
+9. Open a saved prospecting area in Field and run Analyze geology & evidence.
+10. Open a Field Record and run Research geology here.
+11. From a Research result, test Mineral evidence in these bounds and Historic mines / workings in these bounds.
+12. Go to Field > Export data > Research result and test both GeoJSON and CSV.
+13. Regression-check Find, Trips, Markers, Layers, Data, tracks, measurement, managed imports, and normal Field exports.
+
+IF THE BUILD FAILS
+Send the GitHub Actions log ZIP from this exact commit. Do not start changing workflows or data builders preemptively.

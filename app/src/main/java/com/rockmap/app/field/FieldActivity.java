@@ -23,6 +23,8 @@ import android.widget.Toast;
 import com.rockmap.app.MainActivity;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
+import com.rockmap.app.research.ResearchActivity;
+import com.rockmap.app.research.ResearchResultStore;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
@@ -47,6 +49,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
     private static final int REQ_EXPORT = 814;
+    private static final int REQ_RESEARCH = 815;
     private static final int MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 
     private static final String STATE_EXPORT_KIND = "field.export.kind";
@@ -61,6 +64,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private static final String EXPORT_AREAS = "areas";
     private static final String EXPORT_IMPORT = "import";
     private static final String EXPORT_ALL = "all";
+    private static final String EXPORT_RESEARCH = "research";
 
     private static final String FORMAT_GEOJSON = "geojson";
     private static final String FORMAT_GPX = "gpx";
@@ -128,6 +132,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action(FieldUiNames.IMPORTED_DATA,
                 "Review imported batches, show a batch on the map, or delete only the data created by that import.",
                 v -> showImports()));
+        root.addView(action("Research geology",
+                "Search and spatially query the installed Colorado geology snapshot, then cross-reference existing mineral and historic-mine evidence.",
+                v -> startResearch(new Intent(this, ResearchActivity.class))));
         root.addView(action(FieldUiNames.EXPORT,
                 "Export saved locations, tracks, Field Records, prospecting areas, managed import batches, or a combined GIS file.",
                 v -> showExportHub()));
@@ -409,6 +416,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     FieldMapState.requestFocusBounds(this, new FieldMapState.Bounds(r.lat, r.lon, r.lat, r.lon));
                     returnToMap();
                 }));
+        root.addView(action("Research geology here",
+                "Query mapped geology within 1 km of this Field Record, then cross-reference RockMap evidence.",
+                v -> startResearch(new Intent(this, ResearchActivity.class)
+                        .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
+                        .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
+                        .putExtra(ResearchActivity.EXTRA_RADIUS_M, 1000d))));
         root.addView(action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon))));
@@ -546,6 +559,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
                     returnToMap();
                 }));
+        root.addView(action("Analyze geology & evidence",
+                "Query geology against this saved polygon itself, then cross-reference existing mineral evidence and historic mines/workings.",
+                v -> startResearch(new Intent(this, ResearchActivity.class)
+                        .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))));
         Button del = button("Delete area");
         del.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("Delete area?")
@@ -968,6 +985,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     batches.size() + " managed batch" + (batches.size() == 1 ? "" : "es") + " · choose one batch",
                     v -> showImportExportPicker()));
 
+            if (ResearchResultStore.exists(this)) {
+                ResearchResultStore.Summary research = ResearchResultStore.summary(this);
+                root.addView(action("Research result",
+                        research.title + " · " + research.count + " mapped geology polygon" + (research.count == 1 ? "" : "s")
+                                + " · GeoJSON or CSV",
+                        v -> showResearchExportFormats()));
+            } else {
+                root.addView(action("Research result",
+                        "No Research result saved yet · run Research first",
+                        v -> toast("Run a geology Research query first, then return to Export data.")));
+            }
+
             int total = waypoints.size() + tracks.size() + records.size() + areas.size();
             root.addView(action("All field map data",
                     total + " saved object" + (total == 1 ? "" : "s") + " · combined GeoJSON",
@@ -1145,6 +1174,31 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .show();
     }
 
+    private void showResearchExportFormats() {
+        if (!ResearchResultStore.exists(this)) {
+            toast("There is no saved Research result to export.");
+            return;
+        }
+        ResearchResultStore.Summary summary = ResearchResultStore.summary(this);
+        String base = "RockMap-Research-" + safeExportFilename(summary.title);
+        String[] rows = {
+                "GeoJSON\nPreserves full mapped polygon geometry and USGS SGMC source attributes for GIS/mapping software.",
+                "CSV\nSpreadsheet-friendly geology attributes. Polygon geometry is not included in CSV."
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Choose format · Research result")
+                .setMessage(summary.title + " · " + summary.count + " mapped geology polygon" + (summary.count == 1 ? "" : "s"))
+                .setItems(rows, (d, which) -> {
+                    if (which == 0) {
+                        beginFieldExport(EXPORT_RESEARCH, FORMAT_GEOJSON, -1L, base + ".geojson", "application/geo+json");
+                    } else {
+                        beginFieldExport(EXPORT_RESEARCH, FORMAT_CSV, -1L, base + ".csv", "text/csv");
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void beginFieldExport(String kind, String format, long id, String filename, String mime) {
         pendingExportKind = kind;
         pendingExportFormat = format;
@@ -1251,6 +1305,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     db.listFieldRecords(),
                     db.listAreas());
         }
+        if (EXPORT_RESEARCH.equals(kind)) {
+            return FORMAT_CSV.equals(format)
+                    ? ResearchResultStore.csv(this)
+                    : ResearchResultStore.geoJson(this);
+        }
         throw new IllegalArgumentException("Unknown export selection.");
     }
 
@@ -1279,6 +1338,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (EXPORT_AREA.equals(kind)) return "Prospecting area exported.";
         if (EXPORT_AREAS.equals(kind)) return "Prospecting areas exported.";
         if (EXPORT_IMPORT.equals(kind)) return "Imported batch exported.";
+        if (EXPORT_RESEARCH.equals(kind)) return "Research result exported.";
         return "Field data exported.";
     }
 
@@ -1345,6 +1405,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     // ---------- LOCATION / ACTIVITY RESULTS ----------
 
+    private void startResearch(Intent intent) {
+        if (intent == null) intent = new Intent(this, ResearchActivity.class);
+        startActivityForResult(intent, REQ_RESEARCH);
+    }
+
+    private void forwardResearchResultToMap(Intent researchResult) {
+        Intent map = new Intent(this, MainActivity.class);
+        if (researchResult.getExtras() != null) map.putExtras(researchResult.getExtras());
+        map.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(map);
+        finish();
+    }
+
     private void runWithPreciseLocation(Runnable action) {
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             action.run();
@@ -1376,6 +1449,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     @Override public void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_RESEARCH) {
+            if (resultCode == RESULT_OK && data != null) forwardResearchResultToMap(data);
+            return;
+        }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (requestCode == REQ_EXPORT) clearPendingExport();
             return;

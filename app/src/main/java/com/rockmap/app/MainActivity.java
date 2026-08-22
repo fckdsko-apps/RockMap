@@ -51,6 +51,10 @@ import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
+import com.rockmap.app.research.GeologyOverlayController;
+import com.rockmap.app.research.GeologyRepository;
+import com.rockmap.app.research.ResearchActivity;
+import com.rockmap.app.research.ResearchResultStore;
 import com.rockmap.app.safety.SafetyAcknowledgement;
 import com.rockmap.app.trips.TripEntity;
 import com.rockmap.app.trips.TripExport;
@@ -91,6 +95,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int EXPORT_TRIP_GPX_REQUEST = 505;
     private static final int EXPORT_TRIP_CSV_REQUEST = 506;
     private static final int EXPORT_TRIP_XML_REQUEST = 507;
+    private static final int RESEARCH_REQUEST = 508;
     private static final String STATE_PENDING_TRIP_EXPORT_ID = "pendingTripExportId";
     private static final int MAX_IMPORT_BYTES = 5_000_000;
     private static final int MAX_IMPORT_WAYPOINTS = 10_000;
@@ -117,6 +122,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private MineralIndexRepository mineralIndexRepository;
     private MineralOverlayController mineralOverlayController;
     private HistoricMineOverlayController historicMineOverlayController;
+    private GeologyRepository geologyRepository;
+    private GeologyOverlayController geologyOverlayController;
     private MineralSearchEngine.SearchResult activeMineralSearchResult;
     private MineralAreaAnalyzer.AnalysisResult activeMineralAreaAnalysis;
     private PlaceRecord activePlaceTarget;
@@ -129,6 +136,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private boolean started;
     private long pendingTripExportId = -1L;
     private int pendingLocationAction = LOCATION_ACTION_NONE;
+    private Intent pendingResearchLaunchIntent;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -140,6 +148,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
         if (savedInstanceState != null) {
             pendingTripExportId = savedInstanceState.getLong(STATE_PENDING_TRIP_EXPORT_ID, -1L);
+        }
+        if (getIntent() != null && getIntent().hasExtra(ResearchActivity.RESULT_ACTION)) {
+            pendingResearchLaunchIntent = new Intent(getIntent());
         }
 
         MapLibre.getInstance(this);
@@ -154,6 +165,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mineralIndexRepository = new MineralIndexRepository(this, offlineDataManager);
         mineralOverlayController = new MineralOverlayController(mapView, this::onMineralTapped);
         historicMineOverlayController = new HistoricMineOverlayController(mapView, this::onHistoricMinesTapped);
+        geologyRepository = new GeologyRepository(this);
+        geologyOverlayController = new GeologyOverlayController(mapView, this::onGeologyTapped);
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -168,7 +181,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         addControl(controls, "GPS", v -> locate());
         addControl(controls, "Save GPS", v -> saveLocation());
         addControl(controls, "Find", v -> showFindSearch());
-        addControl(controls, "Minerals", v -> showMineralSearch());
+        addControl(controls, "Research", v -> showResearch());
         addControl(controls, "Layers", v -> showLayers());
         addControl(controls, "Markers", v -> showSaved());
         addControl(controls, "Trips", v -> showTrips());
@@ -191,6 +204,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView.onCreate(savedInstanceState);
         mineralOverlayController.initialize();
         historicMineOverlayController.initialize();
+        geologyOverlayController.initialize();
         mapController = new MapController(mapView, offlineDataManager, this);
         mapController.initialize();
         refreshWaypoints();
@@ -247,6 +261,29 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView.getMapAsync(mapLibreMap -> mapLibreMap.animateCamera(
                 CameraUpdateFactory.newLatLngZoom(
                         new LatLng(location.getLatitude(), location.getLongitude()), 16.0)));
+    }
+
+    private void showResearch() {
+        if (mineralOverlayController == null) {
+            startResearch(null);
+            return;
+        }
+        mineralOverlayController.getVisibleBounds(bounds -> {
+            GeologyRepository.Bounds researchBounds = bounds == null ? null
+                    : new GeologyRepository.Bounds(bounds.south, bounds.west, bounds.north, bounds.east);
+            startResearch(researchBounds);
+        });
+    }
+
+    private void startResearch(GeologyRepository.Bounds bounds) {
+        Intent intent = new Intent(this, ResearchActivity.class);
+        if (bounds != null) {
+            intent.putExtra(ResearchActivity.EXTRA_SOUTH, bounds.south);
+            intent.putExtra(ResearchActivity.EXTRA_WEST, bounds.west);
+            intent.putExtra(ResearchActivity.EXTRA_NORTH, bounds.north);
+            intent.putExtra(ResearchActivity.EXTRA_EAST, bounds.east);
+        }
+        startActivityForResult(intent, RESEARCH_REQUEST);
     }
 
     private void showMineralSearch() {
@@ -1733,6 +1770,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         boolean landAvailable = mapController.hasLandStatusAvailable();
         boolean claimsAvailable = mapController.hasClaimsAvailable();
         boolean historicMinesAvailable = mineralIndexRepository.hasExpandedEvidence();
+        boolean geologyResultAvailable = geologyOverlayController != null && geologyOverlayController.hasResults();
 
         box.addView(sectionLabel("Visible map layers"));
         box.addView(helperText("Check what you want shown on the map, then tap Apply."));
@@ -1751,6 +1789,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 : "Historic mines / workings — unavailable";
         CheckBox historicMines = checkbox(historicMineLabel,
                 historicMinesAvailable && historicMinesRequestedVisible);
+
+        CheckBox geology = checkbox(geologyResultAvailable
+                        ? "Research geology result — " + geologyOverlayController.getCount() + " polygons"
+                        : "Research geology result — none loaded",
+                geologyResultAvailable && geologyOverlayController.isVisible());
 
         CheckBox saved = checkbox("Saved locations", mapController.isWaypointsVisible());
         boolean mineralsAvailable = mineralOverlayController.hasResults();
@@ -1771,15 +1814,29 @@ public final class MainActivity extends Activity implements LocationRepository.L
         land.setEnabled(landAvailable);
         claims.setEnabled(claimsAvailable);
         historicMines.setEnabled(historicMinesAvailable);
+        geology.setEnabled(geologyResultAvailable);
         minerals.setEnabled(mineralsAvailable);
         heatmap.setEnabled(heatmapAvailable);
 
         box.addView(land);
         box.addView(claims);
         box.addView(historicMines);
+        box.addView(geology);
         box.addView(saved);
         box.addView(minerals);
         box.addView(heatmap);
+
+        if (geologyResultAvailable) {
+            Button clearGeologyButton = smallActionButton("Clear Research geology overlay");
+            clearGeologyButton.setOnClickListener(v -> {
+                geologyOverlayController.clear();
+                geology.setChecked(false);
+                geology.setEnabled(false);
+                geology.setText("Research geology result — none loaded");
+                clearGeologyButton.setEnabled(false);
+            });
+            box.addView(clearGeologyButton);
+        }
 
         if (mineralsAvailable || heatmapAvailable || activeMineralAreaAnalysis != null) {
             Button clearMineralsButton = smallActionButton("Clear mineral overlays");
@@ -1796,9 +1853,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
             box.addView(clearMineralsButton);
         }
 
-        if (heatmapAvailable || landAvailable || claimsAvailable || historicMinesAvailable) {
+        if (heatmapAvailable || geologyResultAvailable || landAvailable || claimsAvailable || historicMinesAvailable) {
             box.addView(sectionLabel("Legend & safety notes"));
         }
+        if (geologyResultAvailable) addGeologyLegend(box);
         if (heatmapAvailable) addMineralHeatmapLegend(box);
         if (landAvailable) addLandStatusLegend(box);
         if (claimsAvailable) addMiningClaimsLegend(box);
@@ -1816,9 +1874,26 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     mineralOverlayController.setHeatmapVisible(
                             mineralOverlayController.hasHeatmap() && heatmap.isChecked());
                     setHistoricMinesVisible(historicMinesAvailable && historicMines.isChecked());
+                    geologyOverlayController.setVisible(geologyResultAvailable && geology.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    private void addGeologyLegend(LinearLayout box) {
+        TextView title = new TextView(this);
+        title.setText("Research geology result");
+        title.setTextSize(16f);
+        title.setTextColor(Color.rgb(35, 35, 35));
+        title.setPadding(0, dp(12), 0, dp(2));
+        box.addView(title);
+
+        TextView note = new TextView(this);
+        note.setText("Amber translucent polygons are the current Research query result from the installed USGS SGMC Colorado geology snapshot. They are interpretive geologic mapping, not property, access, hazard, or claim boundaries. Land status, mining claims and saved locations remain separate layers above them.");
+        note.setTextSize(12f);
+        note.setTextColor(Color.rgb(75, 75, 75));
+        note.setPadding(0, 0, 0, dp(6));
+        box.addView(note);
     }
 
     private void addMineralHeatmapLegend(LinearLayout box) {
@@ -2788,6 +2863,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         boolean claimsReady = mapController != null && mapController.hasClaimsAvailable();
         boolean mineralsReady = mineralIndexRepository.isAvailable();
         boolean minesReady = mineralIndexRepository.hasExpandedEvidence();
+        boolean geologyReady = geologyRepository != null && geologyRepository.isReady();
+        int geologyCount = geologyReady ? geologyRepository.getRecordCount() : 0;
         int findCount = placeIndexRepository.getRecordCount();
 
         return "RockMap " + BuildConfig.VERSION_NAME + "\n\n"
@@ -2797,6 +2874,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     ? findCount + " Colorado place records ready"
                     : placeIndexRepository.isReady() ? "ready" : "not available")
                 + "\nMineral search: " + (mineralsReady ? "ready" : "not installed")
+                + "\nQueryable geology: " + (geologyReady ? geologyCount + " Colorado polygons ready offline" : "not installed — open Research to install")
                 + "\nHistoric mine records: " + (minesReady ? "ready" : "not installed")
                 + "\nLand-management layer: " + (landReady ? "ready" : "not available")
                 + "\nMining-claim records: " + (claimsReady ? "ready" : "not available")
@@ -2932,8 +3010,32 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent != null && intent.hasExtra(ResearchActivity.RESULT_ACTION)) {
+            pendingResearchLaunchIntent = new Intent(intent);
+            if (mapView != null) {
+                mapView.getMapAsync(mapLibreMap ->
+                        mapLibreMap.getStyle(style -> consumePendingResearchLaunch()));
+            }
+        }
+    }
+
+    private void consumePendingResearchLaunch() {
+        Intent pending = pendingResearchLaunchIntent;
+        if (pending == null) return;
+        pendingResearchLaunchIntent = null;
+        handleResearchResult(pending);
+    }
+
+    @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == RESEARCH_REQUEST) {
+            if (resultCode == RESULT_OK && data != null) handleResearchResult(data);
+            return;
+        }
         boolean tripExportRequest = requestCode == EXPORT_TRIP_GEOJSON_REQUEST
                 || requestCode == EXPORT_TRIP_GPX_REQUEST
                 || requestCode == EXPORT_TRIP_CSV_REQUEST
@@ -2953,6 +3055,119 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 || requestCode == EXPORT_TRIP_XML_REQUEST) {
             exportTrip(uri, requestCode);
         }
+    }
+
+    private void handleResearchResult(Intent data) {
+        String action = data.getStringExtra(ResearchActivity.RESULT_ACTION);
+        if (ResearchActivity.ACTION_GEOLOGY.equals(action)) {
+            String title = data.getStringExtra(ResearchActivity.RESULT_TITLE);
+            int count = data.getIntExtra(ResearchActivity.RESULT_COUNT, 0);
+            try {
+                String geoJson = ResearchResultStore.geoJson(this);
+                geologyOverlayController.show(geoJson, title, count);
+                zoomToResearchBounds(readResearchBounds(data));
+                showMessage("Research geology result shown on map. Land and claim layers remain separate.");
+            } catch (IOException ex) {
+                showMessage("Research result could not be opened on the map: " + ex.getMessage());
+            }
+            return;
+        }
+        if (ResearchActivity.ACTION_MINERALS.equals(action)) {
+            showMineralSearch();
+            return;
+        }
+        GeologyRepository.Bounds bounds = readResearchBounds(data);
+        if (ResearchActivity.ACTION_MINERALS_AREA.equals(action)) {
+            if (bounds == null) {
+                showMessage("Research did not return valid bounds for mineral analysis.");
+                return;
+            }
+            MineralSearchEngine.Bounds mineralBounds = new MineralSearchEngine.Bounds(
+                    bounds.north, bounds.east, bounds.south, bounds.west);
+            showMessage("Analyzing existing mineral evidence in Research bounds…");
+            mineralIndexRepository.analyzeArea(mineralBounds, new MineralIndexRepository.AreaAnalysisCallback() {
+                @Override public void onResult(MineralAreaAnalyzer.AnalysisResult result) {
+                    activeMineralAreaAnalysis = result;
+                    mineralOverlayController.showAnalysisBounds(result.bounds);
+                    showMineralAreaResults(result);
+                }
+                @Override public void onError(String message) {
+                    showMessage(message == null ? "Mineral evidence analysis failed safely." : message);
+                }
+            });
+            return;
+        }
+        if (ResearchActivity.ACTION_HISTORIC_MINES.equals(action)) {
+            if (bounds != null) zoomToResearchBounds(bounds);
+            setHistoricMinesVisible(true);
+        }
+    }
+
+    private GeologyRepository.Bounds readResearchBounds(Intent data) {
+        if (data == null || !data.hasExtra(ResearchActivity.EXTRA_SOUTH)
+                || !data.hasExtra(ResearchActivity.EXTRA_WEST)
+                || !data.hasExtra(ResearchActivity.EXTRA_NORTH)
+                || !data.hasExtra(ResearchActivity.EXTRA_EAST)) return null;
+        try {
+            return new GeologyRepository.Bounds(
+                    data.getDoubleExtra(ResearchActivity.EXTRA_SOUTH, Double.NaN),
+                    data.getDoubleExtra(ResearchActivity.EXTRA_WEST, Double.NaN),
+                    data.getDoubleExtra(ResearchActivity.EXTRA_NORTH, Double.NaN),
+                    data.getDoubleExtra(ResearchActivity.EXTRA_EAST, Double.NaN));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private void zoomToResearchBounds(GeologyRepository.Bounds bounds) {
+        if (bounds == null || mapView == null) return;
+        double lat = (bounds.south + bounds.north) / 2d;
+        double lon = (bounds.west + bounds.east) / 2d;
+        double span = Math.max(bounds.north - bounds.south, bounds.east - bounds.west);
+        double zoom;
+        if (span <= 0.002d) zoom = 15.0;
+        else if (span <= 0.01d) zoom = 13.5;
+        else if (span <= 0.05d) zoom = 11.5;
+        else if (span <= 0.2d) zoom = 9.5;
+        else if (span <= 0.8d) zoom = 7.5;
+        else zoom = 6.0;
+        final double finalZoom = zoom;
+        mapView.getMapAsync(mapLibreMap -> mapLibreMap.animateCamera(
+                CameraUpdateFactory.newLatLngZoom(new LatLng(lat, lon), finalZoom)));
+    }
+
+    private void onGeologyTapped(Feature feature, LatLng coordinate) {
+        if (feature == null) return;
+        String unit = stringProp(feature, "UNIT_NAME", "Mapped geologic unit");
+        String label = stringProp(feature, "SGMC_LABEL", "");
+        String original = stringProp(feature, "ORIG_LABEL", "");
+        String lith = stringProp(feature, "GENERALIZED_LITH", "Not reported");
+        String ageMin = stringProp(feature, "AGE_MIN", "");
+        String ageMax = stringProp(feature, "AGE_MAX", "");
+        String reference = stringProp(feature, "REFERENCE", "");
+        StringBuilder text = new StringBuilder();
+        text.append(String.format(Locale.US, "%.6f, %.6f", coordinate.getLatitude(), coordinate.getLongitude()));
+        if (!label.isEmpty()) text.append("\nSGMC label: ").append(label);
+        if (!original.isEmpty()) text.append("\nOriginal label: ").append(original);
+        text.append("\nGeneralized lithology: ").append(lith);
+        if (!ageMin.isEmpty() || !ageMax.isEmpty()) {
+            text.append("\nAge: ").append(ageMin);
+            if (!ageMax.isEmpty() && !ageMax.equalsIgnoreCase(ageMin)) text.append(" – ").append(ageMax);
+        }
+        if (!reference.isEmpty()) text.append("\n\nReference: ").append(reference);
+        text.append("\n\nSource: ").append(GeologyRepository.SOURCE_TITLE)
+                .append("\nDOI: ").append(GeologyRepository.SOURCE_DOI)
+                .append("\n\nInterpretive geology only. This does not determine ownership, access, claim status, hazards, or collecting permission.");
+
+        TextView body = new TextView(this);
+        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        new AlertDialog.Builder(this)
+                .setTitle(unit)
+                .setView(boundedScrollableContent(body, 440))
+                .setPositiveButton("Research", (d, w) -> showResearch())
+                .setNegativeButton("Close", null)
+                .show();
     }
 
     private void exportWaypoints(Uri uri) {
@@ -3186,11 +3401,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (mineralOverlayController != null) {
             mineralOverlayController.refreshStyle();
         }
+        if (geologyOverlayController != null) {
+            geologyOverlayController.refreshStyle();
+        }
         if (historicMinesRequestedVisible
                 && historicMineOverlayController != null
                 && historicMineOverlayController.isLoaded()) {
             historicMineOverlayController.refreshStyle();
         }
+        consumePendingResearchLaunch();
     }
 
     @Override
@@ -3205,6 +3424,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         pendingOverlayTapLand = landAtCoordinate == null
                 ? new ArrayList<>() : new ArrayList<>(landAtCoordinate);
         try {
+            if (geologyOverlayController != null && geologyOverlayController.handleTap(coordinate)) {
+                return true;
+            }
             if (mineralOverlayController != null && mineralOverlayController.handleTap(coordinate)) {
                 return true;
             }
