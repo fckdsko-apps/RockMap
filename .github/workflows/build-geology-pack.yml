@@ -1,0 +1,179 @@
+name: Build Colorado Geology Pack
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rockmap-geology-sgmc-co-20260822-v1
+  cancel-in-progress: false
+
+jobs:
+  build-geology:
+    name: Build and publish fixed Colorado SGMC geology pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: 'rockmap-geology-sgmc-co-20260822-v1'
+      GEOLOGY_VERSION: 'sgmc-co-20260822-v1'
+      DATABASE_NAME: 'colorado-geology-sgmc-co-20260822-v1.db'
+      MAX_DATABASE_BYTES: '250000000'
+      MAX_DOWNLOAD_BYTES: '150000000'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source before geology build
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Run geology-builder regression checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build_colorado_geology.py scripts/test_colorado_geology_builder.py
+          python3 scripts/test_colorado_geology_builder.py
+
+      - name: Build fixed Colorado SGMC SQLite snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist-geology
+          mkdir -p dist-geology
+
+          BUILT_AT="$(git show -s --format=%cI "$GITHUB_SHA")"
+          python3 scripts/build_colorado_geology.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$RELEASE_TAG" \
+            --version "$GEOLOGY_VERSION" \
+            --built-at "$BUILT_AT" \
+            --database-name "$DATABASE_NAME" \
+            --output-dir dist-geology
+
+          test -s "dist-geology/$DATABASE_NAME"
+          test -s "dist-geology/$DATABASE_NAME.gz"
+          test -s dist-geology/geology-manifest.json
+          test -s dist-geology/geology-source-metadata.json
+          test -s dist-geology/SHA256SUMS.txt
+
+      - name: Fail closed on geology output drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB_BYTES="$(stat -c '%s' "dist-geology/$DATABASE_NAME")"
+          DOWNLOAD_BYTES="$(stat -c '%s' "dist-geology/$DATABASE_NAME.gz")"
+          if [ "$DB_BYTES" -gt "$MAX_DATABASE_BYTES" ]; then
+            echo "::error::Geology SQLite exceeds the 250 MB fail-closed budget ($DB_BYTES bytes)."
+            exit 1
+          fi
+          if [ "$DOWNLOAD_BYTES" -gt "$MAX_DOWNLOAD_BYTES" ]; then
+            echo "::error::Compressed geology download exceeds the 150 MB fail-closed budget ($DOWNLOAD_BYTES bytes)."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import gzip
+          import hashlib
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          root = Path('dist-geology')
+          manifest = json.loads((root / 'geology-manifest.json').read_text(encoding='utf-8'))
+          meta = json.loads((root / 'geology-source-metadata.json').read_text(encoding='utf-8'))
+          db = root / manifest['database']['fileName']
+          asset = root / manifest['asset']['fileName']
+
+          def sha(path):
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          assert manifest['manifestVersion'] == 1
+          assert manifest['status'] == 'published'
+          assert manifest['source']['doi'] == '10.5066/F7WH2N65'
+          assert manifest['source']['where'] == "STATE='CO'"
+          assert 500 <= manifest['source']['recordCount'] <= 100000
+          assert manifest['asset']['bytes'] == asset.stat().st_size
+          assert manifest['asset']['sha256'] == sha(asset)
+          assert manifest['database']['bytes'] == db.stat().st_size
+          assert manifest['database']['sha256'] == sha(db)
+          assert manifest['database']['schemaVersion'] == 1
+          assert meta['record_count'] == manifest['source']['recordCount']
+
+          with gzip.open(asset, 'rb') as f:
+              unpacked = f.read()
+          assert len(unpacked) == db.stat().st_size
+          assert hashlib.sha256(unpacked).hexdigest() == manifest['database']['sha256']
+
+          con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+          try:
+              assert con.execute('PRAGMA quick_check').fetchone()[0].lower() == 'ok'
+              count = con.execute('SELECT COUNT(*) FROM units').fetchone()[0]
+              wrong_state = con.execute("SELECT COUNT(*) FROM units WHERE state IS NULL OR state <> 'CO'").fetchone()[0]
+              missing_geometry = con.execute("SELECT COUNT(*) FROM units WHERE geometry_json IS NULL OR length(trim(geometry_json)) < 10").fetchone()[0]
+              assert count == manifest['source']['recordCount']
+              assert wrong_state == 0
+              assert missing_geometry == 0
+          finally:
+              con.close()
+
+          print('Geology pack integrity/schema/state/count checks passed')
+          print('records:', manifest['source']['recordCount'])
+          print('download bytes:', manifest['asset']['bytes'])
+          print('installed bytes:', manifest['database']['bytes'])
+          print('download sha256:', manifest['asset']['sha256'])
+          print('database sha256:', manifest['database']['sha256'])
+          PY
+
+      - name: Verify repository can host public geology assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VISIBILITY="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.visibility')"
+          if [ "$VISIBILITY" != "public" ]; then
+            echo "::error::RockMap geology releases must be public because the Android downloader does not embed GitHub credentials. Repository visibility is: $VISIBILITY"
+            exit 1
+          fi
+
+      - name: Refuse to overwrite existing immutable geology release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists. Geology release bytes are immutable; publish a new version/tag instead."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $RELEASE_TAG already exists. Refusing to move an existing geology tag."
+            exit 1
+          fi
+
+      - name: Publish immutable Colorado geology prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            "dist-geology/$DATABASE_NAME.gz" \
+            dist-geology/geology-manifest.json \
+            dist-geology/geology-source-metadata.json \
+            dist-geology/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" \
+            --title "RockMap Colorado SGMC geology $GEOLOGY_VERSION" \
+            --notes "Fixed, versioned Colorado-only RockMap geology snapshot built from the USGS State Geologic Map Compilation (SGMC), DOI 10.5066/F7WH2N65. The Android app downloads only after displaying the manifest-declared size, verifies compressed and installed SHA-256 values, validates SQLite integrity/schema/Colorado record count, and then activates atomically. Research aid only; mapped geology does not determine ownership, access, mining-claim status, hazards, or collecting permission." \
+            --prerelease
+
+          gh release view "$RELEASE_TAG"

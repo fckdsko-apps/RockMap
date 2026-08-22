@@ -1,6 +1,6 @@
 # RockMap Privacy Policy
 
-**Last updated: August 20, 2026**
+**Last updated: August 22, 2026**
 
 RockMap is an offline-first Android field-map and research application. This policy explains how RockMap accesses, uses, stores, and shares user data.
 
@@ -38,36 +38,33 @@ If the user chooses a cloud-storage or sharing provider in Android's document/sh
 
 Before RockMap can be used, the current release requires acknowledgment of RockMap's Safety & Data Limitations notice unless the user previously chose not to show the current disclosure version again.
 
-RockMap stores a randomly generated local acknowledgment token together with the disclosure version, last acknowledgment time, acknowledgment count, and reminder preference. This token:
-
-- is stored in RockMap's private app preferences on the device;
-- is not an account token or authentication credential;
-- is not sent to RockMap-operated servers;
-- is not used for advertising, analytics, profiling, or cross-app tracking;
-- is excluded from Android cloud backup and device transfer so it remains local to the current app installation/device context; and
-- is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
-
-If the safety disclosure materially changes, RockMap can increment the disclosure version and require a new acknowledgment.
+RockMap stores a randomly generated local acknowledgment token together with the disclosure version, last acknowledgment time, acknowledgment count, and reminder preference. This token is stored only in RockMap's private app preferences. It is not an account token, authentication credential, analytics identifier, advertising identifier, or cross-app tracking identifier, and RockMap does not send it to RockMap-operated servers. The safety preferences are excluded from Android backup/device transfer. The token is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
 
 ## Android backup and device transfer
 
-RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, and field data. Depending on the user's device, account, and backup settings, this may cause that data to be stored or transferred by the Android platform or backup provider. Downloadable offline map files and the local safety-acknowledgment preferences are excluded from Android backup/device transfer.
+RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, and field data. Depending on the user's device, account, and backup settings, this may cause that data to be stored or transferred by the Android platform or backup provider.
 
-RockMap does not receive or control copies held by the Android backup provider.
+Downloadable offline map files, downloaded Colorado geology snapshots, reproducible Research-result files, and the local safety-acknowledgment preferences are excluded from Android backup/device transfer. These resources can be regenerated or downloaded again and are not treated as user-created field records. RockMap does not receive or control copies held by the Android backup provider.
 
 ## Offline-data updates and network data
 
-RockMap is designed to work offline, but the user can choose to check for and download updated offline map or research data. RockMap may retrieve a small update manifest first so it can calculate and display the expected resource size. Before additional data assets are downloaded, RockMap displays the estimated additional download and the maximum possible pack transfer and requires user confirmation.
+RockMap is designed to work offline, but the user can choose to check for and download updated offline map or research data.
 
-Update requests use HTTPS. RockMap verifies downloaded data before activation. The update host and its infrastructure, including GitHub when GitHub-hosted releases are used, may receive ordinary network information such as IP address, request time, and standard HTTP request metadata under that provider's own privacy practices.
+For release-managed RockMap data, the app retrieves a small update manifest first. The manifest declares the resource filename, exact byte count, and SHA-256 checksum. RockMap displays the relevant download size before the user authorizes the additional resource download. Downloaded files are not activated unless their byte counts and SHA-256 values match the manifest.
+
+Queryable Colorado geology is distributed as a versioned RockMap SQLite snapshot built from the U.S. Geological Survey State Geologic Map Compilation (SGMC) Colorado polygons. The Android app does not perform an unknown-size statewide SGMC scrape when the user installs geology. Instead, the RockMap data-build process obtains and validates the Colorado source records, creates a fixed geology database, and publishes an immutable compressed asset together with its exact compressed download size, installed size, and SHA-256 values. The app shows those sizes before the user chooses **Download**, verifies both the compressed asset and the installed SQLite database, validates the expected Colorado record count/schema, and only then activates the new snapshot. If a geology update fails verification, an existing working snapshot remains available.
+
+After the Colorado geology snapshot is installed, RockMap geology search and spatial queries operate on the local database. GPS positions, saved Prospecting Areas, Field Record coordinates, search terms, tracks, notes, photos, and other user-created data are not sent to USGS as part of those local geology queries.
+
+Update requests use HTTPS. The update host and its infrastructure, including GitHub when GitHub-hosted releases are used, may receive ordinary network information such as IP address, request time, and standard HTTP request metadata under that provider's own privacy practices. The external USGS service is contacted by the RockMap data-build process when a new geology snapshot is produced; normal app geology queries do not contact USGS after the fixed snapshot is installed.
 
 RockMap does not include advertising SDKs or analytics SDKs in the current release and does not use update requests to transmit saved markers, field records, tracks, trips, notes, acknowledgment tokens, photos, or GPS coordinates.
 
 ## Public map and research sources
 
-RockMap uses public or publicly distributed geographic and research datasets, including OpenStreetMap/Protomaps-derived basemap data and selected data from USGS, BLM, Colorado Geological Survey, Colorado Department of Transportation, and U.S. Forest Service sources. The Safety & Data Limitations notice inside the app lists the source families in more detail.
+RockMap uses public or publicly distributed geographic and research datasets, including OpenStreetMap/Protomaps-derived basemap data and selected data from USGS, BLM, Colorado Geological Survey, Colorado Department of Transportation, and U.S. Forest Service sources. Queryable Colorado geology uses the USGS State Geologic Map Compilation (SGMC), DOI `10.5066/F7WH2N65`, as a Colorado-only local snapshot. The Safety & Data Limitations notice inside the app lists the source families in more detail.
 
-These datasets describe places and resources; RockMap does not upload user location to those source agencies when the user views the offline data.
+These datasets describe places and resources; RockMap does not upload user location to those source agencies when the user views or queries installed offline data.
 
 ## Data sharing and sale
 
@@ -75,11 +72,11 @@ RockMap does not sell user data. RockMap does not share saved location, field, t
 
 ## Data security
 
-RockMap stores working data in Android app-private storage. Network update URLs must use HTTPS, cleartext traffic is disabled, and downloaded offline-data files are checked against declared size and SHA-256 values before activation. No storage or transmission method can be guaranteed completely secure.
+RockMap stores working data in Android app-private storage. Network update URLs must use HTTPS, cleartext traffic is disabled, and release-managed downloaded data are checked against declared size and SHA-256 values before activation. Colorado geology additionally undergoes SQLite integrity, schema, Colorado-state, geometry, and record-count validation before activation. No storage or transmission method can be guaranteed completely secure.
 
 ## Data retention and deletion
 
-Saved markers, field records, tracks, polygon areas, and trips remain on the device until the user deletes them in RockMap, clears RockMap app data, or uninstalls the app. Attached-photo references remain until the associated field record is changed/deleted or app data is cleared; the original selected photo is controlled by its storage provider. The local safety acknowledgment remains until RockMap app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever the user chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention/deletion rules.
+Saved markers, field records, tracks, polygon areas, and trips remain on the device until the user deletes them in RockMap, clears RockMap app data, or uninstalls the app. Downloaded Colorado geology remains until it is replaced by a successfully verified newer snapshot, app data is cleared, or RockMap is uninstalled. The most recent Research geology result may be replaced or cleared and is excluded from Android backup/device transfer. Attached-photo references remain until the associated field record is changed/deleted or app data is cleared; the original selected photo is controlled by its storage provider. The local safety acknowledgment remains until RockMap app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever the user chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention/deletion rules.
 
 RockMap has no server-side user accounts and therefore no RockMap account data to delete from a RockMap server.
 

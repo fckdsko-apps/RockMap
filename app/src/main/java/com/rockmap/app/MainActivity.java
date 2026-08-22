@@ -2925,7 +2925,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     ? findCount + " Colorado place records ready"
                     : placeIndexRepository.isReady() ? "ready" : "not available")
                 + "\nMineral Evidence: " + (mineralsReady ? "ready" : "not installed")
-                + "\nQueryable geology: " + (geologyReady ? geologyCount + " Colorado mapped areas ready offline" : "not installed — open Data to install")
+                + "\nQueryable geology: " + (geologyReady ? geologyCount + " Colorado mapped areas ready offline" : "not installed — open Research to install")
                 + "\nHistoric mine records: " + (minesReady ? "ready" : "not installed")
                 + "\nLand-management layer: " + (landReady ? "ready" : "not available")
                 + "\nMining-claim records: " + (claimsReady ? "ready" : "not available")

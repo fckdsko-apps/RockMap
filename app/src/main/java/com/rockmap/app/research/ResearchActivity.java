@@ -21,6 +21,11 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.lifecycle.LiveData;
+import androidx.lifecycle.Observer;
+import androidx.work.WorkInfo;
+
+import com.rockmap.app.BuildConfig;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -59,16 +64,20 @@ public final class ResearchActivity extends Activity {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private GeologyRepository geology;
+    private GeologyDataManager geologyDataManager;
     private FieldDatabase fieldDb;
     private WaypointRepository waypointRepository;
     private GeologyRepository.Bounds visibleBounds;
     private List<GeologyUnit> currentResults = new ArrayList<>();
     private String currentResultTitle = "Analysis";
     private GeologyRepository.Bounds currentResultBounds;
+    private LiveData<WorkInfo> geologyUpdateLiveData;
+    private Observer<WorkInfo> geologyUpdateObserver;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         geology = new GeologyRepository(this);
+        geologyDataManager = new GeologyDataManager(this);
         fieldDb = FieldDatabase.get(this);
         waypointRepository = new WaypointRepository(this);
         visibleBounds = readBounds(getIntent());
@@ -115,14 +124,14 @@ public final class ResearchActivity extends Activity {
         LinearLayout root = page();
         root.addView(title("Research"));
         root.addView(section("Colorado geology is not installed"));
-        root.addView(help("RockMap will not start an additional geology-data download unless the download size is known and shown before you confirm it. Unknown-size live-service downloads are disabled in this build."));
-        root.addView(help("Existing RockMap maps, mineral evidence, saved data and Field tools remain usable. Colorado geology will be distributed as a versioned offline data pack with a declared byte size and checksum before download."));
+        root.addView(help("RockMap does not download geology from the live USGS service on this device. It first checks a small RockMap geology manifest so the exact download size can be shown before you decide whether to install it."));
+        root.addView(help("After a verified pack is installed, geology searches and spatial queries use the local database and work offline."));
+        root.addView(action("Check Colorado Geology Pack",
+                "Check the published version and exact download/install sizes. Checking the small manifest does not download the geology database.",
+                v -> startGeologyDataUpdate()));
         root.addView(action("Search Mineral Evidence",
                 "Mineral Evidence does not depend on the geology pack.",
                 v -> returnAction(ACTION_MINERALS, null)));
-        root.addView(action("Manage Geology Data",
-                "Check the currently published RockMap offline-data pack and its disclosed download size.",
-                v -> returnAction(ACTION_DATA, null)));
         root.addView(nav("Back", v -> finish()));
         setContentView(scroll(root));
     }
@@ -167,17 +176,19 @@ public final class ResearchActivity extends Activity {
             }
         } else {
             root.addView(help("Colorado geology is not installed. Mineral Evidence remains available above."));
-            root.addView(action("Manage Geology Data",
-                    "Open Data. RockMap will not begin an additional geology download unless its size is disclosed before you confirm it.",
-                    v -> returnAction(ACTION_DATA, null)));
+            root.addView(action("Install Colorado Geology",
+                    "Check the current fixed RockMap geology pack and see its exact download size before anything is downloaded.",
+                    v -> startGeologyDataUpdate()));
         }
 
         if (geology.isReady()) {
+            GeologyManifest active = geologyDataManager.getActiveManifest();
+            String version = active == null || active.version.isEmpty() ? "installed snapshot" : active.version;
             root.addView(help(geology.getRecordCount() + " mapped geology areas installed · "
-                    + formatBytes(geology.getDatabaseBytes()) + " local database."));
-            root.addView(action("Manage Geology Data",
-                    "Review RockMap offline data and future geology-pack updates.",
-                    v -> returnAction(ACTION_DATA, null)));
+                    + formatBytes(geology.getDatabaseBytes()) + " local database · " + version + "."));
+            root.addView(action("Check Geology Update",
+                    "Check for a newer fixed Colorado geology pack. RockMap shows the exact download and installed sizes before you confirm.",
+                    v -> startGeologyDataUpdate()));
         }
         if (ResearchResultStore.exists(this)) {
             ResearchResultStore.Summary r = ResearchResultStore.summary(this);
@@ -187,6 +198,105 @@ public final class ResearchActivity extends Activity {
         }
         root.addView(nav("Back", v -> finish()));
         setContentView(scroll(root));
+    }
+
+    private void startGeologyDataUpdate() {
+        if (BuildConfig.GEOLOGY_MANIFEST_URL == null || BuildConfig.GEOLOGY_MANIFEST_URL.trim().isEmpty()) {
+            toast("This APK was not built from a configured public RockMap repository.");
+            return;
+        }
+        toast("Checking Colorado geology pack size…");
+        GeologyDataPreviewer.preview(this, BuildConfig.GEOLOGY_MANIFEST_URL,
+                new GeologyDataPreviewer.Callback() {
+                    @Override public void onPreview(GeologyDataPreviewer.Preview preview) {
+                        if (isFinishing() || isDestroyed()) return;
+                        if (!preview.published) {
+                            new AlertDialog.Builder(ResearchActivity.this)
+                                    .setTitle("Colorado Geology")
+                                    .setMessage(preview.message.isEmpty()
+                                            ? "No fixed Colorado geology pack is currently published. Nothing was downloaded."
+                                            : preview.message)
+                                    .setPositiveButton("OK", null)
+                                    .show();
+                            return;
+                        }
+                        if (!preview.needsDownload) {
+                            new AlertDialog.Builder(ResearchActivity.this)
+                                    .setTitle("Colorado Geology is current")
+                                    .setMessage(preview.recordCount + " mapped geology areas are already installed.\n\nVersion: "
+                                            + preview.version + "\nInstalled size: " + formatBytes(preview.installedBytes)
+                                            + "\n\nNothing will be downloaded.")
+                                    .setPositiveButton("OK", (d, w) -> showHub())
+                                    .show();
+                            return;
+                        }
+
+                        String message = "USGS SGMC geology for offline RockMap research."
+                                + "\n\nDownload size: " + formatBytes(preview.downloadBytes)
+                                + "\nInstalled size: " + formatBytes(preview.installedBytes)
+                                + "\nMapped Colorado areas: " + preview.recordCount
+                                + "\nVersion: " + preview.version
+                                + "\n\nStored on this device and available offline after installation. "
+                                + "RockMap verifies both the downloaded asset and installed SQLite database before activation. "
+                                + "If verification fails, the working geology snapshot is kept.";
+                        new AlertDialog.Builder(ResearchActivity.this)
+                                .setTitle("Colorado Geology")
+                                .setMessage(message)
+                                .setPositiveButton("Download", (d, w) -> queueConfirmedGeologyUpdate())
+                                .setNegativeButton("Cancel", null)
+                                .show();
+                    }
+
+                    @Override public void onError(String message) {
+                        if (isFinishing() || isDestroyed()) return;
+                        new AlertDialog.Builder(ResearchActivity.this)
+                                .setTitle("Could not check Colorado Geology")
+                                .setMessage(message == null ? "The geology manifest could not be checked safely." : message)
+                                .setPositiveButton("OK", null)
+                                .show();
+                    }
+                });
+    }
+
+    private void queueConfirmedGeologyUpdate() {
+        androidx.work.OneTimeWorkRequest request = geologyDataManager.queueUpdate();
+        toast("Downloading and verifying Colorado geology…");
+        clearGeologyUpdateObserver();
+        geologyUpdateLiveData = androidx.work.WorkManager.getInstance(this)
+                .getWorkInfoByIdLiveData(request.getId());
+        geologyUpdateObserver = new Observer<WorkInfo>() {
+            @Override public void onChanged(WorkInfo info) {
+                if (info == null || !info.getState().isFinished()) return;
+                clearGeologyUpdateObserver();
+                if (info.getState() == WorkInfo.State.SUCCEEDED) {
+                    // A result generated from an older geology snapshot should not silently look current.
+                    // This clears only the reproducible Research result, not user-created Field data.
+                    ResearchResultStore.clear(ResearchActivity.this);
+                    new AlertDialog.Builder(ResearchActivity.this)
+                            .setTitle("Colorado Geology installed")
+                            .setMessage(geologyDataManager.getLastUpdateStatus()
+                                    + "\n\nGeology searches and area queries now use the verified local database and work offline."
+                                    + "\n\nIf an older geology result is still visible on the map behind Research, run a new geology analysis before using that overlay; the saved prior Research result was cleared when the new snapshot activated.")
+                            .setPositiveButton("Research", (d, w) -> showHub())
+                            .show();
+                } else {
+                    new AlertDialog.Builder(ResearchActivity.this)
+                            .setTitle("Colorado Geology was not changed")
+                            .setMessage(geologyDataManager.getLastUpdateStatus())
+                            .setPositiveButton("OK", null)
+                            .show();
+                }
+            }
+        };
+        geologyUpdateLiveData.observeForever(geologyUpdateObserver);
+    }
+
+    private void clearGeologyUpdateObserver() {
+        if (geologyUpdateLiveData != null && geologyUpdateObserver != null) {
+            geologyUpdateLiveData.removeObserver(geologyUpdateObserver);
+        }
+        geologyUpdateLiveData = null;
+        geologyUpdateObserver = null;
     }
 
     private void showSearch() {
@@ -486,7 +596,6 @@ public final class ResearchActivity extends Activity {
             return i;
         });
 
-        // Keep the result identity and map action visible while the unit list scrolls independently.
         LinearLayout top = page();
         top.setPadding(dp(18), dp(12), dp(18), dp(4));
         top.addView(title(resultTitle));
@@ -501,7 +610,6 @@ public final class ResearchActivity extends Activity {
         screen.addView(top, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // Only the potentially long geology-unit list scrolls.
         LinearLayout unitList = new LinearLayout(this);
         unitList.setOrientation(LinearLayout.VERTICAL);
         unitList.setPadding(dp(8), dp(6), dp(8), dp(6));
@@ -536,7 +644,6 @@ public final class ResearchActivity extends Activity {
         frameParams.setMargins(dp(18), 0, dp(18), dp(6));
         screen.addView(frame, frameParams);
 
-        // Keep continuation and navigation controls visible regardless of result count.
         LinearLayout bottom = page();
         bottom.setPadding(dp(18), 0, dp(18), dp(10));
         if (queryBounds != null) {
@@ -601,13 +708,6 @@ public final class ResearchActivity extends Activity {
             }
         }
         return new ArrayList<>(grouped.values());
-    }
-
-    private static String compactUnitLine(GeologyUnit unit) {
-        String age = unit.compactAgeLabel();
-        String lith = unit.compactLithologyLabel();
-        if (age.isEmpty()) return lith;
-        return lith + " · " + age;
     }
 
     private static final class UnitGroup {
@@ -695,19 +795,6 @@ public final class ResearchActivity extends Activity {
             toast("Stored analysis could not be read.");
             showHub();
         }
-    }
-
-    private void confirmRefresh() {
-        new AlertDialog.Builder(this)
-                .setTitle("Geology updates")
-                .setMessage("RockMap no longer starts an unknown-size live geology download. Geology updates must be published as a versioned pack whose download size is shown before confirmation.")
-                .setPositiveButton("Data", (d, w) -> returnAction(ACTION_DATA, null))
-                .setNegativeButton("Close", null)
-                .show();
-    }
-
-    private void showRefreshProgress() {
-        confirmRefresh();
     }
 
     private <T> void runAsync(String message, Work<T> work, Result<T> result) {
@@ -810,7 +897,6 @@ public final class ResearchActivity extends Activity {
         return new double[]{lat, lon};
     }
 
-
     private static String radiusLabel(double meters) {
         if (meters >= 1000d) {
             double km = meters / 1000d;
@@ -819,20 +905,10 @@ public final class ResearchActivity extends Activity {
         }
         return String.format(Locale.US, "%.0f m", meters);
     }
+
     private static void addCount(Map<String, Integer> map, String raw) {
         String key = raw == null || raw.trim().isEmpty() ? "Not reported" : raw.trim();
         map.put(key, map.getOrDefault(key, 0) + 1);
-    }
-
-    private static String topCounts(Map<String, Integer> map, int limit) {
-        ArrayList<Map.Entry<String, Integer>> rows = new ArrayList<>(map.entrySet());
-        rows.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < rows.size() && i < limit; i++) {
-            if (out.length() > 0) out.append(" · ");
-            out.append(rows.get(i).getKey()).append(" (").append(rows.get(i).getValue()).append(')');
-        }
-        return out.toString();
     }
 
     private static void append(StringBuilder out, String label, String value) {
@@ -965,10 +1041,12 @@ public final class ResearchActivity extends Activity {
     private static String formatBytes(long bytes) {
         if (bytes <= 0L) return "0 MB";
         double mb = bytes / (1024d * 1024d);
+        if (mb < 0.1d) return String.format(Locale.US, "%.0f KB", bytes / 1024d);
         return mb < 10d ? String.format(Locale.US, "%.1f MB", mb) : String.format(Locale.US, "%.0f MB", mb);
     }
 
     @Override protected void onDestroy() {
+        clearGeologyUpdateObserver();
         executor.shutdownNow();
         if (waypointRepository != null) waypointRepository.close();
         super.onDestroy();

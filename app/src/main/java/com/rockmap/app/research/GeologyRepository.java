@@ -9,7 +9,6 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,8 +19,9 @@ import java.util.Set;
  * Offline Colorado geology store used by Commit 2 research queries.
  *
  * Geology queries read a local Colorado SQLite snapshot. Unknown-size live-service installation is
- * intentionally disabled: new snapshots must be distributed as versioned RockMap offline resources
- * with a disclosed byte size/checksum before download. Existing installed snapshots remain usable.
+ * intentionally disabled: new snapshots are distributed as versioned RockMap offline resources
+ * with a disclosed byte size/checksum before download. The active verified snapshot is preferred;
+ * RockMap can fall back to the previous verified snapshot or an older Commit-2 local database.
  */
 public final class GeologyRepository {
     public static final String SOURCE_TITLE = "USGS State Geologic Map Compilation (SGMC)";
@@ -30,7 +30,6 @@ public final class GeologyRepository {
     public static final String SOURCE_NOTE = "2017 USGS SGMC source polygons published through an ArcGIS FeatureServer; RockMap stores a Colorado-only local snapshot and reports the source exactly rather than relabeling it as the separate 2026 GeMS release.";
     public static final String SOURCE_SERVICE = "https://services.arcgis.com/v01gqwM5QqNysAAi/ArcGIS/rest/services/SGMC_featureservice/FeatureServer/0/query";
 
-    private static final String DB_NAME = "rockmap-geology.db";
     private static final int MIN_EXPECTED_COLORADO_RECORDS = 500;
     private static final int MAX_EXPECTED_COLORADO_RECORDS = 100000;
 
@@ -78,22 +77,31 @@ public final class GeologyRepository {
         }
     }
 
-    private final Context context;
+    private final GeologyDataManager dataManager;
 
     public GeologyRepository(Context context) {
-        this.context = context.getApplicationContext();
+        dataManager = new GeologyDataManager(context);
     }
 
+    /** Returns the first structurally usable current/rollback/legacy database candidate. */
     public File getDatabaseFile() {
-        // Keep replaceable geology outside Android's database backup domain. User-created
-        // RockMap databases remain backup-eligible; the whole files/research directory is
-        // explicitly excluded by the existing file-domain backup rules.
-        return new File(new File(context.getFilesDir(), "research"), DB_NAME);
+        File ready = findReadyDatabase();
+        return ready != null ? ready : dataManager.getLegacyDatabaseFile();
     }
 
     public boolean isReady() {
-        File file = getDatabaseFile();
-        if (!file.isFile() || file.length() < 4096L) return false;
+        return findReadyDatabase() != null;
+    }
+
+    private File findReadyDatabase() {
+        for (File file : dataManager.getDatabaseCandidates()) {
+            if (isReadyFile(file)) return file;
+        }
+        return null;
+    }
+
+    private boolean isReadyFile(File file) {
+        if (file == null || !file.isFile() || file.length() < 4096L) return false;
         try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
                 file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
             try (Cursor c = db.rawQuery("SELECT value FROM metadata WHERE key='record_count'", null)) {
@@ -107,8 +115,9 @@ public final class GeologyRepository {
     }
 
     public int getRecordCount() {
-        if (!isReady()) return 0;
-        try (SQLiteDatabase db = openRead();
+        File file = findReadyDatabase();
+        if (file == null) return 0;
+        try (SQLiteDatabase db = openRead(file);
              Cursor c = db.rawQuery("SELECT value FROM metadata WHERE key='record_count'", null)) {
             return c.moveToFirst() ? Integer.parseInt(c.getString(0)) : 0;
         } catch (RuntimeException ex) {
@@ -117,13 +126,14 @@ public final class GeologyRepository {
     }
 
     public long getDatabaseBytes() {
-        File file = getDatabaseFile();
-        return file.isFile() ? file.length() : 0L;
+        File file = findReadyDatabase();
+        return file != null ? file.length() : 0L;
     }
 
     public String getDownloadedAt() {
-        if (!isReady()) return "";
-        try (SQLiteDatabase db = openRead();
+        File file = findReadyDatabase();
+        if (file == null) return "";
+        try (SQLiteDatabase db = openRead(file);
              Cursor c = db.rawQuery("SELECT value FROM metadata WHERE key='downloaded_at'", null)) {
             return c.moveToFirst() ? c.getString(0) : "";
         } catch (RuntimeException ex) {
@@ -293,7 +303,13 @@ public final class GeologyRepository {
     }
 
     private SQLiteDatabase openRead() {
-        return SQLiteDatabase.openDatabase(getDatabaseFile().getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+        File file = findReadyDatabase();
+        if (file == null) throw new IllegalStateException("Colorado geology is not installed yet.");
+        return openRead(file);
+    }
+
+    private static SQLiteDatabase openRead(File file) {
+        return SQLiteDatabase.openDatabase(file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
     }
 
     private void ensureReady() {
@@ -487,16 +503,6 @@ public final class GeologyRepository {
         return value == null ? "" : value.trim().toLowerCase(Locale.US);
     }
 
-    private static String combine(String... values) {
-        StringBuilder out = new StringBuilder();
-        for (String value : values) {
-            if (value == null || value.trim().isEmpty()) continue;
-            if (out.length() > 0) out.append(' ');
-            out.append(value.trim().toLowerCase(Locale.US));
-        }
-        return out.toString();
-    }
-
     private static String join(List<String> values, String delimiter) {
         StringBuilder out = new StringBuilder();
         for (String value : values) {
@@ -505,5 +511,4 @@ public final class GeologyRepository {
         }
         return out.toString();
     }
-
 }

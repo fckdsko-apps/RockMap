@@ -10,6 +10,10 @@ def repositorySlug = System.getenv('GITHUB_REPOSITORY') ?: ''
 // The Android app performs no statewide PMTiles scan or runtime geocoder download.
 def dataReleaseTag = 'rockmap-minerals-alpha6-2-1-20260815-test1'
 def manifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/releases/download/${dataReleaseTag}/manifest.json" : ''
+// Commit 2 geology is a separate explicit download. The release tag is immutable and the app
+// fetches only geology-manifest.json until the user has seen the exact transfer/install sizes.
+def geologyReleaseTag = 'rockmap-geology-sgmc-co-20260822-v1'
+def geologyManifestUrl = repositorySlug ? "https://github.com/${repositorySlug}/releases/download/${geologyReleaseTag}/geology-manifest.json" : ''
 def privacyPolicyUrl = providers.gradleProperty('ROCKMAP_PRIVACY_POLICY_URL').getOrElse('')
 def signingDirPath = System.getenv('ROCKMAP_SIGNING_DIR')
 def signingProps = new Properties()
@@ -39,9 +43,12 @@ android {
         versionName versionNameValue
 
         buildConfigField 'String', 'DATA_MANIFEST_URL', '"' + manifestUrl + '"'
+        buildConfigField 'String', 'GEOLOGY_MANIFEST_URL', '"' + geologyManifestUrl + '"'
         buildConfigField 'String', 'PRIVACY_POLICY_URL', '"' + privacyPolicyUrl + '"'
         buildConfigField 'int', 'SUPPORTED_MANIFEST_VERSION', '1'
         buildConfigField 'int', 'SUPPORTED_STYLE_SCHEMA_VERSION', '1'
+        buildConfigField 'int', 'SUPPORTED_GEOLOGY_MANIFEST_VERSION', '1'
+        buildConfigField 'int', 'SUPPORTED_GEOLOGY_SCHEMA_VERSION', '1'
     }
 
     buildFeatures {
