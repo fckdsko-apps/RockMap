@@ -279,10 +279,13 @@ public final class MineralOverlayController {
         if (closeController == null) closeController = MapContextCloseController.forMap(mapView);
         if (closeController == null) return;
         if (areaVisible && activeAreaBounds != null) {
+            String closeLabel = heatmapVisible && !activeHeatmapLabel.isEmpty()
+                    ? activeHeatmapLabel + " heatmap" : "Mineral Evidence";
+            int closeColor = heatmapVisible ? Color.rgb(205, 35, 25) : Color.rgb(235, 115, 20);
             closeController.setMineralTarget(
                     activeAreaBounds.south, activeAreaBounds.west,
                     activeAreaBounds.north, activeAreaBounds.east,
-                    this::clearAreaAnalysis);
+                    closeLabel, closeColor, this::clearAreaAnalysis);
         } else {
             closeController.clearMineralTarget();
         }

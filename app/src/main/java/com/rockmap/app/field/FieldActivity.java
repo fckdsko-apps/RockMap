@@ -422,11 +422,15 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     returnToMap();
                 }));
         root.addView(action("Research this location",
-                "Choose a radius, then inspect mapped geology and continue into mineral evidence or historic activity.",
+                "Choose a radius, then inspect mapped geology and continue into Mineral Evidence or Historic Mines & Workings.",
                 v -> startResearch(new Intent(this, ResearchActivity.class)
                         .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
                         .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name))));
+        root.addView(action("Create Prospecting Area Around Here",
+                "Choose a radius around this Field Record and save it as a Prospecting Area.",
+                v -> ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
+                        "Created from Field Record: " + r.name)));
         root.addView(action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon))));
@@ -567,6 +571,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Show on Map",
                 "Zoom to this saved area and keep the polygon visible in geographic context.",
                 v -> {
+                    ProspectingAreaVisibility.show(this, a.id);
+                    FieldMapState.setAreasVisible(this, true);
                     FieldMapState.clearViewedMapContext(this);
                     FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
                     if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
@@ -577,6 +583,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setTitle("Delete Area?")
                 .setPositiveButton("Delete", (d, w) -> {
                     db.deleteArea(a.id);
+                    ProspectingAreaVisibility.forget(this, a.id);
                     showProspectingAreas();
                 })
                 .setNegativeButton("Cancel", null)

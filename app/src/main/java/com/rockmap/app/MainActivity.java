@@ -36,8 +36,11 @@ import androidx.lifecycle.Observer;
 import androidx.work.WorkInfo;
 
 import com.rockmap.app.coordinates.CoordinateParser;
+import com.rockmap.app.field.GeoMath;
+import com.rockmap.app.field.ProspectingAreaCreator;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.LandStatusCatalog;
+import com.rockmap.app.map.MapContextCloseController;
 import com.rockmap.app.map.MapController;
 import com.rockmap.app.map.MiningClaimCatalog;
 import com.rockmap.app.mines.HistoricMineCatalog;
@@ -140,6 +143,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private int pendingLocationAction = LOCATION_ACTION_NONE;
     private double pendingResearchRadiusMeters = 1000d;
     private Intent pendingResearchLaunchIntent;
+    private GeologyRepository.Bounds activeResearchBounds;
+    private String activeResearchGeologyGeoJson = "";
+    private String activeResearchGeologyTitle = "";
+    private int activeResearchGeologyCount;
+    private GeologyRepository.Bounds activeResearchGeologyBounds;
+    private GeologyRepository.Bounds historicMineContextBounds;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -283,6 +292,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void startResearch(GeologyRepository.Bounds bounds) {
+        startResearch(bounds, false);
+    }
+
+    private void startResearch(GeologyRepository.Bounds bounds, boolean autoGeology) {
         Intent intent = new Intent(this, ResearchActivity.class);
         if (bounds != null) {
             intent.putExtra(ResearchActivity.EXTRA_SOUTH, bounds.south);
@@ -290,6 +303,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             intent.putExtra(ResearchActivity.EXTRA_NORTH, bounds.north);
             intent.putExtra(ResearchActivity.EXTRA_EAST, bounds.east);
         }
+        if (autoGeology) intent.putExtra(ResearchActivity.EXTRA_AUTO_GEOLOGY, true);
         startActivityForResult(intent, RESEARCH_REQUEST);
     }
 
@@ -368,7 +382,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         examples.setPadding(0, dp(2), 0, dp(6));
         box.addView(examples);
 
-        TextView analyzeTitle = sectionLabel("Analyze Visible Area");
+        TextView analyzeTitle = sectionLabel("Visible Area — Mineral Evidence");
         analyzeTitle.setPadding(0, dp(8), 0, dp(2));
         box.addView(analyzeTitle);
 
@@ -376,7 +390,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         analyzeHelp.setPadding(0, 0, 0, dp(4));
         box.addView(analyzeHelp);
 
-        Button analyzeArea = smallActionButton("Analyze Visible Area");
+        Button analyzeArea = smallActionButton("Visible Area — Mineral Evidence");
         box.addView(analyzeArea, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -434,7 +448,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             @Override
             public void onError(String message) {
                 analyzeButton.setEnabled(true);
-                analyzeButton.setText("Analyze Visible Area");
+                analyzeButton.setText("Visible Area — Mineral Evidence");
                 showMessage(message == null ? "Area mineral analysis failed safely." : message);
             }
         });
@@ -450,9 +464,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     .setMessage("RockMap found " + result.recordsInArea
                             + " installed evidence record" + (result.recordsInArea == 1 ? "" : "s")
                             + " in the selected map area, but none contained a usable explicit mineral/material or commodity term. This does not prove minerals are absent.")
-                    .setPositiveButton("Close & pan", null)
-                    .setNeutralButton("Clear", (d, w) -> clearMinerals())
-                    .setNegativeButton("Close", null)
+                    .setPositiveButton("Close", null)
                     .show();
             return;
         }
@@ -472,6 +484,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         summary.setTextColor(Color.rgb(65, 65, 65));
         summary.setPadding(0, 0, 0, dp(6));
         box.addView(summary);
+
+        Button saveArea = smallActionButton("Save Area as Prospecting Area");
+        saveArea.setOnClickListener(v -> saveMineralAnalysisArea(result));
+        box.addView(saveArea);
 
         EditText filter = new EditText(this);
         filter.setHint("Filter minerals (for example: aquamarine)");
@@ -526,8 +542,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Mineral Evidence in Area")
                 .setView(box)
-                .setPositiveButton("View map", null)
-                .setNeutralButton("Clear", (d, w) -> clearMinerals())
+                .setNegativeButton("Close", null)
                 .create();
         list.setOnItemClickListener((parent, view, position, id) -> {
             if (position < 0 || position >= displayed.size()) return;
@@ -569,7 +584,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         adapter.clear();
         for (MineralAreaAnalyzer.MineralSummary item : displayed) {
-            adapter.add(new ActionListItem(item.displayName, mineralAreaDetail(item), "MAP"));
+            adapter.add(new ActionListItem(item.displayName, mineralAreaDetail(item) + " · Tap to show heatmap", "HEATMAP"));
         }
         adapter.notifyDataSetChanged();
 
@@ -609,13 +624,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                                 + " to this heatmap. Hotter areas mean denser and/or stronger documented evidence nearby. "
                                 + "Direct occurrence/locality evidence is weighted more strongly than broad district or abandoned-mine evidence.\n\n"
                                 + "This is not a probability map and does not predict specimens between records. Zoom in to see the small evidence dots, then tap a dot for its source and reliability. Land status and mining claims remain separate layers.";
-                        new AlertDialog.Builder(MainActivity.this)
-                                .setTitle(item.displayName + " evidence heatmap")
-                                .setMessage(message)
-                                .setPositiveButton("Evidence List", (d, w) -> showMineralAreaResults(analysis))
-                                .setNeutralButton("Layers", (d, w) -> showLayers())
-                                .setNegativeButton("Close", null)
-                                .show();
+                        activeResearchBounds = geologyBounds(analysis.bounds);
+                        showMineralHeatmapActions(item.displayName, message, analysis);
                     }
 
                     @Override
@@ -962,10 +972,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        Button makeArea = smallActionButton("Create Prospecting Area Around Here");
+        makeArea.setOnClickListener(v -> ProspectingAreaCreator.chooseRadiusAndSave(
+                this, record.latitude, record.longitude, record.name,
+                "Created from Mineral Evidence record: " + record.name));
+        detailBox.addView(makeArea);
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
                 .setTitle(record.name)
-                .setView(boundedScrollableContent(body, 430))
+                .setView(boundedScrollableContent(detailBox, 460))
                 .setPositiveButton("Save Location", (d, w) ->
                         saveMineralMarker(record, hit.reason, result, landAtMarker))
                 .setNegativeButton("Close", null);
@@ -1023,18 +1041,27 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void setHistoricMinesVisible(boolean visible) {
+        setHistoricMinesVisible(visible, null);
+    }
+
+    private void setHistoricMinesVisible(boolean visible, GeologyRepository.Bounds contextBounds) {
         historicMinesRequestedVisible = visible;
+        historicMineContextBounds = visible ? contextBounds : null;
         if (!visible) {
             historicMineOverlayController.setVisible(false);
+            MapContextCloseController.forMap(mapView).clearHistoricTarget();
             return;
         }
         if (!mineralIndexRepository.hasExpandedEvidence()) {
             historicMinesRequestedVisible = false;
+            historicMineContextBounds = null;
+            MapContextCloseController.forMap(mapView).clearHistoricTarget();
             showMessage("Historic mine overlay requires the installed Alpha 6.2.1 evidence index.");
             return;
         }
         if (historicMineOverlayController.isLoaded()) {
             historicMineOverlayController.setVisible(true);
+            syncHistoricMineCloseTarget();
             return;
         }
         if (historicMinesLoading) return;
@@ -1048,11 +1075,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 historicMineOverlayController.load(records);
                 if (records.isEmpty()) {
                     historicMinesRequestedVisible = false;
+                    historicMineContextBounds = null;
+                    MapContextCloseController.forMap(mapView).clearHistoricTarget();
                     showMessage("No historic mine records were found in the installed evidence index.");
                     return;
                 }
                 historicMineOverlayController.setVisible(historicMinesRequestedVisible);
                 if (historicMinesRequestedVisible) {
+                    syncHistoricMineCloseTarget();
                     showMessage("Historic mine overlay loaded: " + records.size() + " mapped records.");
                 }
             }
@@ -1061,10 +1091,24 @@ public final class MainActivity extends Activity implements LocationRepository.L
             public void onError(String message) {
                 historicMinesLoading = false;
                 historicMinesRequestedVisible = false;
+                historicMineContextBounds = null;
                 historicMineOverlayController.setVisible(false);
+                MapContextCloseController.forMap(mapView).clearHistoricTarget();
                 showMessage(message == null ? "Historic mine overlay failed to load." : message);
             }
         });
+    }
+
+    private void syncHistoricMineCloseTarget() {
+        MapContextCloseController close = MapContextCloseController.forMap(mapView);
+        Runnable hide = () -> setHistoricMinesVisible(false);
+        if (historicMineContextBounds != null) {
+            close.setHistoricTarget("Historic Mines & Workings", Color.rgb(112, 78, 50),
+                    historicMineContextBounds.south, historicMineContextBounds.west,
+                    historicMineContextBounds.north, historicMineContextBounds.east, hide);
+        } else {
+            close.setHistoricTarget("Historic Mines & Workings", Color.rgb(112, 78, 50), hide);
+        }
     }
 
     private void onHistoricMinesTapped(List<MineralRecord> records) {
@@ -1128,10 +1172,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        Button makeArea = smallActionButton("Create Prospecting Area Around Here");
+        makeArea.setOnClickListener(v -> ProspectingAreaCreator.chooseRadiusAndSave(
+                this, record.latitude, record.longitude, HistoricMineCatalog.displayName(record),
+                "Created from Historic Mine / Working: " + HistoricMineCatalog.displayName(record)));
+        detailBox.addView(makeArea);
 
         new AlertDialog.Builder(this)
                 .setTitle(HistoricMineCatalog.displayName(record))
-                .setView(boundedScrollableContent(body, 430))
+                .setView(boundedScrollableContent(detailBox, 460))
                 .setPositiveButton("Save Location / Note",
                         (d, w) -> showHistoricMineSaveDialog(record, landAtMine, nearby))
                 .setNeutralButton("Center",
@@ -2834,10 +2886,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(bodyText);
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        Button makeArea = smallActionButton("Create Prospecting Area Around Here");
+        makeArea.setOnClickListener(v -> ProspectingAreaCreator.chooseRadiusAndSave(
+                this, waypoint.latitude, waypoint.longitude, waypoint.name,
+                "Created from Saved Location: " + waypoint.name));
+        detailBox.addView(makeArea);
 
         new AlertDialog.Builder(this)
                 .setTitle(waypoint.name)
-                .setView(boundedScrollableContent(body, 400))
+                .setView(boundedScrollableContent(detailBox, 430))
                 .setPositiveButton("Show on Map", (d, w) -> mapController.centerOn(waypoint))
                 .setNeutralButton("Edit", (d, w) -> editWaypoint(waypoint))
                 .setNegativeButton("Delete", (d, w) -> confirmDelete(waypoint))
@@ -3115,9 +3175,19 @@ public final class MainActivity extends Activity implements LocationRepository.L
             int count = data.getIntExtra(ResearchActivity.RESULT_COUNT, 0);
             try {
                 String geoJson = ResearchResultStore.geoJson(this);
+                GeologyRepository.Bounds returnedBounds = readResearchBounds(data);
+                GeologyRepository.Bounds queryBounds = researchBoundsFromGeoJson(geoJson);
+                activeResearchGeologyGeoJson = geoJson;
+                activeResearchGeologyTitle = title == null ? "Geology" : title;
+                activeResearchGeologyCount = count;
+                activeResearchGeologyBounds = queryBounds != null ? queryBounds : returnedBounds;
+                if (activeResearchGeologyBounds != null) activeResearchBounds = activeResearchGeologyBounds;
                 geologyOverlayController.show(geoJson, title, count);
-                zoomToResearchBounds(readResearchBounds(data));
-                showMessage("Geology result shown on map. Land and claim layers remain separate.");
+                if (queryBounds == null) zoomToResearchBounds(returnedBounds);
+                showMessage("Geology shown on map. Related research views stay available for the same area.");
+                if (activeResearchGeologyBounds != null) {
+                    mapView.postDelayed(() -> showRelatedAreaMenu(activeResearchGeologyBounds, "geology"), 180L);
+                }
             } catch (IOException ex) {
                 showMessage("Research result could not be opened on the map: " + ex.getMessage());
             }
@@ -3138,27 +3208,171 @@ public final class MainActivity extends Activity implements LocationRepository.L
         GeologyRepository.Bounds bounds = readResearchBounds(data);
         if (ResearchActivity.ACTION_MINERALS_AREA.equals(action)) {
             if (bounds == null) {
-                showMessage("Research did not return valid bounds for mineral analysis.");
+                showMessage("Research did not return valid bounds for Mineral Evidence analysis.");
                 return;
             }
-            MineralSearchEngine.Bounds mineralBounds = new MineralSearchEngine.Bounds(
-                    bounds.north, bounds.east, bounds.south, bounds.west);
-            showMessage("Analyzing existing mineral evidence in Research bounds…");
-            mineralIndexRepository.analyzeArea(mineralBounds, new MineralIndexRepository.AreaAnalysisCallback() {
-                @Override public void onResult(MineralAreaAnalyzer.AnalysisResult result) {
-                    activeMineralAreaAnalysis = result;
-                    mineralOverlayController.showAnalysisBounds(result.bounds);
-                    showMineralAreaResults(result);
-                }
-                @Override public void onError(String message) {
-                    showMessage(message == null ? "Mineral evidence analysis failed safely." : message);
-                }
-            });
+            showMineralEvidenceForBounds(bounds);
             return;
         }
         if (ResearchActivity.ACTION_HISTORIC_MINES.equals(action)) {
-            if (bounds != null) zoomToResearchBounds(bounds);
-            setHistoricMinesVisible(true);
+            if (bounds == null) {
+                showMessage("Research did not return valid bounds for Historic Mines & Workings.");
+                return;
+            }
+            showHistoricMinesForBounds(bounds, true);
+        }
+    }
+
+    private void showMineralEvidenceForBounds(GeologyRepository.Bounds bounds) {
+        if (bounds == null) return;
+        activeResearchBounds = bounds;
+        MineralSearchEngine.Bounds mineralBounds = new MineralSearchEngine.Bounds(
+                bounds.north, bounds.east, bounds.south, bounds.west);
+        showMessage("Analyzing Mineral Evidence in the selected area…");
+        mineralIndexRepository.analyzeArea(mineralBounds, new MineralIndexRepository.AreaAnalysisCallback() {
+            @Override public void onResult(MineralAreaAnalyzer.AnalysisResult result) {
+                activeMineralAreaAnalysis = result;
+                activeResearchBounds = geologyBounds(result.bounds);
+                mineralOverlayController.showAnalysisBounds(result.bounds);
+                showMineralAreaResults(result);
+            }
+            @Override public void onError(String message) {
+                showMessage(message == null ? "Mineral Evidence analysis failed safely." : message);
+            }
+        });
+    }
+
+    private void showHistoricMinesForBounds(GeologyRepository.Bounds bounds, boolean offerRelated) {
+        if (bounds == null) return;
+        activeResearchBounds = bounds;
+        zoomToResearchBounds(bounds);
+        setHistoricMinesVisible(true, bounds);
+        if (offerRelated) mapView.postDelayed(() -> showRelatedAreaMenu(bounds, "mines"), 220L);
+    }
+
+    private void showGeologyForBounds(GeologyRepository.Bounds bounds) {
+        if (bounds == null) return;
+        activeResearchBounds = bounds;
+        if (!activeResearchGeologyGeoJson.isEmpty() && sameResearchBounds(bounds, activeResearchGeologyBounds)) {
+            geologyOverlayController.show(activeResearchGeologyGeoJson, activeResearchGeologyTitle,
+                    activeResearchGeologyCount);
+            mapView.postDelayed(() -> showRelatedAreaMenu(bounds, "geology"), 160L);
+            return;
+        }
+        startResearch(bounds, true);
+    }
+
+    private void showRelatedAreaMenu(GeologyRepository.Bounds bounds, String currentView) {
+        if (bounds == null) return;
+        ArrayList<ActionListItem> rows = new ArrayList<>();
+        ArrayList<String> actions = new ArrayList<>();
+        if (!"geology".equals(currentView)) {
+            rows.add(new ActionListItem("Geology", "Show mapped geologic units for this same area.", "SHOW"));
+            actions.add("geology");
+        }
+        if (!"minerals".equals(currentView)) {
+            rows.add(new ActionListItem("Mineral Evidence", "Choose a mineral/material, then show its evidence heatmap for this same area.", "OPEN"));
+            actions.add("minerals");
+        }
+        if (!"mines".equals(currentView)) {
+            rows.add(new ActionListItem("Historic Mines & Workings", "Show installed historic mine and working records while keeping this area as the research context.", "SHOW"));
+            actions.add("mines");
+        }
+        if (rows.isEmpty()) return;
+        showActionListDialog("Explore This Area",
+                "Keep the same area and open another related research view. Active map views remain visible until you close them from the top-right map controls.",
+                rows, null, null, null, null, "Close", null, which -> {
+                    if (which < 0 || which >= actions.size()) return;
+                    String action = actions.get(which);
+                    if ("geology".equals(action)) showGeologyForBounds(bounds);
+                    else if ("minerals".equals(action)) showMineralEvidenceForBounds(bounds);
+                    else if ("mines".equals(action)) showHistoricMinesForBounds(bounds, true);
+                });
+    }
+
+    private void showMineralHeatmapActions(String mineralName, String message,
+                                           MineralAreaAnalyzer.AnalysisResult analysis) {
+        GeologyRepository.Bounds bounds = geologyBounds(analysis == null ? null : analysis.bounds);
+        ArrayList<ActionListItem> rows = new ArrayList<>();
+        rows.add(new ActionListItem("Back to Mineral Evidence", "Choose another mineral/material from this same area.", "BACK"));
+        rows.add(new ActionListItem("Historic Mines & Workings", "Show historic mine and working records for this same area.", "SHOW"));
+        rows.add(new ActionListItem("Geology", "Show mapped geologic units for this same area.", "SHOW"));
+        showActionListDialog(mineralName + " Evidence Heatmap", message, rows,
+                null, null, null, null, "Close", null, which -> {
+                    if (which == 0) showMineralAreaResults(analysis);
+                    else if (which == 1 && bounds != null) showHistoricMinesForBounds(bounds, true);
+                    else if (which == 2 && bounds != null) showGeologyForBounds(bounds);
+                });
+    }
+
+    private void saveMineralAnalysisArea(MineralAreaAnalyzer.AnalysisResult analysis) {
+        if (analysis == null || analysis.bounds == null) return;
+        MineralSearchEngine.Bounds b = analysis.bounds;
+        ArrayList<GeoMath.Point> points = new ArrayList<>();
+        points.add(new GeoMath.Point(b.south, b.west));
+        points.add(new GeoMath.Point(b.south, b.east));
+        points.add(new GeoMath.Point(b.north, b.east));
+        points.add(new GeoMath.Point(b.north, b.west));
+        ProspectingAreaCreator.savePolygon(this, "Visible Area — Mineral Evidence",
+                "Created from RockMap Visible Area — Mineral Evidence analysis", points, true);
+    }
+
+    private GeologyRepository.Bounds geologyBounds(MineralSearchEngine.Bounds bounds) {
+        if (bounds == null) return null;
+        try {
+            return new GeologyRepository.Bounds(bounds.south, bounds.west, bounds.north, bounds.east);
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private GeologyRepository.Bounds researchBoundsFromGeoJson(String geoJson) {
+        if (geoJson == null || geoJson.trim().isEmpty()) return null;
+        try {
+            JSONObject root = new JSONObject(geoJson);
+            JSONObject query = root.optJSONObject("rockmapQuery");
+            if (query == null) return null;
+            return new GeologyRepository.Bounds(
+                    query.optDouble("south", Double.NaN),
+                    query.optDouble("west", Double.NaN),
+                    query.optDouble("north", Double.NaN),
+                    query.optDouble("east", Double.NaN));
+        } catch (JSONException | IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private boolean sameResearchBounds(GeologyRepository.Bounds left, GeologyRepository.Bounds right) {
+        if (left == null || right == null) return false;
+        double eps = 1e-8d;
+        return Math.abs(left.south - right.south) <= eps
+                && Math.abs(left.west - right.west) <= eps
+                && Math.abs(left.north - right.north) <= eps
+                && Math.abs(left.east - right.east) <= eps;
+    }
+
+    private void saveGeologyFeatureAsProspectingArea(Feature feature, LatLng coordinate, String unit) {
+        if (feature == null || coordinate == null) return;
+        try {
+            JSONObject featureJson = new JSONObject(feature.toJson());
+            JSONObject geometry = featureJson.optJSONObject("geometry");
+            if (geometry == null) {
+                showMessage("This mapped geology feature does not contain saveable polygon geometry.");
+                return;
+            }
+            List<GeoMath.Point> points = ProspectingAreaCreator.polygonFromGeometryJson(
+                    geometry.toString(), coordinate.getLatitude(), coordinate.getLongitude());
+            if (points.size() < 3) {
+                showMessage("This mapped geology feature could not be converted to a Prospecting Area.");
+                return;
+            }
+            ProspectingAreaCreator.savePolygon(this, unit,
+                    "Created from mapped geology unit: " + unit
+                            + "\nSource: " + GeologyRepository.SOURCE_TITLE
+                            + "\nDOI: " + GeologyRepository.SOURCE_DOI,
+                    points, true);
+        } catch (JSONException ex) {
+            showMessage("This mapped geology feature could not be read safely.");
         }
     }
 
@@ -3216,9 +3430,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
         TextView body = new TextView(this);
         body.setPadding(dp(20), dp(8), dp(20), dp(8));
         body.setText(text.toString());
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        Button saveArea = smallActionButton("Save as Prospecting Area");
+        saveArea.setOnClickListener(v -> saveGeologyFeatureAsProspectingArea(feature, coordinate, unit));
+        detailBox.addView(saveArea);
         new AlertDialog.Builder(this)
                 .setTitle(unit)
-                .setView(body)
+                .setView(boundedScrollableContent(detailBox, 430))
                 .setPositiveButton("Research", (d, w) -> showResearch())
                 .setNeutralButton("Source Details", (d, w) -> showGeologySourceDetails(feature, coordinate, unit))
                 .setNegativeButton("Close", null)
@@ -3522,7 +3742,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 && historicMineOverlayController != null
                 && historicMineOverlayController.isLoaded()) {
             historicMineOverlayController.refreshStyle();
+            syncHistoricMineCloseTarget();
         }
+        MapContextCloseController.forMap(mapView).refresh();
         consumePendingResearchLaunch();
     }
 
@@ -3685,6 +3907,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     @Override protected void onResume() {
         super.onResume();
         mapView.onResume();
+        MapContextCloseController.forMap(mapView).refresh();
     }
 
     @Override protected void onPause() {

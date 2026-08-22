@@ -28,6 +28,8 @@ import androidx.work.WorkInfo;
 import com.rockmap.app.BuildConfig;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.GeoMath;
+import com.rockmap.app.field.ProspectingAreaCreator;
+import com.rockmap.app.field.ProspectingAreaVisibility;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
@@ -54,6 +56,7 @@ public final class ResearchActivity extends Activity {
     public static final String EXTRA_POINT_LON = "rockmap.research.point_lon";
     public static final String EXTRA_RADIUS_M = "rockmap.research.radius_m";
     public static final String EXTRA_POINT_LABEL = "rockmap.research.point_label";
+    public static final String EXTRA_AUTO_GEOLOGY = "rockmap.research.auto_geology";
 
     public static final String RESULT_ACTION = "rockmap.research.result_action";
     public static final String RESULT_TITLE = "rockmap.research.title";
@@ -98,6 +101,17 @@ public final class ResearchActivity extends Activity {
             intent.removeExtra(EXTRA_AREA_ID);
             if (!geology.isReady()) showInstall();
             else analyzeArea(areaId);
+            return true;
+        }
+        if (intent != null && intent.getBooleanExtra(EXTRA_AUTO_GEOLOGY, false)) {
+            intent.removeExtra(EXTRA_AUTO_GEOLOGY);
+            if (!geology.isReady()) {
+                showInstall();
+            } else if (visibleBounds != null) {
+                runBoundsQuery(visibleBounds, "Geology — Selected Area");
+            } else {
+                showHub();
+            }
             return true;
         }
         if (intent != null && intent.hasExtra(EXTRA_POINT_LAT) && intent.hasExtra(EXTRA_POINT_LON)) {
@@ -402,8 +416,15 @@ public final class ResearchActivity extends Activity {
         for (GeoMath.Point p : area.points) polygon.add(new GeologyRepository.Point(p.lat, p.lon));
         GeologyRepository.Bounds bounds = boundsOf(polygon);
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
-                results -> showResults(results, "Combined Area Analysis — " + area.name, bounds,
-                        queryPolygonContext(polygon, area.name)));
+                results -> {
+                    // The research overlay already shows this exact boundary. Keep the saved Field
+                    // polygon hidden so one analyzed Prospecting Area produces one map context and
+                    // one close action. The saved area remains intact and can be explicitly shown
+                    // again from Field → Prospecting Areas.
+                    ProspectingAreaVisibility.hide(this, area.id);
+                    showResults(results, "Combined Area Analysis — " + area.name, bounds,
+                            queryPolygonContext(polygon, area.name, area.id));
+                });
     }
 
     private void showPointSourcePicker() {
@@ -616,6 +637,7 @@ public final class ResearchActivity extends Activity {
                     geoJson, resultTitle, safe.size(), mapBounds));
             top.addView(showMap);
         }
+        addProspectingAreaAction(top, currentQueryContextJson, resultTitle);
         top.addView(section("Geologic Units"));
         screen.addView(top, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -658,10 +680,10 @@ public final class ResearchActivity extends Activity {
         bottom.setPadding(dp(18), 0, dp(18), dp(10));
         if (queryBounds != null) {
             bottom.addView(section("Analyze This Area Further"));
-            Button minerals = button("Mineral Evidence");
+            Button minerals = button("Show Mineral Evidence in This Area");
             minerals.setOnClickListener(v -> returnBoundsAction(ACTION_MINERALS_AREA, queryBounds));
             bottom.addView(minerals);
-            Button mines = button("Historic Mines & Workings");
+            Button mines = button("Show Historic Mines & Workings in This Area");
             mines.setOnClickListener(v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds));
             bottom.addView(mines);
         }
@@ -792,13 +814,18 @@ public final class ResearchActivity extends Activity {
 
     private void showStoredResult() {
         try {
-            ResearchResultStore.Summary s = ResearchResultStore.summary(this);
+            ResearchResultStore.Summary stored = ResearchResultStore.summary(this);
             String geoJson = ResearchResultStore.geoJson(this);
+            LinearLayout box = page();
+            box.setPadding(dp(16), dp(4), dp(16), dp(4));
+            box.addView(help(stored.count + " mapped geology area" + (stored.count == 1 ? "" : "s")
+                    + " saved as the current analysis. Field → Export Data can save the complete underlying records as GeoJSON or CSV."));
+            String queryContext = queryContextFromGeoJson(geoJson);
+            addProspectingAreaAction(box, queryContext, stored.title);
             new AlertDialog.Builder(this)
-                    .setTitle(s.title)
-                    .setMessage(s.count + " mapped geology area" + (s.count == 1 ? "" : "s")
-                            + " saved as the current analysis. Field → Export Data can save the complete underlying records as GeoJSON or CSV.")
-                    .setPositiveButton("Show on Map", (d, w) -> returnGeology(geoJson, s.title, s.count, null))
+                    .setTitle(stored.title)
+                    .setView(box)
+                    .setPositiveButton("Show on Map", (d, w) -> returnGeology(geoJson, stored.title, stored.count, null))
                     .setNeutralButton("Clear", (d, w) -> {
                         ResearchResultStore.clear(this);
                         showHub();
@@ -912,6 +939,72 @@ public final class ResearchActivity extends Activity {
         }
     }
 
+    private void addProspectingAreaAction(LinearLayout parent, String queryContextJson, String resultTitle) {
+        if (parent == null || queryContextJson == null || queryContextJson.trim().isEmpty()) return;
+        try {
+            JSONObject query = new JSONObject(queryContextJson);
+            String type = query.optString("type", "");
+            long existingAreaId = query.optLong("areaId", -1L);
+            if (existingAreaId > 0L) {
+                parent.addView(help("This analysis already uses a saved Prospecting Area. It will not be duplicated."));
+                return;
+            }
+            if ("point".equals(type)) {
+                double lat = query.optDouble("centerLat", Double.NaN);
+                double lon = query.optDouble("centerLon", Double.NaN);
+                if (!Double.isFinite(lat) || !Double.isFinite(lon)) return;
+                String label = blank(query.optString("label", ""), "Selected Point");
+                parent.addView(action("Create Prospecting Area Around This Point",
+                        "Choose a radius and save it for later research, field work, or export.",
+                        v -> ProspectingAreaCreator.chooseRadiusAndSave(this, lat, lon, label,
+                                "Created from RockMap Exact Point analysis")));
+                return;
+            }
+            JSONObject geometry = query.optJSONObject("geometry");
+            if (geometry == null) return;
+            List<GeoMath.Point> points = ProspectingAreaCreator.polygonFromGeometryJson(geometry.toString());
+            if (points.size() < 3) return;
+            String typeLabel = "point_radius".equals(type) ? "radius analysis"
+                    : "bounds".equals(type) ? "Visible Area analysis" : "Research analysis";
+            String label = blank(query.optString("label", ""), blank(resultTitle, "Prospecting Area"));
+            String defaultName = label;
+            if ("point_radius".equals(type)) {
+                double radius = query.optDouble("radiusMeters", 0d);
+                if (radius > 0d) defaultName = label + " — " + ProspectingAreaCreator.radiusLabel(radius);
+            } else if ("bounds".equals(type) && !defaultName.toLowerCase(Locale.US).contains("visible area")) {
+                defaultName = "Visible Area — " + defaultName;
+            }
+            String notes = "Created from RockMap " + typeLabel;
+            if ("point_radius".equals(type)) {
+                double lat = query.optDouble("centerLat", Double.NaN);
+                double lon = query.optDouble("centerLon", Double.NaN);
+                double radius = query.optDouble("radiusMeters", 0d);
+                if (Double.isFinite(lat) && Double.isFinite(lon)) {
+                    notes += String.format(Locale.US, "\nCenter: %.6f, %.6f", lat, lon);
+                }
+                if (radius > 0d) notes += "\nRadius: " + ProspectingAreaCreator.radiusLabel(radius);
+            }
+            final String saveName = defaultName;
+            final String saveNotes = notes;
+            parent.addView(action("Save as Prospecting Area",
+                    "Save this exact analyzed area. It stays hidden on the map until you explicitly choose Show on Map.",
+                    v -> ProspectingAreaCreator.savePolygon(this, saveName, saveNotes, points, true)));
+        } catch (JSONException ignored) {
+            // A malformed optional UI context must never break Research results.
+        }
+    }
+
+    private static String queryContextFromGeoJson(String geoJson) {
+        if (geoJson == null || geoJson.trim().isEmpty()) return "";
+        try {
+            JSONObject root = new JSONObject(geoJson);
+            JSONObject query = root.optJSONObject("rockmapQuery");
+            return query == null ? "" : query.toString();
+        } catch (JSONException ex) {
+            return "";
+        }
+    }
+
     private static String queryBoundsContext(GeologyRepository.Bounds bounds, String label) {
         if (bounds == null) return "";
         try {
@@ -926,12 +1019,13 @@ public final class ResearchActivity extends Activity {
         }
     }
 
-    private static String queryPolygonContext(List<GeologyRepository.Point> polygon, String label) {
+    private static String queryPolygonContext(List<GeologyRepository.Point> polygon, String label, long areaId) {
         if (polygon == null || polygon.size() < 3) return "";
         try {
             JSONObject query = new JSONObject();
             query.put("type", "polygon");
             query.put("label", blank(label, "Prospecting Area"));
+            if (areaId > 0L) query.put("areaId", areaId);
             putQueryBounds(query, boundsOf(polygon));
             query.put("geometry", polygonGeometry(polygon));
             return query.toString();

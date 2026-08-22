@@ -65,6 +65,7 @@ public final class GeologyOverlayController {
     private boolean visible;
     private boolean hasQueryGeometry;
     private GeologyRepository.Bounds queryBounds;
+    private String queryCloseLabel = "Geology";
     private boolean fitQueryOnNextRender;
 
     public GeologyOverlayController(MapView mapView, Listener listener) {
@@ -85,6 +86,7 @@ public final class GeologyOverlayController {
         this.queryGeoJson = extractQueryGeoJson(this.geoJson);
         this.hasQueryGeometry = !emptyCollection().equals(this.queryGeoJson);
         this.queryBounds = extractQueryBounds(this.geoJson);
+        this.queryCloseLabel = extractQueryCloseLabel(this.geoJson);
         this.fitQueryOnNextRender = this.hasQueryGeometry && this.queryBounds != null;
         this.label = label == null ? "" : label.trim();
         this.count = Math.max(0, count);
@@ -98,6 +100,7 @@ public final class GeologyOverlayController {
         queryGeoJson = emptyCollection();
         hasQueryGeometry = false;
         queryBounds = null;
+        queryCloseLabel = "Geology";
         fitQueryOnNextRender = false;
         label = "";
         count = 0;
@@ -141,7 +144,7 @@ public final class GeologyOverlayController {
         if (visible && count > 0 && hasQueryGeometry && queryBounds != null) {
             closeController.setGeologyTarget(
                     queryBounds.south, queryBounds.west, queryBounds.north, queryBounds.east,
-                    this::clear);
+                    queryCloseLabel, QUERY_COLOR, this::clear);
         } else {
             closeController.clearGeologyTarget();
         }
@@ -327,6 +330,33 @@ public final class GeologyOverlayController {
         }
     }
 
+
+    private static String extractQueryCloseLabel(String researchGeoJson) {
+        if (researchGeoJson == null || researchGeoJson.trim().isEmpty()) return "Geology";
+        try {
+            JSONObject root = new JSONObject(researchGeoJson);
+            JSONObject query = root.optJSONObject("rockmapQuery");
+            if (query == null) return "Geology";
+            String type = query.optString("type", "");
+            if ("point_radius".equals(type)) {
+                double radius = query.optDouble("radiusMeters", 0d);
+                if (radius >= 1000d) {
+                    double km = radius / 1000d;
+                    String amount = km == Math.rint(km)
+                            ? String.format(java.util.Locale.US, "%.0f km", km)
+                            : String.format(java.util.Locale.US, "%.1f km", km);
+                    return "Geology — " + amount + " radius";
+                }
+                if (radius > 0d) return "Geology — " + Math.round(radius) + " m radius";
+            }
+            if ("point".equals(type)) return "Geology — Exact Point";
+            if ("bounds".equals(type)) return "Geology — Visible Area";
+            if ("polygon".equals(type)) return "Geology — Prospecting Area";
+            return "Geology";
+        } catch (JSONException ex) {
+            return "Geology";
+        }
+    }
 
     private static GeologyRepository.Bounds extractQueryBounds(String researchGeoJson) {
         try {
