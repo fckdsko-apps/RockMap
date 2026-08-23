@@ -576,6 +576,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(6), dp(2), dp(6), dp(4));
+        // Preserve the established accessibility/offline contract used by RockMap preflight.
+        content.setContentDescription("Mineral results — " + activeMineralScopeLabel);
         TextView summary = researchBodyText(result.recordsInArea + " installed evidence records fall inside this area; "
                 + result.recordsWithExplicitMineralTerms + " contain explicit mineral/material or commodity terms. "
                 + result.minerals.size() + " unique terms are available.\n\n"
