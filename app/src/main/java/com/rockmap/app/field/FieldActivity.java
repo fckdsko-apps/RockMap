@@ -427,10 +427,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
                         .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name))));
-        root.addView(action("Create Prospecting Area Around Here",
+        View createAreaAction = action("Create Prospecting Area Around Here",
                 "Choose a radius around this Field Record and save it as a Prospecting Area.",
                 v -> ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
-                        "Created from Field Record: " + r.name)));
+                        "Created from Field Record: " + r.name));
         root.addView(action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon))));
@@ -448,7 +448,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .show()), weight());
         root.addView(row);
         root.addView(nav("Back to Field Records", v -> showFieldRecords()));
-        setContentView(scroll(root));
+        setContentView(pageWithPinnedAction(root, createAreaAction));
     }
 
     private void beginPhotoPick() {
@@ -571,7 +571,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(action("Show on Map",
                 "Zoom to this saved area and keep the polygon visible in geographic context.",
                 v -> {
-                    ProspectingAreaVisibility.show(this, a.id);
+                    ProspectingAreaVisibility.showOnly(this, a.id);
                     FieldMapState.setAreasVisible(this, true);
                     FieldMapState.clearViewedMapContext(this);
                     FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
@@ -660,6 +660,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             for (FieldImport.ImportedArea a : r.areas) {
                 long id = db.insertArea(a.name, "Imported from " + displayName, a.points);
                 db.addImportItem(batchId, FieldDatabase.IMPORT_AREA, id);
+                ProspectingAreaVisibility.show(this, id);
             }
         } catch (RuntimeException ex) {
             toast("Import failed safely before completion: " + ex.getMessage());
@@ -868,7 +869,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         for (Long id : db.getImportItemIds(batchId, FieldDatabase.IMPORT_AREA)) {
             FieldDatabase.Area area = db.getArea(id);
-            if (area != null) all.addAll(area.points);
+            if (area != null) {
+                all.addAll(area.points);
+                ProspectingAreaVisibility.show(this, id);
+            }
         }
 
         Set<Long> waypointIds = new HashSet<>(db.getImportItemIds(batchId, FieldDatabase.IMPORT_WAYPOINT));
@@ -1678,6 +1682,31 @@ public final class FieldActivity extends Activity implements LocationRepository.
         });
         s.requestApplyInsets();
         return s;
+    }
+
+    private View pageWithPinnedAction(View content, View action) {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setBackgroundColor(0xfffafafa);
+        ScrollView scrolling = new ScrollView(this);
+        scrolling.setFillViewport(true);
+        scrolling.addView(content);
+        outer.addView(scrolling, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        LinearLayout pinned = new LinearLayout(this);
+        pinned.setOrientation(LinearLayout.VERTICAL);
+        pinned.setPadding(dp(14), dp(4), dp(14), dp(8));
+        pinned.setBackgroundColor(0xfffafafa);
+        pinned.addView(action, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        outer.addView(pinned);
+        outer.setOnApplyWindowInsetsListener((v, i) -> {
+            v.setPadding(i.getSystemWindowInsetLeft(), i.getSystemWindowInsetTop(),
+                    i.getSystemWindowInsetRight(), i.getSystemWindowInsetBottom());
+            return i;
+        });
+        outer.requestApplyInsets();
+        return outer;
     }
 
     private TextView title(String text) {

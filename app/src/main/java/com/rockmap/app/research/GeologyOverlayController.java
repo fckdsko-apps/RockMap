@@ -65,6 +65,7 @@ public final class GeologyOverlayController {
     private boolean visible;
     private boolean hasQueryGeometry;
     private GeologyRepository.Bounds queryBounds;
+    private LatLng queryAnchor;
     private String queryCloseLabel = "Geology";
     private boolean fitQueryOnNextRender;
 
@@ -86,6 +87,7 @@ public final class GeologyOverlayController {
         this.queryGeoJson = extractQueryGeoJson(this.geoJson);
         this.hasQueryGeometry = !emptyCollection().equals(this.queryGeoJson);
         this.queryBounds = extractQueryBounds(this.geoJson);
+        this.queryAnchor = extractQueryAnchor(this.geoJson, this.queryBounds);
         this.queryCloseLabel = extractQueryCloseLabel(this.geoJson);
         this.fitQueryOnNextRender = this.hasQueryGeometry && this.queryBounds != null;
         this.label = label == null ? "" : label.trim();
@@ -100,6 +102,7 @@ public final class GeologyOverlayController {
         queryGeoJson = emptyCollection();
         hasQueryGeometry = false;
         queryBounds = null;
+        queryAnchor = null;
         queryCloseLabel = "Geology";
         fitQueryOnNextRender = false;
         label = "";
@@ -142,9 +145,16 @@ public final class GeologyOverlayController {
         if (closeController == null) closeController = MapContextCloseController.forMap(mapView);
         if (closeController == null) return;
         if (visible && count > 0 && hasQueryGeometry && queryBounds != null) {
-            closeController.setGeologyTarget(
-                    queryBounds.south, queryBounds.west, queryBounds.north, queryBounds.east,
-                    queryCloseLabel, QUERY_COLOR, this::clear);
+            if (queryAnchor != null) {
+                closeController.setGeologyTarget(
+                        queryBounds.south, queryBounds.west, queryBounds.north, queryBounds.east,
+                        queryAnchor.getLatitude(), queryAnchor.getLongitude(),
+                        queryCloseLabel, QUERY_COLOR, this::clear);
+            } else {
+                closeController.setGeologyTarget(
+                        queryBounds.south, queryBounds.west, queryBounds.north, queryBounds.east,
+                        queryCloseLabel, QUERY_COLOR, this::clear);
+            }
         } else {
             closeController.clearGeologyTarget();
         }
@@ -330,6 +340,52 @@ public final class GeologyOverlayController {
         }
     }
 
+
+    /** Choose a real query-geometry vertex nearest the visual north-east edge. */
+    private static LatLng extractQueryAnchor(String researchGeoJson, GeologyRepository.Bounds bounds) {
+        if (researchGeoJson == null || researchGeoJson.trim().isEmpty() || bounds == null) return null;
+        try {
+            JSONObject root = new JSONObject(researchGeoJson);
+            JSONObject query = root.optJSONObject("rockmapQuery");
+            JSONObject geometry = query == null ? null : query.optJSONObject("geometry");
+            if (geometry == null) return new LatLng(bounds.north, bounds.east);
+            JSONArray coordinates = geometry.optJSONArray("coordinates");
+            if (coordinates == null) return new LatLng(bounds.north, bounds.east);
+            java.util.ArrayList<LatLng> points = new java.util.ArrayList<>();
+            collectCoordinates(coordinates, points);
+            if (points.isEmpty()) return new LatLng(bounds.north, bounds.east);
+            double latSpan = Math.max(1e-9d, bounds.north - bounds.south);
+            double lonSpan = Math.max(1e-9d, bounds.east - bounds.west);
+            LatLng best = null;
+            double scoreBest = Double.NEGATIVE_INFINITY;
+            for (LatLng point : points) {
+                double northness = (point.getLatitude() - bounds.south) / latSpan;
+                double eastness = (point.getLongitude() - bounds.west) / lonSpan;
+                double score = northness + eastness;
+                if (score > scoreBest) { scoreBest = score; best = point; }
+            }
+            return best;
+        } catch (JSONException ex) {
+            return new LatLng(bounds.north, bounds.east);
+        }
+    }
+
+    private static void collectCoordinates(JSONArray array, java.util.List<LatLng> out) {
+        if (array == null || out == null) return;
+        if (array.length() >= 2 && array.opt(0) instanceof Number && array.opt(1) instanceof Number) {
+            double lon = array.optDouble(0, Double.NaN);
+            double lat = array.optDouble(1, Double.NaN);
+            if (Double.isFinite(lat) && Double.isFinite(lon)
+                    && lat >= -90d && lat <= 90d && lon >= -180d && lon <= 180d) {
+                out.add(new LatLng(lat, lon));
+            }
+            return;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONArray nested = array.optJSONArray(i);
+            if (nested != null) collectCoordinates(nested, out);
+        }
+    }
 
     private static String extractQueryCloseLabel(String researchGeoJson) {
         if (researchGeoJson == null || researchGeoJson.trim().isEmpty()) return "Geology";

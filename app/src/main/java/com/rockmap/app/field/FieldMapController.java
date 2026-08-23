@@ -1280,16 +1280,21 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setMessage(measurementSummary())
                 .setView(name)
                 .setPositiveButton("Save", (d, w) -> {
-                    db.insertArea(name.getText().toString().trim(), "Saved from map measurement", new ArrayList<>(measurement));
-                    measureActive = false;
-                    measurement.clear();
-                    FieldMapState.clearMeasurement(activity);
-                    if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) setExpandedToolValue(null);
-                    removeTapCapture();
-                    refreshFieldSnapshot();
-                    applyCachedSources();
-                    renderHud();
-                    toast("Prospecting area saved and left visible on the map.");
+                    try {
+                        ProspectingAreaCreator.saveNamedPolygonAndPrompt(
+                                activity, name.getText().toString().trim(),
+                                "Saved from map measurement", new ArrayList<>(measurement), false);
+                        measureActive = false;
+                        measurement.clear();
+                        FieldMapState.clearMeasurement(activity);
+                        if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) setExpandedToolValue(null);
+                        removeTapCapture();
+                        refreshFieldSnapshot();
+                        applyCachedSources();
+                        renderHud();
+                    } catch (RuntimeException ex) {
+                        toast(ex.getMessage() == null ? "Could not save this Prospecting Area." : ex.getMessage());
+                    }
                 }).setNegativeButton("Cancel", null).show();
     }
 

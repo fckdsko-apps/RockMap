@@ -2,10 +2,21 @@ package com.rockmap.app.field;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rockmap.app.MainActivity;
 import com.rockmap.app.map.MapContextCloseController;
 
 import org.json.JSONArray;
@@ -20,6 +31,8 @@ import java.util.Locale;
 public final class ProspectingAreaCreator {
     private static final double EARTH_RADIUS_M = 6371008.8d;
     private static final int CIRCLE_SEGMENTS = 72;
+    public static final String EXTRA_OPEN_RESEARCH_AREA_ID = "rockmap.openResearchAreaId";
+    private static final String SAVED_PROMPT_TAG = "rockmap-prospecting-area-saved-prompt";
 
     private ProspectingAreaCreator() {}
 
@@ -123,23 +136,112 @@ public final class ProspectingAreaCreator {
                         return;
                     }
                     try {
-                        long id = FieldDatabase.get(activity).insertArea(name, notes == null ? "" : notes, normalized);
-                        if (keepHiddenUntilShown) {
-                            ProspectingAreaVisibility.hide(activity, id);
-                            MapContextCloseController.refreshFor(activity);
-                        }
+                        saveNamedPolygonAndPrompt(activity, name, notes, normalized, keepHiddenUntilShown);
                         dialog.dismiss();
-                        Toast.makeText(activity,
-                                keepHiddenUntilShown
-                                        ? "Saved to Prospecting Areas. Use Show on Map when you want to display it."
-                                        : "Prospecting Area saved.",
-                                Toast.LENGTH_LONG).show();
                     } catch (RuntimeException ex) {
                         input.setError(ex.getMessage() == null ? "Could not save this area." : ex.getMessage());
                     }
                 }));
         dialog.show();
         input.requestFocus();
+    }
+
+    /**
+     * Save an already named polygon and show the same post-save Research Area shortcut used by
+     * every other interactive Prospecting Area creation path.
+     */
+    public static long saveNamedPolygonAndPrompt(Activity activity,
+                                                  String name,
+                                                  String notes,
+                                                  List<GeoMath.Point> points,
+                                                  boolean keepHiddenUntilShown) {
+        if (activity == null) throw new IllegalArgumentException("Activity is required.");
+        List<GeoMath.Point> normalized = normalizePolygon(points);
+        if (normalized.size() < 3) throw new IllegalArgumentException("This shape cannot be saved as a Prospecting Area.");
+        String savedName = clean(name, "Prospecting Area");
+        long id = FieldDatabase.get(activity).insertArea(savedName, notes == null ? "" : notes, normalized);
+        if (keepHiddenUntilShown) {
+            ProspectingAreaVisibility.hide(activity, id);
+        } else {
+            // A map-measurement save replaces the temporary drawing with this one explicit saved area.
+            ProspectingAreaVisibility.showOnly(activity, id);
+            FieldMapState.setAreasVisible(activity, true);
+        }
+        MapContextCloseController.refreshFor(activity);
+        showSavedResearchPrompt(activity, id, savedName);
+        return id;
+    }
+
+    /**
+     * Lightweight, non-blocking save confirmation with the immediate next task kept one tap away.
+     * Dismissing it is equivalent to Not Now; the saved area remains available in Field.
+     */
+    private static void showSavedResearchPrompt(Activity activity, long areaId, String name) {
+        if (activity == null || areaId <= 0L) return;
+        View content = activity.findViewById(android.R.id.content);
+        if (!(content instanceof FrameLayout)) {
+            Toast.makeText(activity, "Prospecting Area saved.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        FrameLayout root = (FrameLayout) content;
+        View previous = root.findViewWithTag(SAVED_PROMPT_TAG);
+        if (previous != null) root.removeView(previous);
+
+        LinearLayout bar = new LinearLayout(activity);
+        bar.setTag(SAVED_PROMPT_TAG);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(activity, 12), dp(activity, 6), dp(activity, 6), dp(activity, 6));
+        bar.setElevation(dp(activity, 10));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.rgb(48, 48, 48));
+        background.setCornerRadius(dp(activity, 8));
+        bar.setBackground(background);
+
+        TextView message = new TextView(activity);
+        message.setText("Prospecting Area saved" + (name == null || name.trim().isEmpty() ? "" : ": " + name.trim()));
+        message.setTextColor(Color.WHITE);
+        message.setTextSize(12f);
+        message.setMaxLines(2);
+        bar.addView(message, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button research = promptButton(activity, "Research Area");
+        research.setOnClickListener(v -> {
+            root.removeView(bar);
+            Intent map = new Intent(activity, MainActivity.class);
+            map.putExtra(EXTRA_OPEN_RESEARCH_AREA_ID, areaId);
+            map.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            activity.startActivity(map);
+        });
+        bar.addView(research, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 48)));
+
+        Button notNow = promptButton(activity, "Not Now");
+        notNow.setOnClickListener(v -> root.removeView(bar));
+        bar.addView(notNow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 48)));
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        int bottom = activity instanceof MainActivity ? dp(activity, 126) : dp(activity, 18);
+        params.setMargins(dp(activity, 10), 0, dp(activity, 10), bottom);
+        root.addView(bar, params);
+        bar.bringToFront();
+    }
+
+    private static Button promptButton(Activity activity, String text) {
+        Button button = new Button(activity);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setTextSize(11f);
+        button.setMinHeight(dp(activity, 48));
+        button.setMinimumHeight(dp(activity, 48));
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setPadding(dp(activity, 8), 0, dp(activity, 8), 0);
+        return button;
     }
 
     public static List<GeoMath.Point> polygonFromGeometryJson(String geometryJson) {

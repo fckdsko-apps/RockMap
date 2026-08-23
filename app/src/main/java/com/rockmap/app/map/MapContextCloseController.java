@@ -1,9 +1,10 @@
 package com.rockmap.app.map;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.graphics.Color;
+import android.graphics.PointF;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
@@ -35,15 +36,13 @@ import java.util.Set;
 import java.util.WeakHashMap;
 
 /**
- * Compact, predictable top-right controls for temporary map contexts.
+ * Contextual close controls attached to the map geometry they control.
  *
- * Each logical context gets one row and one close action. Rows never float over map geometry, so
- * close controls cannot overlap or require hunting. The row color matches the mapped context, and
- * tapping the row label focuses that context. Prospecting Areas keep an explicit hidden state until
- * the user chooses Show on Map again.
+ * One active object gets one compact × at the top-right edge of the actual geometry (with a full
+ * 48dp hit target). When several related map contexts are active, the individual × controls are
+ * replaced by one color-coded layer menu placed near that same geometry so controls never overlap.
  */
 public final class MapContextCloseController {
-    private static final double MIN_CONTEXT_ZOOM = 7.0d;
     private static final String FIELD_AREA_FILL = "rockmap-field-area-fill";
     private static final String FIELD_AREA_LINE = "rockmap-field-area-line";
     private static final int PROSPECTING_COLOR = Color.rgb(190, 105, 10);
@@ -60,7 +59,6 @@ public final class MapContextCloseController {
         return created;
     }
 
-    /** Refresh every active RockMap map owned by this Activity after shared visibility state changes. */
     public static synchronized void refreshFor(Activity activity) {
         if (activity == null) return;
         for (WeakReference<MapContextCloseController> reference : INSTANCES.values()) {
@@ -73,12 +71,12 @@ public final class MapContextCloseController {
     private final Activity activity;
     private final FieldDatabase fieldDb;
     private FrameLayout root;
-    private LinearLayout stack;
+    private TextView singleClose;
+    private LinearLayout menu;
     private MapLibreMap map;
     private Target geology;
     private Target mineral;
     private Target historic;
-    private long selectedProspectingAreaId = -1L;
     private boolean listenersInstalled;
 
     private MapContextCloseController(MapView mapView) {
@@ -91,11 +89,11 @@ public final class MapContextCloseController {
 
     private void initialize() {
         if (mapView == null || activity == null) return;
-        mapView.post(this::ensureRootAndStack);
+        mapView.post(this::ensureViews);
         mapView.getMapAsync(mapLibreMap -> {
             map = mapLibreMap;
             if (!listenersInstalled) {
-                map.addOnCameraMoveStartedListener(reason -> hideStack());
+                map.addOnCameraMoveStartedListener(reason -> hideControls());
                 map.addOnCameraIdleListener(this::refreshNow);
                 listenersInstalled = true;
             }
@@ -105,8 +103,17 @@ public final class MapContextCloseController {
 
     public void setGeologyTarget(double south, double west, double north, double east,
                                  String label, int color, Runnable closeAction) {
+        Bounds bounds = Bounds.validated(south, west, north, east);
+        LatLng anchor = bounds == null ? null : new LatLng(bounds.north, bounds.east);
+        geology = Target.of(cleanLabel(label, "Geology"), color, bounds, anchor, closeAction);
+        refresh();
+    }
+
+    public void setGeologyTarget(double south, double west, double north, double east,
+                                 double anchorLat, double anchorLon,
+                                 String label, int color, Runnable closeAction) {
         geology = Target.of(cleanLabel(label, "Geology"), color,
-                Bounds.validated(south, west, north, east), closeAction);
+                Bounds.validated(south, west, north, east), validLatLng(anchorLat, anchorLon), closeAction);
         refresh();
     }
 
@@ -122,8 +129,9 @@ public final class MapContextCloseController {
 
     public void setMineralTarget(double south, double west, double north, double east,
                                  String label, int color, Runnable closeAction) {
-        mineral = Target.of(cleanLabel(label, "Mineral Evidence"), color,
-                Bounds.validated(south, west, north, east), closeAction);
+        Bounds bounds = Bounds.validated(south, west, north, east);
+        LatLng anchor = bounds == null ? null : new LatLng(bounds.north, bounds.east);
+        mineral = Target.of(cleanLabel(label, "Mineral Evidence"), color, bounds, anchor, closeAction);
         refresh();
     }
 
@@ -139,7 +147,8 @@ public final class MapContextCloseController {
     }
 
     public void setHistoricTarget(String label, int color, Bounds bounds, Runnable closeAction) {
-        historic = Target.of(cleanLabel(label, "Historic Mines"), color, bounds, closeAction);
+        LatLng anchor = bounds == null ? null : new LatLng(bounds.north, bounds.east);
+        historic = Target.of(cleanLabel(label, "Historic Mines"), color, bounds, anchor, closeAction);
         refresh();
     }
 
@@ -159,17 +168,16 @@ public final class MapContextCloseController {
     }
 
     public void refresh() {
-        if (mapView == null) return;
-        mapView.post(this::refreshNow);
+        if (mapView != null) mapView.post(this::refreshNow);
     }
 
     private void refreshNow() {
-        ensureRootAndStack();
+        ensureViews();
         applyProspectingFilter();
-        rebuildStack();
+        rebuildControls();
     }
 
-    private void ensureRootAndStack() {
+    private void ensureViews() {
         if (root == null) {
             View parent = mapView;
             while (parent != null && parent.getParent() instanceof View) {
@@ -180,207 +188,205 @@ public final class MapContextCloseController {
                 }
             }
         }
-        if (root == null || stack != null) return;
-
-        stack = new LinearLayout(activity);
-        stack.setOrientation(LinearLayout.VERTICAL);
-        stack.setGravity(Gravity.END);
-        stack.setPadding(0, 0, 0, 0);
-        stack.setVisibility(View.GONE);
-        stack.setContentDescription("Active map views");
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.END);
-        params.setMargins(dp(8), dp(76), dp(8), 0);
-        root.addView(stack, params);
+        if (root == null) return;
+        if (singleClose == null) {
+            singleClose = new TextView(activity);
+            singleClose.setText("×");
+            singleClose.setTextSize(22f);
+            singleClose.setGravity(Gravity.CENTER);
+            singleClose.setClickable(true);
+            singleClose.setFocusable(true);
+            singleClose.setElevation(dp(6));
+            singleClose.setVisibility(View.GONE);
+            root.addView(singleClose, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.START));
+        }
+        if (menu == null) {
+            menu = new LinearLayout(activity);
+            menu.setOrientation(LinearLayout.VERTICAL);
+            menu.setPadding(dp(4), dp(4), dp(4), dp(4));
+            menu.setElevation(dp(7));
+            menu.setVisibility(View.GONE);
+            menu.setContentDescription("Active map layers for this area");
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.argb(246, 255, 255, 255));
+            bg.setStroke(dp(1), Color.rgb(165, 165, 165));
+            bg.setCornerRadius(dp(8));
+            menu.setBackground(bg);
+            root.addView(menu, new FrameLayout.LayoutParams(dp(214), ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.START));
+        }
     }
 
-    private void rebuildStack() {
-        if (stack == null || map == null) return;
-        stack.removeAllViews();
-        double zoom = map.getCameraPosition().zoom;
-        if (zoom < MIN_CONTEXT_ZOOM) {
-            stack.setVisibility(View.GONE);
+    private void rebuildControls() {
+        if (root == null || map == null || singleClose == null || menu == null) return;
+        ArrayList<ContextItem> items = new ArrayList<>();
+        if (geology != null) items.add(ContextItem.fromTarget(geology, () -> closeTarget(geology)));
+        if (mineral != null) items.add(ContextItem.fromTarget(mineral, () -> closeTarget(mineral)));
+        if (historic != null) items.add(ContextItem.fromTarget(historic, () -> closeTarget(historic)));
+        for (AreaTarget area : visibleProspectingTargets()) {
+            items.add(new ContextItem("Prospecting Area — " + area.name, PROSPECTING_COLOR,
+                    area.bounds, area.anchor, () -> hideProspectingArea(area)));
+        }
+
+        if (items.isEmpty()) {
+            hideControls();
             return;
         }
-
-        if (geology != null) addTargetRow(geology);
-        if (mineral != null) addTargetRow(mineral);
-        if (historic != null) addTargetRow(historic);
-
-        List<AreaTarget> prospecting = visibleProspectingTargets();
-        if (!prospecting.isEmpty()) {
-            AreaTarget selected = selectProspectingTarget(prospecting);
-            if (selected != null) addProspectingRow(selected, prospecting);
+        if (items.size() == 1) {
+            showSingle(items.get(0));
         } else {
-            selectedProspectingAreaId = -1L;
+            showMenu(items);
         }
-
-        stack.setVisibility(stack.getChildCount() == 0 ? View.GONE : View.VISIBLE);
-        if (stack.getVisibility() == View.VISIBLE) stack.bringToFront();
     }
 
-    private void addTargetRow(Target target) {
+    private void closeTarget(Target target) {
         if (target == null) return;
-        LinearLayout row = createRow(target.color);
-        TextView label = createLabel(target.label, target.color);
-        label.setOnClickListener(v -> {
-            if (target.bounds != null) focus(target.bounds);
-        });
-        if (target.bounds == null) label.setClickable(false);
-        row.addView(label, new LinearLayout.LayoutParams(dp(142), dp(34)));
-        TextView close = createClose(target.color, "Close " + target.label, () -> {
-            Runnable action = target.closeAction;
-            if (action != null) action.run();
-            if (target == geology) geology = null;
-            if (target == mineral) mineral = null;
-            if (target == historic) historic = null;
-            refresh();
-        });
-        row.addView(close, new LinearLayout.LayoutParams(dp(36), dp(34)));
-        stack.addView(row, rowParams());
+        Runnable action = target.closeAction;
+        if (action != null) action.run();
+        if (target == geology) geology = null;
+        if (target == mineral) mineral = null;
+        if (target == historic) historic = null;
+        refresh();
     }
 
-    private void addProspectingRow(AreaTarget selected, List<AreaTarget> candidates) {
-        LinearLayout row = createRow(PROSPECTING_COLOR);
-        String name = selected.name;
-        if (candidates.size() > 1) name += " (" + candidates.size() + ")";
-        TextView label = createLabel("Prospecting Area — " + name, PROSPECTING_COLOR);
-        label.setContentDescription(candidates.size() > 1
-                ? "Choose one of " + candidates.size() + " visible Prospecting Areas"
-                : "Focus Prospecting Area " + selected.name);
-        label.setOnClickListener(v -> {
-            if (candidates.size() > 1) showProspectingChooser(candidates);
-            else focus(selected.bounds);
-        });
-        row.addView(label, new LinearLayout.LayoutParams(dp(142), dp(34)));
-        TextView close = createClose(PROSPECTING_COLOR,
-                "Hide Prospecting Area " + selected.name,
-                () -> hideProspectingArea(selected));
-        row.addView(close, new LinearLayout.LayoutParams(dp(36), dp(34)));
-        stack.addView(row, rowParams());
+    private void showSingle(ContextItem item) {
+        menu.setVisibility(View.GONE);
+        singleClose.setTextColor(item.color);
+        singleClose.setContentDescription("Close " + item.label);
+        singleClose.setOnClickListener(v -> item.close.run());
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(Color.argb(238, 255, 255, 255));
+        bg.setStroke(dp(2), item.color);
+        singleClose.setBackground(new InsetDrawable(bg, dp(9)));
+        PointF anchor = project(item.anchor != null ? item.anchor : northEast(item.bounds));
+        if (anchor == null) {
+            singleClose.setVisibility(View.GONE);
+            return;
+        }
+        position(singleClose, dp(48), dp(48), Math.round(anchor.x - dp(24)), Math.round(anchor.y - dp(24)));
+        singleClose.setVisibility(View.VISIBLE);
+        singleClose.bringToFront();
     }
 
-    private LinearLayout createRow(int color) {
+    private void showMenu(List<ContextItem> items) {
+        singleClose.setVisibility(View.GONE);
+        menu.removeAllViews();
+        for (ContextItem item : items) addMenuRow(item);
+        ContextItem anchorItem = items.get(0);
+        PointF anchor = project(anchorItem.anchor != null ? anchorItem.anchor : northEast(anchorItem.bounds));
+        if (anchor == null) {
+            menu.setVisibility(View.GONE);
+            return;
+        }
+        int width = dp(214);
+        int estimatedHeight = dp(8 + 48 * items.size());
+        // Sit just below/left of the geometry anchor instead of floating in a screen corner.
+        position(menu, width, estimatedHeight,
+                Math.round(anchor.x - width + dp(18)), Math.round(anchor.y + dp(10)));
+        menu.setVisibility(View.VISIBLE);
+        menu.bringToFront();
+    }
+
+    private void addMenuRow(ContextItem item) {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, 0, 0, 0);
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.argb(238, 255, 255, 255));
-        background.setStroke(dp(1), Color.argb(210, Color.red(color), Color.green(color), Color.blue(color)));
-        background.setCornerRadius(dp(6));
-        row.setBackground(background);
-        row.setElevation(dp(4));
-        return row;
-    }
+        row.setMinimumHeight(dp(48));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setContentDescription("Focus " + item.label);
+        row.setOnClickListener(v -> focus(item.bounds));
 
-    private TextView createLabel(String text, int color) {
+        View swatch = new View(activity);
+        GradientDrawable swatchBg = new GradientDrawable();
+        swatchBg.setShape(GradientDrawable.OVAL);
+        swatchBg.setColor(item.color);
+        swatch.setBackground(swatchBg);
+        LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(12), dp(12));
+        swatchParams.setMargins(dp(6), 0, dp(7), 0);
+        row.addView(swatch, swatchParams);
+
         TextView label = new TextView(activity);
-        label.setText(text);
+        label.setText(item.label);
         label.setTextSize(11.5f);
         label.setTextColor(Color.rgb(35, 35, 35));
-        label.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
-        label.setPadding(dp(9), 0, dp(4), 0);
-        label.setClickable(true);
-        label.setFocusable(true);
-        label.setContentDescription("Focus " + text);
-        return label;
-    }
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(label, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-    private TextView createClose(int color, String description, Runnable action) {
         TextView close = new TextView(activity);
         close.setText("×");
         close.setTextSize(22f);
+        close.setTextColor(item.color);
         close.setGravity(Gravity.CENTER);
-        close.setTextColor(color);
-        close.setContentDescription(description);
-        close.setClickable(true);
-        close.setFocusable(true);
-        close.setPadding(0, 0, 0, dp(2));
-        close.setOnClickListener(v -> action.run());
-        return close;
+        close.setContentDescription("Close " + item.label);
+        close.setOnClickListener(v -> item.close.run());
+        row.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        menu.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
     }
 
-    private LinearLayout.LayoutParams rowParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(34));
-        params.setMargins(0, 0, 0, dp(4));
-        return params;
+    private void position(View view, int width, int height, int left, int top) {
+        if (root == null || view == null) return;
+        int rootWidth = Math.max(root.getWidth(), mapView.getWidth());
+        int rootHeight = Math.max(root.getHeight(), mapView.getHeight());
+        int[] mapLoc = new int[2];
+        int[] rootLoc = new int[2];
+        mapView.getLocationOnScreen(mapLoc);
+        root.getLocationOnScreen(rootLoc);
+        left += mapLoc[0] - rootLoc[0];
+        top += mapLoc[1] - rootLoc[1];
+        int margin = dp(6);
+        int bottomGuard = dp(118);
+        left = clamp(left, margin, Math.max(margin, rootWidth - width - margin));
+        top = clamp(top, margin, Math.max(margin, rootHeight - height - bottomGuard));
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.leftMargin = left;
+        params.topMargin = top;
+        if (width > 0) params.width = width;
+        view.setLayoutParams(params);
     }
 
-    private void hideStack() {
-        if (stack != null) stack.setVisibility(View.GONE);
+    private PointF project(LatLng point) {
+        if (map == null || point == null) return null;
+        try {
+            return map.getProjection().toScreenLocation(point);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private void hideControls() {
+        if (singleClose != null) singleClose.setVisibility(View.GONE);
+        if (menu != null) menu.setVisibility(View.GONE);
     }
 
     private List<AreaTarget> visibleProspectingTargets() {
         ArrayList<AreaTarget> out = new ArrayList<>();
         if (fieldDb == null || map == null || !FieldMapState.areasVisible(activity)) return out;
-        List<FieldDatabase.Area> areas = fieldDb.listAreas();
-        if (areas == null || areas.isEmpty()) return out;
-        Set<Long> hidden = ProspectingAreaVisibility.hiddenIds(activity);
+        Set<Long> shown = ProspectingAreaVisibility.shownIds(activity);
+        if (shown.isEmpty()) return out;
         LatLngBounds visible = map.getProjection().getVisibleRegion().latLngBounds;
         double south = visible.getLatSouth();
         double west = visible.getLonWest();
         double north = visible.getLatNorth();
         double east = visible.getLonEast();
-        for (FieldDatabase.Area area : areas) {
-            if (area == null || area.points == null || area.points.size() < 3 || hidden.contains(area.id)) continue;
+        for (FieldDatabase.Area area : fieldDb.listAreas()) {
+            if (area == null || !shown.contains(area.id) || area.points == null || area.points.size() < 3) continue;
             Bounds bounds = boundsOf(area.points);
             if (bounds == null || !bounds.intersects(south, west, north, east)) continue;
-            out.add(new AreaTarget(area.id, cleanLabel(area.name, "Prospecting Area"), bounds));
+            out.add(new AreaTarget(area.id, cleanLabel(area.name, "Prospecting Area"), bounds,
+                    topRightAnchor(area.points, bounds)));
         }
         return out;
-    }
-
-    private AreaTarget selectProspectingTarget(List<AreaTarget> candidates) {
-        if (candidates == null || candidates.isEmpty()) return null;
-        for (AreaTarget candidate : candidates) {
-            if (candidate.id == selectedProspectingAreaId) return candidate;
-        }
-        LatLng center = map == null ? null : map.getCameraPosition().target;
-        AreaTarget best = candidates.get(0);
-        double bestScore = Double.POSITIVE_INFINITY;
-        if (center != null) {
-            for (AreaTarget candidate : candidates) {
-                double lat = (candidate.bounds.south + candidate.bounds.north) / 2d;
-                double lon = (candidate.bounds.west + candidate.bounds.east) / 2d;
-                double dy = lat - center.getLatitude();
-                double dx = (lon - center.getLongitude()) * Math.cos(Math.toRadians(lat));
-                double score = dx * dx + dy * dy;
-                if (score < bestScore) {
-                    best = candidate;
-                    bestScore = score;
-                }
-            }
-        }
-        selectedProspectingAreaId = best.id;
-        return best;
-    }
-
-    private void showProspectingChooser(List<AreaTarget> candidates) {
-        if (activity == null || candidates == null || candidates.isEmpty()) return;
-        String[] labels = new String[candidates.size()];
-        for (int i = 0; i < candidates.size(); i++) labels[i] = candidates.get(i).name;
-        new AlertDialog.Builder(activity)
-                .setTitle("Choose Prospecting Area")
-                .setItems(labels, (dialog, which) -> {
-                    if (which < 0 || which >= candidates.size()) return;
-                    AreaTarget selected = candidates.get(which);
-                    selectedProspectingAreaId = selected.id;
-                    focus(selected.bounds);
-                    refresh();
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
     }
 
     private void hideProspectingArea(AreaTarget area) {
         if (area == null || activity == null) return;
         ProspectingAreaVisibility.hide(activity, area.id);
-        selectedProspectingAreaId = -1L;
         applyProspectingFilter();
         refresh();
         Toast.makeText(activity,
@@ -390,24 +396,22 @@ public final class MapContextCloseController {
 
     private void applyProspectingFilter() {
         if (map == null || activity == null) return;
-        Set<Long> hidden = ProspectingAreaVisibility.hiddenIds(activity);
+        Set<Long> shown = ProspectingAreaVisibility.shownIds(activity);
         map.getStyle(style -> {
             Layer fillLayer = style.getLayer(FIELD_AREA_FILL);
             Layer lineLayer = style.getLayer(FIELD_AREA_LINE);
-            Expression filter = prospectingFilter(hidden);
+            Expression filter = prospectingFilter(shown);
             if (fillLayer instanceof FillLayer) ((FillLayer) fillLayer).setFilter(filter);
             if (lineLayer instanceof LineLayer) ((LineLayer) lineLayer).setFilter(filter);
         });
     }
 
-    private Expression prospectingFilter(Set<Long> hidden) {
-        if (hidden == null || hidden.isEmpty()) return Expression.literal(true);
-        Expression[] filters = new Expression[hidden.size()];
+    private Expression prospectingFilter(Set<Long> shown) {
+        if (shown == null || shown.isEmpty()) return Expression.literal(false);
+        Expression[] filters = new Expression[shown.size()];
         int i = 0;
-        for (Long id : hidden) {
-            filters[i++] = Expression.neq(Expression.get("id"), id.doubleValue());
-        }
-        return filters.length == 1 ? filters[0] : Expression.all(filters);
+        for (Long id : shown) filters[i++] = Expression.eq(Expression.get("id"), id.doubleValue());
+        return filters.length == 1 ? filters[0] : Expression.any(filters);
     }
 
     private void focus(Bounds bounds) {
@@ -417,11 +421,8 @@ public final class MapContextCloseController {
                     .include(new LatLng(bounds.south, bounds.west))
                     .include(new LatLng(bounds.north, bounds.east))
                     .build();
-            int horizontal = dp(48);
-            int top = dp(82);
-            int bottom = dp(152);
             map.animateCamera(CameraUpdateFactory.newLatLngBounds(
-                    cameraBounds, horizontal, top, horizontal, bottom));
+                    cameraBounds, dp(48), dp(82), dp(48), dp(152)));
         } catch (RuntimeException ignored) {
             map.animateCamera(CameraUpdateFactory.newLatLngZoom(
                     new LatLng((bounds.south + bounds.north) / 2d,
@@ -446,10 +447,44 @@ public final class MapContextCloseController {
         return any ? Bounds.validated(south, west, north, east) : null;
     }
 
+    /** Select a real polygon vertex nearest the visual north-east corner, not the bounds corner. */
+    private static LatLng topRightAnchor(List<GeoMath.Point> points, Bounds bounds) {
+        if (points == null || points.isEmpty() || bounds == null) return northEast(bounds);
+        double latSpan = Math.max(1e-9d, bounds.north - bounds.south);
+        double lonSpan = Math.max(1e-9d, bounds.east - bounds.west);
+        GeoMath.Point best = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+        for (GeoMath.Point p : points) {
+            if (p == null) continue;
+            double northness = (p.lat - bounds.south) / latSpan;
+            double eastness = (p.lon - bounds.west) / lonSpan;
+            double score = northness + eastness;
+            if (score > bestScore) {
+                bestScore = score;
+                best = p;
+            }
+        }
+        return best == null ? northEast(bounds) : new LatLng(best.lat, best.lon);
+    }
+
+    private static LatLng northEast(Bounds bounds) {
+        return bounds == null ? null : new LatLng(bounds.north, bounds.east);
+    }
+
+    private static LatLng validLatLng(double lat, double lon) {
+        return Double.isFinite(lat) && Double.isFinite(lon)
+                && lat >= -90d && lat <= 90d && lon >= -180d && lon <= 180d
+                ? new LatLng(lat, lon) : null;
+    }
+
     private static String cleanLabel(String label, String fallback) {
         if (label == null || label.trim().isEmpty()) return fallback;
         String value = label.trim();
         return value.length() > 64 ? value.substring(0, 64) : value;
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private int dp(int value) {
@@ -490,17 +525,19 @@ public final class MapContextCloseController {
         final String label;
         final int color;
         final Bounds bounds;
+        final LatLng anchor;
         final Runnable closeAction;
 
-        private Target(String label, int color, Bounds bounds, Runnable closeAction) {
+        private Target(String label, int color, Bounds bounds, LatLng anchor, Runnable closeAction) {
             this.label = label;
             this.color = color;
             this.bounds = bounds;
+            this.anchor = anchor;
             this.closeAction = closeAction;
         }
 
-        static Target of(String label, int color, Bounds bounds, Runnable closeAction) {
-            return new Target(label, color, bounds, closeAction);
+        static Target of(String label, int color, Bounds bounds, LatLng anchor, Runnable closeAction) {
+            return new Target(label, color, bounds, anchor, closeAction);
         }
     }
 
@@ -508,11 +545,33 @@ public final class MapContextCloseController {
         final long id;
         final String name;
         final Bounds bounds;
+        final LatLng anchor;
 
-        AreaTarget(long id, String name, Bounds bounds) {
+        AreaTarget(long id, String name, Bounds bounds, LatLng anchor) {
             this.id = id;
             this.name = name;
             this.bounds = bounds;
+            this.anchor = anchor;
+        }
+    }
+
+    private static final class ContextItem {
+        final String label;
+        final int color;
+        final Bounds bounds;
+        final LatLng anchor;
+        final Runnable close;
+
+        ContextItem(String label, int color, Bounds bounds, LatLng anchor, Runnable close) {
+            this.label = label;
+            this.color = color;
+            this.bounds = bounds;
+            this.anchor = anchor;
+            this.close = close;
+        }
+
+        static ContextItem fromTarget(Target target, Runnable close) {
+            return new ContextItem(target.label, target.color, target.bounds, target.anchor, close);
         }
     }
 }

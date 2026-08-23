@@ -57,6 +57,7 @@ public final class ResearchActivity extends Activity {
     public static final String EXTRA_RADIUS_M = "rockmap.research.radius_m";
     public static final String EXTRA_POINT_LABEL = "rockmap.research.point_label";
     public static final String EXTRA_AUTO_GEOLOGY = "rockmap.research.auto_geology";
+    public static final String EXTRA_CONTEXT_LABEL = "rockmap.research.context_label";
 
     public static final String RESULT_ACTION = "rockmap.research.result_action";
     public static final String RESULT_TITLE = "rockmap.research.title";
@@ -81,6 +82,7 @@ public final class ResearchActivity extends Activity {
     private String currentQueryContextJson = "";
     private LiveData<WorkInfo> geologyUpdateLiveData;
     private Observer<WorkInfo> geologyUpdateObserver;
+    private boolean autoReturnToMap;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -104,11 +106,14 @@ public final class ResearchActivity extends Activity {
             return true;
         }
         if (intent != null && intent.getBooleanExtra(EXTRA_AUTO_GEOLOGY, false)) {
+            autoReturnToMap = true;
+            String contextLabel = blank(intent.getStringExtra(EXTRA_CONTEXT_LABEL), "Selected Area");
             intent.removeExtra(EXTRA_AUTO_GEOLOGY);
+            intent.removeExtra(EXTRA_CONTEXT_LABEL);
             if (!geology.isReady()) {
                 showInstall();
             } else if (visibleBounds != null) {
-                runBoundsQuery(visibleBounds, "Geology — Selected Area");
+                runBoundsQuery(visibleBounds, "Geology — " + contextLabel, true);
             } else {
                 showHub();
             }
@@ -167,7 +172,7 @@ public final class ResearchActivity extends Activity {
         if (visibleBounds != null) {
             root.addView(action("Visible Area — Mineral Evidence",
                     "Summarize mineral evidence in the area currently visible on the map.",
-                    v -> returnBoundsAction(ACTION_MINERALS_AREA, visibleBounds)));
+                    v -> returnBoundsAction(ACTION_MINERALS_AREA, visibleBounds, "Visible Area")));
         }
 
         root.addView(section("Geology"));
@@ -378,8 +383,20 @@ public final class ResearchActivity extends Activity {
     }
 
     private void runBoundsQuery(GeologyRepository.Bounds bounds, String title) {
-        runAsync("Analyzing map area…", () -> geology.queryBounds(bounds, 0),
-                results -> showResults(results, title, bounds, queryBoundsContext(bounds, "Visible Area")));
+        runBoundsQuery(bounds, title, false);
+    }
+
+    private void runBoundsQuery(GeologyRepository.Bounds bounds, String title, boolean returnDirectlyToMap) {
+        String context = queryBoundsContext(bounds, "Visible Area");
+        runAsync("Analyzing map area…", () -> geology.queryBounds(bounds, 0), results -> {
+            if (returnDirectlyToMap) {
+                List<GeologyUnit> safe = results == null ? new ArrayList<>() : results;
+                String geoJson = decorateQueryContext(geology.toGeoJson(safe), context);
+                returnGeology(geoJson, title, safe.size(), null);
+            } else {
+                showResults(results, title, bounds, context);
+            }
+        });
     }
 
     private void showAreaPicker() {
@@ -681,10 +698,10 @@ public final class ResearchActivity extends Activity {
         if (queryBounds != null) {
             bottom.addView(section("Analyze This Area Further"));
             Button minerals = button("Show Mineral Evidence in This Area");
-            minerals.setOnClickListener(v -> returnBoundsAction(ACTION_MINERALS_AREA, queryBounds));
+            minerals.setOnClickListener(v -> returnBoundsAction(ACTION_MINERALS_AREA, queryBounds, resultTitle));
             bottom.addView(minerals);
             Button mines = button("Show Historic Mines & Workings in This Area");
-            mines.setOnClickListener(v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds));
+            mines.setOnClickListener(v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds, resultTitle));
             bottom.addView(mines);
         }
         bottom.addView(nav("Back to Research", v -> showHub()));
@@ -873,6 +890,7 @@ public final class ResearchActivity extends Activity {
         putBounds(result, bounds);
         setResult(RESULT_OK, result);
         finish();
+        if (autoReturnToMap) overridePendingTransition(0, 0);
     }
 
     private void returnAction(String action, GeologyRepository.Bounds bounds) {
@@ -884,7 +902,18 @@ public final class ResearchActivity extends Activity {
     }
 
     private void returnBoundsAction(String action, GeologyRepository.Bounds bounds) {
-        returnAction(action, bounds);
+        returnBoundsAction(action, bounds, currentResultTitle);
+    }
+
+    private void returnBoundsAction(String action, GeologyRepository.Bounds bounds, String areaLabel) {
+        Intent result = new Intent();
+        result.putExtra(RESULT_ACTION, action);
+        if (areaLabel != null && !areaLabel.trim().isEmpty()) {
+            result.putExtra(RESULT_TITLE, areaLabel.trim());
+        }
+        putBounds(result, bounds);
+        setResult(RESULT_OK, result);
+        finish();
     }
 
     private static void putBounds(Intent intent, GeologyRepository.Bounds bounds) {
