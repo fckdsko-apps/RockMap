@@ -203,6 +203,10 @@ public final class MineralOverlayController {
         return hasHeatmap() && heatmapVisible;
     }
 
+    public boolean isAreaAnalysisVisible() {
+        return areaVisible && activeAreaBounds != null;
+    }
+
     public void setHeatmapVisible(boolean show) {
         heatmapVisible = show && hasHeatmap();
         areaVisible = heatmapVisible && activeAreaBounds != null;

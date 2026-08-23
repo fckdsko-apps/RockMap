@@ -29,7 +29,6 @@ import com.rockmap.app.BuildConfig;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaCreator;
-import com.rockmap.app.field.ProspectingAreaVisibility;
 import com.rockmap.app.waypoints.WaypointEntity;
 import com.rockmap.app.waypoints.WaypointRepository;
 
@@ -62,6 +61,7 @@ public final class ResearchActivity extends Activity {
     public static final String RESULT_ACTION = "rockmap.research.result_action";
     public static final String RESULT_TITLE = "rockmap.research.title";
     public static final String RESULT_COUNT = "rockmap.research.count";
+    public static final String RESULT_AREA_ID = "rockmap.research.area_id";
     public static final String ACTION_GEOLOGY = "geology";
     public static final String ACTION_MINERALS = "minerals";
     public static final String ACTION_MINERALS_AREA = "minerals_area";
@@ -83,6 +83,7 @@ public final class ResearchActivity extends Activity {
     private LiveData<WorkInfo> geologyUpdateLiveData;
     private Observer<WorkInfo> geologyUpdateObserver;
     private boolean autoReturnToMap;
+    private long currentAreaId = -1L;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -100,6 +101,7 @@ public final class ResearchActivity extends Activity {
         Intent intent = getIntent();
         long areaId = intent == null ? -1L : intent.getLongExtra(EXTRA_AREA_ID, -1L);
         if (areaId > 0L) {
+            currentAreaId = areaId;
             intent.removeExtra(EXTRA_AREA_ID);
             if (!geology.isReady()) showInstall();
             else analyzeArea(areaId);
@@ -423,6 +425,7 @@ public final class ResearchActivity extends Activity {
     }
 
     private void analyzeArea(long areaId) {
+        currentAreaId = areaId;
         FieldDatabase.Area area = fieldDb.getArea(areaId);
         if (area == null || area.points == null || area.points.size() < 3) {
             toast("Saved area could not be read.");
@@ -434,11 +437,9 @@ public final class ResearchActivity extends Activity {
         GeologyRepository.Bounds bounds = boundsOf(polygon);
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
                 results -> {
-                    // The research overlay already shows this exact boundary. Keep the saved Field
-                    // polygon hidden so one analyzed Prospecting Area produces one map context and
-                    // one close action. The saved area remains intact and can be explicitly shown
-                    // again from Field → Prospecting Areas.
-                    ProspectingAreaVisibility.hide(this, area.id);
+                    // Research and saved-area visibility are independent. If the user chose to keep
+                    // this Prospecting Area visible, analyzing it must not silently hide it. The map
+                    // context menu handles the saved polygon and Research layer as separate contexts.
                     showResults(results, "Combined Area Analysis — " + area.name, bounds,
                             queryPolygonContext(polygon, area.name, area.id));
                 });
@@ -887,6 +888,7 @@ public final class ResearchActivity extends Activity {
         result.putExtra(RESULT_ACTION, ACTION_GEOLOGY);
         result.putExtra(RESULT_TITLE, title);
         result.putExtra(RESULT_COUNT, count);
+        if (currentAreaId > 0L) result.putExtra(RESULT_AREA_ID, currentAreaId);
         putBounds(result, bounds);
         setResult(RESULT_OK, result);
         finish();
@@ -896,6 +898,7 @@ public final class ResearchActivity extends Activity {
     private void returnAction(String action, GeologyRepository.Bounds bounds) {
         Intent result = new Intent();
         result.putExtra(RESULT_ACTION, action);
+        if (currentAreaId > 0L) result.putExtra(RESULT_AREA_ID, currentAreaId);
         putBounds(result, bounds);
         setResult(RESULT_OK, result);
         finish();
@@ -908,6 +911,7 @@ public final class ResearchActivity extends Activity {
     private void returnBoundsAction(String action, GeologyRepository.Bounds bounds, String areaLabel) {
         Intent result = new Intent();
         result.putExtra(RESULT_ACTION, action);
+        if (currentAreaId > 0L) result.putExtra(RESULT_AREA_ID, currentAreaId);
         if (areaLabel != null && !areaLabel.trim().isEmpty()) {
             result.putExtra(RESULT_TITLE, areaLabel.trim());
         }

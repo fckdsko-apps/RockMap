@@ -42,10 +42,12 @@ import org.maplibre.android.style.layers.LineLayer;
 import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.sources.GeoJsonSource;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -75,7 +77,35 @@ import static org.maplibre.android.style.layers.PropertyFactory.visibility;
  * measurement are rendered as local GeoJSON sources in the active MapLibre style.
  */
 public final class FieldMapController implements LocationRepository.Listener {
-    static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
+    public static final String FIELD_BUTTON_TAG = "rockmap-field-entry";
+    private static final WeakHashMap<Activity, WeakReference<FieldMapController>> INSTANCES = new WeakHashMap<>();
+
+    /** Keep the persistent Field entry above temporary Research/context UI without changing Field state. */
+    public static void ensurePersistentEntry(Activity activity) {
+        if (activity == null) return;
+        WeakReference<FieldMapController> ref;
+        synchronized (INSTANCES) { ref = INSTANCES.get(activity); }
+        FieldMapController controller = ref == null ? null : ref.get();
+        if (controller == null) return;
+        activity.runOnUiThread(() -> {
+            controller.attach();
+            controller.positionFieldButton();
+            if (controller.fieldButton != null) {
+                controller.fieldButton.setVisibility(View.VISIBLE);
+                controller.fieldButton.bringToFront();
+                // Temporary Research/context views can finish layout a frame later. Reassert the
+                // persistent entry after that layout settles so closing a heatmap/area cannot
+                // strand Field behind or leave it invisible.
+                controller.fieldButton.postDelayed(() -> {
+                    controller.positionFieldButtonNow();
+                    if (controller.fieldButton != null) {
+                        controller.fieldButton.setVisibility(View.VISIBLE);
+                        controller.fieldButton.bringToFront();
+                    }
+                }, 120L);
+            }
+        });
+    }
     static final String HUD_TAG = "rockmap-field-map-hud";
     static final String COLLAPSED_TABS_TAG = "rockmap-field-collapsed-tabs";
     private static final String TRACK_TAB_TAG = "rockmap-collapsed-active-track";
@@ -150,6 +180,7 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     public FieldMapController(Activity activity) {
         this.activity = activity;
+        synchronized (INSTANCES) { INSTANCES.put(activity, new WeakReference<>(this)); }
         this.db = FieldDatabase.get(activity);
         this.waypointRepository = new WaypointRepository(activity);
         this.locationRepository = new LocationRepository(activity, this);
@@ -234,6 +265,10 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     public void destroy() {
+        synchronized (INSTANCES) {
+            WeakReference<FieldMapController> ref = INSTANCES.get(activity);
+            if (ref != null && ref.get() == this) INSTANCES.remove(activity);
+        }
         onPause();
         if (fieldLayoutListener != null) {
             if (root != null) root.removeOnLayoutChangeListener(fieldLayoutListener);
@@ -600,9 +635,19 @@ public final class FieldMapController implements LocationRepository.Listener {
         LinearLayout second = buttonRow();
         second.addView(hudButton("Paste", v -> pasteMeasurement()), weight());
         second.addView(hudButton("Undo", v -> undoMeasurement()), weight());
-        second.addView(hudButton("Save area", v -> saveMeasurementArea()), weight());
         second.addView(hudButton("Done", v -> finishMeasurement()), weight());
         hud.addView(second);
+
+        if (measurement.size() >= 3) {
+            Button save = hudButton("Save as Prospecting Area", v -> saveMeasurementArea());
+            save.setTextSize(13f);
+            save.setContentDescription("Save this temporary measured polygon as a persistent Prospecting Area");
+            hud.addView(save, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+            hud.addView(hudText("This measurement is temporary until you save it as a Prospecting Area."));
+        } else {
+            hud.addView(hudText("Add at least 3 points to save a Prospecting Area."));
+        }
     }
 
     private void showFieldMenu() {
@@ -1276,8 +1321,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (measurement.size() < 3) { toast("Add at least 3 points before saving an area."); return; }
         EditText name = new EditText(activity);
         name.setHint("Area name");
-        new AlertDialog.Builder(activity).setTitle("Save Prospecting Area")
-                .setMessage(measurementSummary())
+        new AlertDialog.Builder(activity).setTitle("Save measured area as Prospecting Area")
+                .setMessage(measurementSummary()
+                        + "\n\nThis will turn the temporary measurement into a saved Prospecting Area. "
+                        + "After saving, RockMap will offer to research the exact saved area.")
                 .setView(name)
                 .setPositiveButton("Save", (d, w) -> {
                     try {

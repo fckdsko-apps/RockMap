@@ -46,6 +46,7 @@ import java.util.Set;
 
 public final class FieldActivity extends Activity implements LocationRepository.Listener {
     public static final String EXTRA_SCREEN = "rockmap.field.screen";
+    public static final String EXTRA_AREA_ID = "rockmap.field.area_id";
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
@@ -100,7 +101,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
         else if ("imports".equals(screen)) showImports();
         else if ("export".equals(screen)) showExportHub();
         else if ("coordinates".equals(screen)) showCoordinates();
-        else if ("areas".equals(screen)) showProspectingAreas();
+        else if ("areas".equals(screen)) {
+            long areaId = getIntent() == null ? -1L : getIntent().getLongExtra(EXTRA_AREA_ID, -1L);
+            FieldDatabase.Area area = areaId > 0L ? db.getArea(areaId) : null;
+            if (area != null) showArea(area); else showProspectingAreas();
+        }
         else if ("measure".equals(screen)) {
             FieldMapState.requestMeasurement(this);
             returnToMap();
@@ -563,34 +568,84 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title(a.name));
         root.addView(help(a.points.size() + " vertices\n" + measurementText(a.points)
                 + (a.notes == null || a.notes.isEmpty() ? "" : "\n\n" + a.notes)
-                + "\n\nUse Show on Map for the geographic view."));
-        root.addView(action("Analyze This Area",
-                "Use this saved area for Combined Area Analysis: geology first, with Mineral Evidence and historic activity immediately available from the result.",
-                v -> startResearch(new Intent(this, ResearchActivity.class)
-                        .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))));
-        root.addView(action("Show on Map",
-                "Zoom to this saved area and keep the polygon visible in geographic context.",
-                v -> {
-                    ProspectingAreaVisibility.showOnly(this, a.id);
-                    FieldMapState.setAreasVisible(this, true);
-                    FieldMapState.clearViewedMapContext(this);
-                    FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
-                    if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
-                    returnToMap();
-                }));
+                + "\n\nSaved Research is a snapshot you explicitly keep with this Prospecting Area. "
+                + "Opening Research later can run a fresh analysis without overwriting these saved notes."));
+
+        List<ProspectingAreaResearchStore.Snapshot> research =
+                ProspectingAreaResearchStore.list(this, a.id);
+        if (!research.isEmpty()) {
+            ProspectingAreaResearchStore.Snapshot latest = research.get(0);
+            root.addView(action("Saved Research (" + research.size() + ")",
+                    latest.compactLabel() + " · "
+                            + DateFormat.getDateTimeInstance().format(new Date(latest.savedAt)),
+                    v -> showAreaResearch(a)));
+        } else {
+            root.addView(help("No Research snapshots are saved with this area yet. Use Save Research from the Research Area panel when you want to keep one."));
+        }
+
         Button del = button("Delete Area");
         del.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("Delete Area?")
+                .setMessage("Delete this Prospecting Area and its saved Research snapshots from this device?")
                 .setPositiveButton("Delete", (d, w) -> {
                     db.deleteArea(a.id);
                     ProspectingAreaVisibility.forget(this, a.id);
+                    ProspectingAreaResearchStore.forget(this, a.id);
                     showProspectingAreas();
                 })
                 .setNegativeButton("Cancel", null)
                 .show());
         root.addView(del);
         root.addView(nav("Back to Prospecting Areas", v -> showProspectingAreas()));
-        setContentView(scroll(root));
+
+        LinearLayout primary = row();
+        primary.addView(small("Research", v -> startResearch(new Intent(this, ResearchActivity.class)
+                .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))), weight());
+        primary.addView(small("Show on Map", v -> {
+            ProspectingAreaVisibility.showOnly(this, a.id);
+            FieldMapState.setAreasVisible(this, true);
+            FieldMapState.clearViewedMapContext(this);
+            FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
+            if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
+            returnToMap();
+        }), weight());
+        primary.addView(small(research.isEmpty() ? "Saved Research" : "Research (" + research.size() + ")",
+                v -> showAreaResearch(a)), weight());
+        setContentView(pageWithPinnedAction(root, primary));
+    }
+
+    private void showAreaResearch(FieldDatabase.Area area) {
+        if (area == null) { showProspectingAreas(); return; }
+        List<ProspectingAreaResearchStore.Snapshot> research =
+                ProspectingAreaResearchStore.list(this, area.id);
+        LinearLayout root = page();
+        root.addView(title("Saved Research — " + area.name));
+        root.addView(help("These are Research snapshots you explicitly saved with this Prospecting Area. They are not silently refreshed or replaced by later analyses."));
+        if (research.isEmpty()) {
+            root.addView(help("No saved Research yet. Open Research for this area and use Save Research when you want to keep the current findings."));
+        } else {
+            for (ProspectingAreaResearchStore.Snapshot snapshot : research) {
+                StringBuilder detail = new StringBuilder();
+                detail.append(DateFormat.getDateTimeInstance().format(new Date(snapshot.savedAt)));
+                if (snapshot.title != null && !snapshot.title.trim().isEmpty()) {
+                    detail.append("\n").append(snapshot.title.trim());
+                }
+                if (snapshot.summary != null && !snapshot.summary.trim().isEmpty()) {
+                    detail.append("\n\n").append(snapshot.summary.trim());
+                }
+                if (snapshot.source != null && !snapshot.source.trim().isEmpty()) {
+                    detail.append("\n\nSource: ").append(snapshot.source.trim());
+                    if (snapshot.version != null && !snapshot.version.trim().isEmpty()) {
+                        detail.append(" · version ").append(snapshot.version.trim());
+                    }
+                }
+                root.addView(savedResearchCard(snapshot.compactLabel(), detail.toString()));
+            }
+        }
+        LinearLayout primary = row();
+        primary.addView(small("Back", v -> showArea(area)), weight());
+        primary.addView(small("Close to Map", v -> returnToMap()), weight());
+        setContentView(pageWithPinnedAction(root, primary));
     }
 
     // ---------- IMPORT ----------
@@ -1746,6 +1801,31 @@ public final class FieldActivity extends Activity implements LocationRepository.
         b.setMinHeight(dp(50));
         b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         return b;
+    }
+
+
+    private View savedResearchCard(String heading, String detail) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(14), dp(10), dp(14), dp(10));
+        card.setBackgroundColor(0xffffffff);
+
+        TextView h = new TextView(this);
+        h.setText(heading == null || heading.trim().isEmpty() ? "Research" : heading.trim());
+        h.setTextSize(15f);
+        h.setTextColor(0xff303030);
+        h.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        card.addView(h);
+
+        TextView d = help(detail == null ? "" : detail);
+        d.setPadding(0, dp(4), 0, 0);
+        card.addView(d);
+
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setPadding(0, dp(4), 0, dp(4));
+        wrap.addView(card, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return wrap;
     }
 
     private View action(String title, String detail, View.OnClickListener listener) {

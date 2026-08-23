@@ -1,6 +1,7 @@
 package com.rockmap.app.map;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
 import android.graphics.drawable.GradientDrawable;
@@ -14,7 +15,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rockmap.app.field.FieldActivity;
 import com.rockmap.app.field.FieldDatabase;
+import com.rockmap.app.field.FieldMapController;
 import com.rockmap.app.field.FieldMapState;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaVisibility;
@@ -77,6 +80,10 @@ public final class MapContextCloseController {
     private Target geology;
     private Target mineral;
     private Target historic;
+    private Runnable geologyOpenAction;
+    private Runnable mineralOpenAction;
+    private Runnable historicOpenAction;
+    private Runnable contextStateChangedAction;
     private boolean listenersInstalled;
 
     private MapContextCloseController(MapView mapView) {
@@ -122,6 +129,11 @@ public final class MapContextCloseController {
         setGeologyTarget(south, west, north, east, "Geology", Color.rgb(235, 115, 20), closeAction);
     }
 
+    public void setGeologyOpenAction(Runnable openAction) {
+        geologyOpenAction = openAction;
+        refresh();
+    }
+
     public void clearGeologyTarget() {
         geology = null;
         refresh();
@@ -139,6 +151,11 @@ public final class MapContextCloseController {
                                  Runnable closeAction) {
         setMineralTarget(south, west, north, east, "Mineral Evidence",
                 Color.rgb(235, 115, 20), closeAction);
+    }
+
+    public void setMineralOpenAction(Runnable openAction) {
+        mineralOpenAction = openAction;
+        refresh();
     }
 
     public void clearMineralTarget() {
@@ -162,6 +179,15 @@ public final class MapContextCloseController {
         setHistoricTarget(label, color, (Bounds) null, closeAction);
     }
 
+    public void setHistoricOpenAction(Runnable openAction) {
+        historicOpenAction = openAction;
+        refresh();
+    }
+
+    public void setOnContextStateChanged(Runnable action) {
+        contextStateChangedAction = action;
+    }
+
     public void clearHistoricTarget() {
         historic = null;
         refresh();
@@ -175,6 +201,7 @@ public final class MapContextCloseController {
         ensureViews();
         applyProspectingFilter();
         rebuildControls();
+        FieldMapController.ensurePersistentEntry(activity);
     }
 
     private void ensureViews() {
@@ -203,16 +230,16 @@ public final class MapContextCloseController {
         if (menu == null) {
             menu = new LinearLayout(activity);
             menu.setOrientation(LinearLayout.VERTICAL);
-            menu.setPadding(dp(4), dp(4), dp(4), dp(4));
+            menu.setPadding(dp(3), dp(3), dp(3), dp(3));
             menu.setElevation(dp(7));
             menu.setVisibility(View.GONE);
             menu.setContentDescription("Active map layers for this area");
             GradientDrawable bg = new GradientDrawable();
-            bg.setColor(Color.argb(246, 255, 255, 255));
+            bg.setColor(Color.argb(238, 255, 255, 255));
             bg.setStroke(dp(1), Color.rgb(165, 165, 165));
             bg.setCornerRadius(dp(8));
             menu.setBackground(bg);
-            root.addView(menu, new FrameLayout.LayoutParams(dp(214), ViewGroup.LayoutParams.WRAP_CONTENT,
+            root.addView(menu, new FrameLayout.LayoutParams(dp(180), ViewGroup.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP | Gravity.START));
         }
     }
@@ -220,12 +247,12 @@ public final class MapContextCloseController {
     private void rebuildControls() {
         if (root == null || map == null || singleClose == null || menu == null) return;
         ArrayList<ContextItem> items = new ArrayList<>();
-        if (geology != null) items.add(ContextItem.fromTarget(geology, () -> closeTarget(geology)));
-        if (mineral != null) items.add(ContextItem.fromTarget(mineral, () -> closeTarget(mineral)));
-        if (historic != null) items.add(ContextItem.fromTarget(historic, () -> closeTarget(historic)));
+        if (geology != null) items.add(ContextItem.fromTarget(geology, geologyOpenAction, () -> closeTarget(geology)));
+        if (mineral != null) items.add(ContextItem.fromTarget(mineral, mineralOpenAction, () -> closeTarget(mineral)));
+        if (historic != null) items.add(ContextItem.fromTarget(historic, historicOpenAction, () -> closeTarget(historic)));
         for (AreaTarget area : visibleProspectingTargets()) {
             items.add(new ContextItem("Prospecting Area — " + area.name, PROSPECTING_COLOR,
-                    area.bounds, area.anchor, () -> hideProspectingArea(area)));
+                    area.bounds, area.anchor, () -> openProspectingArea(area), () -> hideProspectingArea(area)));
         }
 
         if (items.isEmpty()) {
@@ -247,6 +274,7 @@ public final class MapContextCloseController {
         if (target == mineral) mineral = null;
         if (target == historic) historic = null;
         refresh();
+        if (contextStateChangedAction != null) contextStateChangedAction.run();
     }
 
     private void showSingle(ContextItem item) {
@@ -279,11 +307,17 @@ public final class MapContextCloseController {
             menu.setVisibility(View.GONE);
             return;
         }
-        int width = dp(214);
-        int estimatedHeight = dp(8 + 48 * items.size());
-        // Sit just below/left of the geometry anchor instead of floating in a screen corner.
-        position(menu, width, estimatedHeight,
-                Math.round(anchor.x - width + dp(18)), Math.round(anchor.y + dp(10)));
+        int width = dp(180);
+        int estimatedHeight = dp(6 + 48 * items.size());
+        // Prefer just outside the north-east edge so the controls remain associated with the
+        // geometry without covering the center of the area being inspected. Clamping handles
+        // screen edges and falls back beside the visible geometry.
+        int left = Math.round(anchor.x + dp(7));
+        int top = Math.round(anchor.y - estimatedHeight - dp(7));
+        if (left + width > Math.max(root.getWidth(), mapView.getWidth()) - dp(6)) {
+            left = Math.round(anchor.x - width - dp(7));
+        }
+        position(menu, width, estimatedHeight, left, top);
         menu.setVisibility(View.VISIBLE);
         menu.bringToFront();
     }
@@ -295,8 +329,11 @@ public final class MapContextCloseController {
         row.setMinimumHeight(dp(48));
         row.setClickable(true);
         row.setFocusable(true);
-        row.setContentDescription("Focus " + item.label);
-        row.setOnClickListener(v -> focus(item.bounds));
+        row.setContentDescription("Open " + item.label + " information, results, and options");
+        row.setOnClickListener(v -> {
+            if (item.open != null) item.open.run();
+            else focus(item.bounds);
+        });
 
         View swatch = new View(activity);
         GradientDrawable swatchBg = new GradientDrawable();
@@ -304,12 +341,12 @@ public final class MapContextCloseController {
         swatchBg.setColor(item.color);
         swatch.setBackground(swatchBg);
         LinearLayout.LayoutParams swatchParams = new LinearLayout.LayoutParams(dp(12), dp(12));
-        swatchParams.setMargins(dp(6), 0, dp(7), 0);
+        swatchParams.setMargins(dp(4), 0, dp(6), 0);
         row.addView(swatch, swatchParams);
 
         TextView label = new TextView(activity);
         label.setText(item.label);
-        label.setTextSize(11.5f);
+        label.setTextSize(10.5f);
         label.setTextColor(Color.rgb(35, 35, 35));
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
@@ -384,11 +421,20 @@ public final class MapContextCloseController {
         return out;
     }
 
+    private void openProspectingArea(AreaTarget area) {
+        if (area == null || activity == null) return;
+        Intent intent = new Intent(activity, FieldActivity.class);
+        intent.putExtra(FieldActivity.EXTRA_SCREEN, "areas");
+        intent.putExtra(FieldActivity.EXTRA_AREA_ID, area.id);
+        activity.startActivity(intent);
+    }
+
     private void hideProspectingArea(AreaTarget area) {
         if (area == null || activity == null) return;
         ProspectingAreaVisibility.hide(activity, area.id);
         applyProspectingFilter();
         refresh();
+        if (contextStateChangedAction != null) contextStateChangedAction.run();
         Toast.makeText(activity,
                 "Prospecting Area hidden. Use Field → Prospecting Areas → Show on Map to display it again.",
                 Toast.LENGTH_SHORT).show();
@@ -560,18 +606,20 @@ public final class MapContextCloseController {
         final int color;
         final Bounds bounds;
         final LatLng anchor;
+        final Runnable open;
         final Runnable close;
 
-        ContextItem(String label, int color, Bounds bounds, LatLng anchor, Runnable close) {
+        ContextItem(String label, int color, Bounds bounds, LatLng anchor, Runnable open, Runnable close) {
             this.label = label;
             this.color = color;
             this.bounds = bounds;
             this.anchor = anchor;
+            this.open = open;
             this.close = close;
         }
 
-        static ContextItem fromTarget(Target target, Runnable close) {
-            return new ContextItem(target.label, target.color, target.bounds, target.anchor, close);
+        static ContextItem fromTarget(Target target, Runnable open, Runnable close) {
+            return new ContextItem(target.label, target.color, target.bounds, target.anchor, open, close);
         }
     }
 }

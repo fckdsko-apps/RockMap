@@ -29,6 +29,10 @@ import java.util.Locale;
 
 /** Shared, plain-language Prospecting Area creation helpers used by Research and map details. */
 public final class ProspectingAreaCreator {
+    public interface SaveCallback {
+        void onSaved(long areaId, String savedName);
+    }
+
     private static final double EARTH_RADIUS_M = 6371008.8d;
     private static final int CIRCLE_SEGMENTS = 72;
     public static final String EXTRA_OPEN_RESEARCH_AREA_ID = "rockmap.openResearchAreaId";
@@ -101,7 +105,9 @@ public final class ProspectingAreaCreator {
         String note = clean(sourceNote, "Created from a RockMap map point")
                 + "\nCenter: " + String.format(Locale.US, "%.6f, %.6f", lat, lon)
                 + "\nRadius: " + radiusLabel(radiusMeters);
-        savePolygon(activity, name, note, points, true);
+        // A newly created point/radius area should exist visibly as soon as it is saved.
+        // Researching the area is a separate optional next step, not the trigger that makes it appear.
+        savePolygon(activity, name, note, points, false);
     }
 
     public static void savePolygon(Activity activity,
@@ -109,6 +115,15 @@ public final class ProspectingAreaCreator {
                                    String notes,
                                    List<GeoMath.Point> points,
                                    boolean keepHiddenUntilShown) {
+        savePolygon(activity, defaultName, notes, points, keepHiddenUntilShown, null);
+    }
+
+    public static void savePolygon(Activity activity,
+                                   String defaultName,
+                                   String notes,
+                                   List<GeoMath.Point> points,
+                                   boolean keepHiddenUntilShown,
+                                   SaveCallback callback) {
         if (activity == null) return;
         List<GeoMath.Point> normalized = normalizePolygon(points);
         if (normalized.size() < 3) {
@@ -121,9 +136,11 @@ public final class ProspectingAreaCreator {
         input.setText(clean(defaultName, "Prospecting Area"));
         input.setSelectAllOnFocus(true);
         input.setPadding(dp(activity, 20), dp(activity, 8), dp(activity, 20), dp(activity, 8));
+        String areaSize = GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(normalized));
         AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle("Save as Prospecting Area")
-                .setMessage("Name this area. You can reopen, analyze, export, or delete it from Field → Prospecting Areas.")
+                .setMessage("You are saving this exact area (" + areaSize + ").\n\n"
+                        + "Name it below. After saving, RockMap will confirm the save and offer to research this same area.")
                 .setView(input)
                 .setPositiveButton("Save", null)
                 .setNegativeButton("Cancel", null)
@@ -136,7 +153,7 @@ public final class ProspectingAreaCreator {
                         return;
                     }
                     try {
-                        saveNamedPolygonAndPrompt(activity, name, notes, normalized, keepHiddenUntilShown);
+                        saveNamedPolygonAndPrompt(activity, name, notes, normalized, keepHiddenUntilShown, callback);
                         dialog.dismiss();
                     } catch (RuntimeException ex) {
                         input.setError(ex.getMessage() == null ? "Could not save this area." : ex.getMessage());
@@ -155,6 +172,15 @@ public final class ProspectingAreaCreator {
                                                   String notes,
                                                   List<GeoMath.Point> points,
                                                   boolean keepHiddenUntilShown) {
+        return saveNamedPolygonAndPrompt(activity, name, notes, points, keepHiddenUntilShown, null);
+    }
+
+    public static long saveNamedPolygonAndPrompt(Activity activity,
+                                                  String name,
+                                                  String notes,
+                                                  List<GeoMath.Point> points,
+                                                  boolean keepHiddenUntilShown,
+                                                  SaveCallback callback) {
         if (activity == null) throw new IllegalArgumentException("Activity is required.");
         List<GeoMath.Point> normalized = normalizePolygon(points);
         if (normalized.size() < 3) throw new IllegalArgumentException("This shape cannot be saved as a Prospecting Area.");
@@ -169,6 +195,7 @@ public final class ProspectingAreaCreator {
         }
         MapContextCloseController.refreshFor(activity);
         showSavedResearchPrompt(activity, id, savedName);
+        if (callback != null) callback.onSaved(id, savedName);
         return id;
     }
 
@@ -199,7 +226,7 @@ public final class ProspectingAreaCreator {
         bar.setBackground(background);
 
         TextView message = new TextView(activity);
-        message.setText("Prospecting Area saved" + (name == null || name.trim().isEmpty() ? "" : ": " + name.trim()));
+        message.setText("Saved Prospecting Area" + (name == null || name.trim().isEmpty() ? "" : ": " + name.trim()));
         message.setTextColor(Color.WHITE);
         message.setTextSize(12f);
         message.setMaxLines(2);
@@ -228,6 +255,10 @@ public final class ProspectingAreaCreator {
         params.setMargins(dp(activity, 10), 0, dp(activity, 10), bottom);
         root.addView(bar, params);
         bar.bringToFront();
+        bar.post(() -> {
+            bar.bringToFront();
+            FieldMapController.ensurePersistentEntry(activity);
+        });
     }
 
     private static Button promptButton(Activity activity, String text) {

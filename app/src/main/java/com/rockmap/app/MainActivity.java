@@ -36,7 +36,10 @@ import androidx.lifecycle.Observer;
 import androidx.work.WorkInfo;
 
 import com.rockmap.app.coordinates.CoordinateParser;
+import com.rockmap.app.field.FieldDatabase;
+import com.rockmap.app.field.FieldMapController;
 import com.rockmap.app.field.GeoMath;
+import com.rockmap.app.field.ProspectingAreaResearchStore;
 import com.rockmap.app.field.ProspectingAreaCreator;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.LandStatusCatalog;
@@ -55,11 +58,13 @@ import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.places.PlaceIndexRepository;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
+import com.rockmap.app.research.GeologyDataManager;
 import com.rockmap.app.research.GeologyOverlayController;
 import com.rockmap.app.research.GeologyRepository;
 import com.rockmap.app.research.ResearchActivity;
 import com.rockmap.app.research.ResearchAreaPanelController;
 import com.rockmap.app.research.ResearchResultStore;
+import com.rockmap.app.research.ResearchSessionState;
 import com.rockmap.app.safety.SafetyAcknowledgement;
 import com.rockmap.app.trips.TripEntity;
 import com.rockmap.app.trips.TripExport;
@@ -153,6 +158,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private GeologyRepository.Bounds historicMineContextBounds;
     private ResearchAreaPanelController researchAreaPanel;
     private String activeResearchAreaLabel = "Selected Area";
+    private long activeResearchAreaId = -1L;
+    private String activeResearchView = ResearchAreaPanelController.VIEW_GEOLOGY;
+    private String activeResearchStatus = "";
+    private String activeResearchMineralKey = "";
+    private String activeResearchMineralLabel = "";
+    private String activeResearchMineralMessage = "";
+    private List<MineralAreaAnalyzer.EvidencePoint> activeResearchMineralEvidencePoints = new ArrayList<>();
+    private boolean skipSessionRestoreOnce;
+    private boolean researchSessionRestored;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -167,6 +181,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
         if (getIntent() != null && getIntent().hasExtra(ResearchActivity.RESULT_ACTION)) {
             pendingResearchLaunchIntent = new Intent(getIntent());
+            skipSessionRestoreOnce = true;
+        }
+        if (getIntent() != null && getIntent().hasExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID)) {
+            skipSessionRestoreOnce = true;
         }
 
         MapLibre.getInstance(this);
@@ -225,6 +243,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         geologyOverlayController.initialize();
         mapController = new MapController(mapView, offlineDataManager, this);
         mapController.initialize();
+        installResearchContextActions();
+        installCameraAndSessionRestoration();
         refreshWaypoints();
         Intent launchIntent = getIntent();
         if (launchIntent != null && launchIntent.hasExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID)) {
@@ -232,6 +252,40 @@ public final class MainActivity extends Activity implements LocationRepository.L
             launchIntent.removeExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID);
             if (areaId > 0L) mapView.post(() -> openSavedProspectingAreaResearch(areaId));
         }
+    }
+
+    private void installResearchContextActions() {
+        MapContextCloseController context = MapContextCloseController.forMap(mapView);
+        context.setGeologyOpenAction(() -> reopenResearchContext(ResearchAreaPanelController.VIEW_GEOLOGY));
+        context.setMineralOpenAction(() -> reopenResearchContext(ResearchAreaPanelController.VIEW_MINERALS));
+        context.setHistoricOpenAction(() -> reopenResearchContext(ResearchAreaPanelController.VIEW_MINES));
+        context.setOnContextStateChanged(this::saveResearchSession);
+    }
+
+    private void installCameraAndSessionRestoration() {
+        mapView.getMapAsync(mapLibreMap -> {
+            mapLibreMap.addOnCameraIdleListener(() -> {
+                if (mapLibreMap.getCameraPosition() == null
+                        || mapLibreMap.getCameraPosition().target == null) return;
+                ResearchSessionState.saveCamera(this,
+                        mapLibreMap.getCameraPosition().target.getLatitude(),
+                        mapLibreMap.getCameraPosition().target.getLongitude(),
+                        mapLibreMap.getCameraPosition().zoom,
+                        mapLibreMap.getCameraPosition().bearing,
+                        mapLibreMap.getCameraPosition().tilt);
+            });
+
+            if (!skipSessionRestoreOnce) {
+                ResearchSessionState.CameraSnapshot camera = ResearchSessionState.loadCamera(this);
+                if (camera != null) {
+                    mapLibreMap.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                            new LatLng(camera.lat, camera.lon), camera.zoom));
+                }
+                mapView.postDelayed(this::restoreResearchSession, 450L);
+            } else {
+                researchSessionRestored = true;
+            }
+        });
     }
 
     private void addControl(LinearLayout row, String text, View.OnClickListener listener) {
@@ -292,6 +346,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showResearch() {
+        // Opening the top-level Research picker starts a new area choice. Existing map layers may
+        // remain visible, but new results are not silently attached to an older saved area.
+        activeResearchAreaId = -1L;
+        if (researchAreaPanel != null) researchAreaPanel.prepareForExplicitOpen();
         if (mineralOverlayController == null) {
             startResearch(null);
             return;
@@ -472,38 +530,84 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showMineralAreaResults(MineralAreaAnalyzer.AnalysisResult result) {
+        if (result == null || result.bounds == null) return;
         activeMineralAreaAnalysis = result;
+        activeResearchBounds = geologyBounds(result.bounds);
         mineralOverlayController.showAnalysisBounds(result.bounds);
+        if (!mineralOverlayController.isHeatmapVisible()) activeResearchMineralEvidencePoints = new ArrayList<>();
 
         if (result.minerals.isEmpty()) {
-            activeResearchBounds = geologyBounds(result.bounds);
-            showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
-                    "No explicit Mineral Evidence was found in this area. The area remains active; choose Geology or Historic Mines instead.");
+            activeResearchMineralKey = "";
+            activeResearchMineralLabel = "";
+            activeResearchMineralMessage = "No explicit Mineral Evidence was found in this area. "
+                    + "The Research Area remains active; Geology and Historic Mines are still one tap away.";
+            showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, activeResearchMineralMessage);
+            configureMineralOverview(result);
             return;
         }
-        activeResearchBounds = geologyBounds(result.bounds);
-        showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
-                result.minerals.size() + " mineral/material terms found. Tap a mineral below to show its heatmap.");
+
+        String statusText = result.minerals.size() + " mineral/material terms found in this area.";
+        showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, statusText);
+        configureMineralOverview(result);
+    }
+
+    /**
+     * Mineral Evidence uses the persistent Research panel for context/details. Long content scrolls
+     * below static actions, while the full searchable mineral chooser opens as a lightweight
+     * selection dialog that can be closed without changing the current heatmap/layer state.
+     */
+    private void configureMineralOverview(MineralAreaAnalyzer.AnalysisResult result) {
+        if (researchAreaPanel == null || result == null) return;
+        ArrayList<ResearchAreaPanelController.ActionSpec> actions = new ArrayList<>();
+        if (mineralOverlayController.isHeatmapVisible() && !activeResearchMineralLabel.isEmpty()) {
+            actions.add(new ResearchAreaPanelController.ActionSpec(
+                    "Current: " + activeResearchMineralLabel,
+                    "Show information and options for the current " + activeResearchMineralLabel + " heatmap",
+                    this::showCurrentMineralInformation));
+        }
+        actions.add(new ResearchAreaPanelController.ActionSpec(
+                "Choose Mineral", "Choose a different mineral without leaving this Research Area",
+                () -> showMineralChooserDialog(result)));
+        actions.add(new ResearchAreaPanelController.ActionSpec(
+                "Save Research", "Save the current Research information with a Prospecting Area",
+                this::saveCurrentResearchSnapshot));
+        researchAreaPanel.setPrimaryActions(actions.toArray(new ResearchAreaPanelController.ActionSpec[0]));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(6), dp(2), dp(6), dp(4));
+        TextView summary = researchBodyText(result.recordsInArea + " installed evidence records fall inside this area; "
+                + result.recordsWithExplicitMineralTerms + " contain explicit mineral/material or commodity terms. "
+                + result.minerals.size() + " unique terms are available.\n\n"
+                + "Tap a mineral below or use Choose Mineral. Counts are source records, not specimen counts or a probability of finding the mineral.");
+        content.addView(summary);
+
+        int shown = Math.min(10, result.minerals.size());
+        for (int i = 0; i < shown; i++) {
+            MineralAreaAnalyzer.MineralSummary item = result.minerals.get(i);
+            Button button = smallActionButton(item.displayName + " · " + mineralAreaDetail(item));
+            button.setContentDescription("Show " + item.displayName + " evidence heatmap");
+            button.setOnClickListener(v -> showMineralAreaHeatmap(item, result));
+            content.addView(button, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        if (result.minerals.size() > shown) {
+            content.addView(researchBodyText("Use Choose Mineral for all " + result.minerals.size() + " terms and filtering."));
+        }
+        researchAreaPanel.setScrollableContent(content);
+        saveResearchSession();
+    }
+
+    private void showMineralChooserDialog(MineralAreaAnalyzer.AnalysisResult result) {
+        if (result == null || result.minerals.isEmpty()) {
+            showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
+                    "No explicit Mineral Evidence terms are available in this area. Geology and Historic Mines remain available.");
+            return;
+        }
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(4), dp(18), 0);
-        box.setFocusableInTouchMode(true);
-        box.setContentDescription("Mineral results — " + activeMineralScopeLabel);
-
-        TextView summary = new TextView(this);
-        summary.setText(result.recordsInArea + " installed evidence records fall inside the selected rectangle; "
-                + result.recordsWithExplicitMineralTerms + " contain explicit mineral/material or commodity terms. "
-                + result.minerals.size() + " unique mineral/material/commodity terms are listed below.\n\n"
-                + "Tap a mineral to map its evidence density. Counts are source records, not specimen counts or a probability of finding the mineral.");
-        summary.setTextSize(12.5f);
-        summary.setTextColor(Color.rgb(65, 65, 65));
-        summary.setPadding(0, 0, 0, dp(6));
-        box.addView(summary);
-
-        Button saveArea = smallActionButton("Save Area as Prospecting Area");
-        saveArea.setOnClickListener(v -> saveMineralAnalysisArea(result));
-        box.addView(saveArea);
 
         EditText filter = new EditText(this);
         filter.setHint("Filter minerals (for example: aquamarine)");
@@ -513,13 +617,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
         LinearLayout listControls = new LinearLayout(this);
         listControls.setOrientation(LinearLayout.HORIZONTAL);
         listControls.setGravity(Gravity.CENTER_VERTICAL);
-
         TextView listStatus = new TextView(this);
         listStatus.setTextSize(11.5f);
         listStatus.setTextColor(Color.rgb(75, 75, 75));
         listControls.addView(listStatus, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
         Button sort = smallActionButton("Sort: evidence");
         listControls.addView(sort, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -529,26 +631,20 @@ public final class MainActivity extends Activity implements LocationRepository.L
         ArrayList<ActionListItem> labels = new ArrayList<>();
         ArrayAdapter<ActionListItem> adapter = actionListAdapter(labels);
         adapter.setNotifyOnChange(false);
-
         ListView list = new ListView(this);
         list.setAdapter(adapter);
         box.addView(list, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(360)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(380)));
 
         boolean[] alphabetical = new boolean[]{false};
         Runnable refreshList = () -> refreshMineralAreaList(
-                result, filter.getText().toString(), alphabetical[0],
-                displayed, adapter, listStatus);
+                result, filter.getText().toString(), alphabetical[0], displayed, adapter, listStatus);
         refreshList.run();
-
         filter.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
-                refreshList.run();
-            }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { refreshList.run(); }
             @Override public void afterTextChanged(Editable s) {}
         });
-
         sort.setOnClickListener(v -> {
             alphabetical[0] = !alphabetical[0];
             sort.setText(alphabetical[0] ? "Sort: A–Z" : "Sort: evidence");
@@ -556,7 +652,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         });
 
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Mineral Evidence in Area")
+                .setTitle("Choose Mineral")
                 .setView(box)
                 .setNegativeButton("Close", null)
                 .create();
@@ -566,8 +662,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
             dialog.dismiss();
             showMineralAreaHeatmap(item, result);
         });
-        box.requestFocus();
         dialog.show();
+        filter.requestFocus();
     }
 
     private void refreshMineralAreaList(
@@ -622,36 +718,131 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showMineralAreaHeatmap(MineralAreaAnalyzer.MineralSummary item,
                                         MineralAreaAnalyzer.AnalysisResult analysis) {
-        showMessage("Building " + item.displayName + " evidence heatmap…");
+        if (item == null || analysis == null) return;
+        showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
+                "Loading " + item.displayName + " Mineral Evidence…");
         mineralIndexRepository.loadAreaEvidence(
                 analysis.bounds, item.key, new MineralIndexRepository.AreaEvidenceCallback() {
                     @Override
                     public void onResult(List<MineralAreaAnalyzer.EvidencePoint> points) {
-                        if (points.isEmpty()) {
-                            showMessage("No heatmap points remained for " + item.displayName + ".");
-                            showMineralAreaResults(analysis);
+                        activeMineralAreaAnalysis = analysis;
+                        activeResearchBounds = geologyBounds(analysis.bounds);
+                        activeResearchMineralKey = item.key == null ? "" : item.key;
+                        activeResearchMineralLabel = item.displayName == null ? "" : item.displayName;
+                        activeResearchMineralEvidencePoints = points == null
+                                ? new ArrayList<>() : new ArrayList<>(points);
+                        if (activeResearchMineralEvidencePoints.isEmpty()) {
+                            activeResearchMineralMessage = "No heatmap points remained for "
+                                    + activeResearchMineralLabel + ". The area and Mineral Evidence workspace remain active; choose another mineral or switch datasets.";
+                            showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, activeResearchMineralMessage);
+                            configureMineralOverview(analysis);
                             return;
                         }
-                        activeMineralAreaAnalysis = analysis;
-                        mineralOverlayController.showHeatmap(points, analysis.bounds, item.displayName);
 
-                        String message = points.size() + " source record"
-                                + (points.size() == 1 ? " contributes" : "s contribute")
+                        mineralOverlayController.showHeatmap(activeResearchMineralEvidencePoints, analysis.bounds, activeResearchMineralLabel);
+                        activeResearchMineralMessage = activeResearchMineralEvidencePoints.size() + " source record"
+                                + (activeResearchMineralEvidencePoints.size() == 1 ? " contributes" : "s contribute")
                                 + " to this heatmap. Hotter areas mean denser and/or stronger documented evidence nearby. "
                                 + "Direct occurrence/locality evidence is weighted more strongly than broad district or abandoned-mine evidence.\n\n"
-                                + "This is not a probability map and does not predict specimens between records. Zoom in to see the small evidence dots, then tap a dot for its source and reliability. Land status and mining claims remain separate layers.";
-                        activeResearchBounds = geologyBounds(analysis.bounds);
+                                + "This is not a probability map and does not predict specimens between records. "
+                                + "Zoom in to see the evidence dots, then tap a dot for its source and reliability. "
+                                + "Land status and mining claims remain separate layers.";
                         showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
-                                item.displayName + " heatmap shown. " + points.size()
-                                        + " source record" + (points.size() == 1 ? "" : "s")
-                                        + " in this area. Use the Research Area tabs to switch datasets.");
+                                activeResearchMineralLabel + " heatmap · " + activeResearchMineralEvidencePoints.size()
+                                        + " source record" + (activeResearchMineralEvidencePoints.size() == 1 ? "" : "s"));
+                        configureCurrentMineralInformation(item, analysis, activeResearchMineralMessage);
                     }
 
                     @Override
                     public void onError(String message) {
-                        showMessage(message == null ? "Heatmap evidence lookup failed safely." : message);
+                        activeResearchMineralEvidencePoints = new ArrayList<>();
+                        activeResearchMineralMessage = message == null
+                                ? "Heatmap evidence lookup failed safely. Choose another mineral or use another Research dataset."
+                                : message + " Choose another mineral or use another Research dataset.";
+                        showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, activeResearchMineralMessage);
+                        configureMineralOverview(analysis);
                     }
                 });
+    }
+
+    private void showCurrentMineralInformation() {
+        if (activeMineralAreaAnalysis == null) {
+            if (activeResearchBounds != null) showMineralEvidenceForBounds(activeResearchBounds);
+            return;
+        }
+        MineralAreaAnalyzer.MineralSummary current = findMineralSummary(
+                activeMineralAreaAnalysis, activeResearchMineralKey, activeResearchMineralLabel);
+        if (current == null) {
+            configureMineralOverview(activeMineralAreaAnalysis);
+            return;
+        }
+        configureCurrentMineralInformation(current, activeMineralAreaAnalysis, activeResearchMineralMessage);
+    }
+
+    private MineralAreaAnalyzer.MineralSummary findMineralSummary(
+            MineralAreaAnalyzer.AnalysisResult analysis, String key, String label) {
+        if (analysis == null || analysis.minerals == null) return null;
+        for (MineralAreaAnalyzer.MineralSummary item : analysis.minerals) {
+            if (item == null) continue;
+            if (key != null && !key.isEmpty() && key.equals(item.key)) return item;
+            if ((key == null || key.isEmpty()) && label != null && item.displayName != null
+                    && label.equalsIgnoreCase(item.displayName)) return item;
+        }
+        return null;
+    }
+
+    private void configureCurrentMineralInformation(MineralAreaAnalyzer.MineralSummary item,
+                                                     MineralAreaAnalyzer.AnalysisResult analysis,
+                                                     String detail) {
+        if (researchAreaPanel == null || item == null || analysis == null) return;
+        researchAreaPanel.setPrimaryActions(
+                new ResearchAreaPanelController.ActionSpec(
+                        "Back", "Back to the Mineral Evidence overview without hiding the heatmap",
+                        () -> showMineralAreaResults(analysis)),
+                new ResearchAreaPanelController.ActionSpec(
+                        "Choose Mineral", "Choose a different mineral without leaving this Research Area",
+                        () -> showMineralChooserDialog(analysis)),
+                new ResearchAreaPanelController.ActionSpec(
+                        "Save Research", "Save this Mineral Evidence information with a Prospecting Area",
+                        this::saveCurrentResearchSnapshot));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(6), dp(2), dp(6), dp(4));
+        StringBuilder info = new StringBuilder();
+        info.append(item.displayName).append("\n").append(mineralAreaDetail(item));
+        if (detail != null && !detail.trim().isEmpty()) info.append("\n\n").append(detail.trim());
+        if (!activeResearchMineralEvidencePoints.isEmpty()) {
+            info.append("\n\nEvidence records:");
+            int shown = Math.min(6, activeResearchMineralEvidencePoints.size());
+            for (int i = 0; i < shown; i++) {
+                MineralAreaAnalyzer.EvidencePoint point = activeResearchMineralEvidencePoints.get(i);
+                if (point == null || point.record == null) continue;
+                MineralRecord record = point.record;
+                info.append("\n• ").append(record.name);
+                if (point.reason != null && !point.reason.trim().isEmpty()) {
+                    info.append(" — ").append(point.reason.trim());
+                }
+                if (record.evidenceType != null && !record.evidenceType.trim().isEmpty()) {
+                    info.append("\n  ").append(record.evidenceType.trim());
+                }
+                if (record.sourceTitle != null && !record.sourceTitle.trim().isEmpty()) {
+                    info.append(" · ").append(record.sourceTitle.trim());
+                }
+                if (record.locationPrecision != null && !record.locationPrecision.trim().isEmpty()) {
+                    info.append("\n  Location: ").append(record.locationPrecision.trim());
+                }
+            }
+            if (activeResearchMineralEvidencePoints.size() > shown) {
+                info.append("\n…").append(activeResearchMineralEvidencePoints.size() - shown)
+                        .append(" more evidence record")
+                        .append(activeResearchMineralEvidencePoints.size() - shown == 1 ? "" : "s")
+                        .append(" are represented on the heatmap.");
+            }
+        }
+        content.addView(researchBodyText(info.toString()));
+        researchAreaPanel.setScrollableContent(content);
+        saveResearchSession();
     }
 
     private void runMineralSearch(String query, MineralSearchEngine.Bounds bounds, String scopeLabel,
@@ -3180,12 +3371,17 @@ public final class MainActivity extends Activity implements LocationRepository.L
         super.onNewIntent(intent);
         setIntent(intent);
         if (intent != null && intent.hasExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID)) {
+            // An explicit post-save Research action always wins over an older restorable session.
+            skipSessionRestoreOnce = true;
+            researchSessionRestored = true;
             long areaId = intent.getLongExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID, -1L);
             intent.removeExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID);
             if (areaId > 0L) openSavedProspectingAreaResearch(areaId);
             return;
         }
         if (intent != null && intent.hasExtra(ResearchActivity.RESULT_ACTION)) {
+            skipSessionRestoreOnce = true;
+            researchSessionRestored = true;
             pendingResearchLaunchIntent = new Intent(intent);
             if (mapView != null) {
                 mapView.getMapAsync(mapLibreMap ->
@@ -3196,6 +3392,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void openSavedProspectingAreaResearch(long areaId) {
         if (areaId <= 0L) return;
+        if (researchAreaPanel != null) researchAreaPanel.prepareForExplicitOpen();
+        activeResearchAreaId = areaId;
+        FieldDatabase.Area area = FieldDatabase.get(this).getArea(areaId);
+        if (area != null && area.name != null && !area.name.trim().isEmpty()) {
+            activeResearchAreaLabel = area.name.trim();
+        }
         Intent research = new Intent(this, ResearchActivity.class);
         research.putExtra(ResearchActivity.EXTRA_AREA_ID, areaId);
         startActivityForResult(research, RESEARCH_REQUEST);
@@ -3218,8 +3420,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showResearchAreaPanel(String activeView, String status) {
         if (activeResearchBounds == null || mainRoot == null) return;
+        activeResearchView = activeView == null || activeView.trim().isEmpty()
+                ? ResearchAreaPanelController.VIEW_GEOLOGY : activeView.trim();
+        activeResearchStatus = status == null ? "" : status.trim();
         if (researchAreaPanel == null) researchAreaPanel = new ResearchAreaPanelController(this, mainRoot);
-        researchAreaPanel.show(activeResearchAreaLabel, activeView, status, new ResearchAreaPanelController.Listener() {
+        researchAreaPanel.show(activeResearchAreaLabel, activeResearchView, activeResearchStatus,
+                new ResearchAreaPanelController.Listener() {
             @Override public void onGeology() {
                 if (activeResearchBounds != null) showGeologyForBounds(activeResearchBounds);
             }
@@ -3235,8 +3441,427 @@ public final class MainActivity extends Activity implements LocationRepository.L
             @Override public void onMines() {
                 if (activeResearchBounds != null) showHistoricMinesForBounds(activeResearchBounds, false);
             }
-            @Override public void onClose() {
-                // Closing the supporting panel does not silently clear map layers or saved areas.
+            @Override public void onSaveResearch() { saveCurrentResearchSnapshot(); }
+            @Override public void onBack() { handleResearchPanelBack(); }
+            @Override public void onClosePanel() {
+                // Closing the panel never disables geology, heatmaps, mines, or a saved area.
+                saveResearchSession();
+                FieldMapController.ensurePersistentEntry(MainActivity.this);
+            }
+            @Override public void onPanelModeChanged(String mode) {
+                // Expanded/collapsed/hidden is part of the recoverable working session.
+                saveResearchSession();
+                FieldMapController.ensurePersistentEntry(MainActivity.this);
+            }
+        });
+        configureResearchPanelForView(activeResearchView);
+        saveResearchSession();
+        FieldMapController.ensurePersistentEntry(this);
+    }
+
+    private void configureResearchPanelForView(String view) {
+        if (researchAreaPanel == null) return;
+        if (ResearchAreaPanelController.VIEW_MINERALS.equals(view)) {
+            if (activeMineralAreaAnalysis != null) {
+                if (mineralOverlayController.isHeatmapVisible() && !activeResearchMineralLabel.isEmpty()) {
+                    showCurrentMineralInformation();
+                } else {
+                    configureMineralOverview(activeMineralAreaAnalysis);
+                }
+            } else {
+                researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
+                        "Save Research", "Save the current Research information with a Prospecting Area",
+                        this::saveCurrentResearchSnapshot));
+                researchAreaPanel.setScrollableContent(researchBodyText(
+                        activeResearchStatus.isEmpty()
+                                ? "Mineral Evidence for this Research Area is ready to analyze."
+                                : activeResearchStatus));
+            }
+            return;
+        }
+        if (ResearchAreaPanelController.VIEW_MINES.equals(view)) {
+            configureHistoricMinesPanel();
+            return;
+        }
+        configureGeologyPanel();
+    }
+
+    private void configureGeologyPanel() {
+        if (researchAreaPanel == null) return;
+        researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
+                "Save Research", "Save this Geology information with a Prospecting Area",
+                this::saveCurrentResearchSnapshot));
+        String detail;
+        if (activeResearchGeologyCount > 0) {
+            detail = activeResearchGeologyCount + " mapped geology area"
+                    + (activeResearchGeologyCount == 1 ? "" : "s") + " in the current Research Area."
+                    + (activeResearchGeologyTitle.isEmpty() ? "" : "\n\nAnalysis: " + activeResearchGeologyTitle)
+                    + geologyResultSummary()
+                    + "\n\nTap a geology polygon on the map for complete unit/source details. "
+                    + "Back, Collapse, and Close leave the mapped Geology layer active.";
+        } else {
+            detail = activeResearchStatus.isEmpty()
+                    ? "No mapped Geology result is currently loaded for this Research Area."
+                    : activeResearchStatus;
+        }
+        researchAreaPanel.setScrollableContent(researchBodyText(detail));
+    }
+
+    private String geologyResultSummary() {
+        if (activeResearchGeologyGeoJson == null || activeResearchGeologyGeoJson.trim().isEmpty()) return "";
+        try {
+            JSONObject root = new JSONObject(activeResearchGeologyGeoJson);
+            JSONArray features = root.optJSONArray("features");
+            if (features == null || features.length() == 0) return "";
+            ArrayList<String> seen = new ArrayList<>();
+            StringBuilder out = new StringBuilder("\n\nResults:");
+            int shown = 0;
+            for (int i = 0; i < features.length() && shown < 10; i++) {
+                JSONObject feature = features.optJSONObject(i);
+                JSONObject props = feature == null ? null : feature.optJSONObject("properties");
+                if (props == null) continue;
+                String unit = props.optString("UNIT_NAME", "").trim();
+                if (unit.isEmpty()) unit = props.optString("SGMC_LABEL", "").trim();
+                if (unit.isEmpty()) unit = props.optString("ORIG_LABEL", "").trim();
+                String lith = props.optString("GENERALIZED_LITH", "").trim();
+                String ageMin = props.optString("AGE_MIN", "").trim();
+                String ageMax = props.optString("AGE_MAX", "").trim();
+                String key = unit + "|" + lith + "|" + ageMin + "|" + ageMax;
+                if (seen.contains(key)) continue;
+                seen.add(key);
+                out.append("\n• ").append(unit.isEmpty() ? "Unnamed geologic unit" : unit);
+                if (!lith.isEmpty()) out.append(" — ").append(lith);
+                if (!ageMin.isEmpty() || !ageMax.isEmpty()) {
+                    out.append(" · ");
+                    if (!ageMin.isEmpty()) out.append(ageMin);
+                    if (!ageMax.isEmpty() && !ageMax.equals(ageMin)) out.append("–").append(ageMax);
+                }
+                shown++;
+            }
+            if (features.length() > shown) out.append("\n…more mapped areas are available on the map.");
+            return out.toString();
+        } catch (JSONException ex) {
+            return "";
+        }
+    }
+
+    private void configureHistoricMinesPanel() {
+        if (researchAreaPanel == null) return;
+        researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
+                "Save Research", "Save this Historic Mines & Workings research with a Prospecting Area",
+                this::saveCurrentResearchSnapshot));
+        String detail = (activeResearchStatus.isEmpty()
+                ? "Historic Mines & Workings are shown for the current Research Area."
+                : activeResearchStatus)
+                + "\n\nTap a mapped mine or working for its source record, nearby evidence, and available options. "
+                + "Back, Collapse, and Close only change this panel; the mapped layer remains until its map-context × is used.";
+        researchAreaPanel.setScrollableContent(researchBodyText(detail));
+    }
+
+    private void handleResearchPanelBack() {
+        if (ResearchAreaPanelController.VIEW_MINERALS.equals(activeResearchView)
+                && activeMineralAreaAnalysis != null && mineralOverlayController.isHeatmapVisible()) {
+            // Return to the Mineral Evidence overview while deliberately leaving the heatmap active.
+            showMineralAreaResults(activeMineralAreaAnalysis);
+            return;
+        }
+        if (researchAreaPanel != null) researchAreaPanel.closePanel();
+    }
+
+    /** Reopen cached information/results/options from the labeled map-context control. */
+    private void reopenResearchContext(String view) {
+        if (activeResearchBounds == null) return;
+        String targetView = view == null ? activeResearchView : view;
+        showResearchAreaPanel(targetView, researchStatusForView(targetView));
+        if (researchAreaPanel != null) researchAreaPanel.reopenExpanded();
+        configureResearchPanelForView(targetView);
+        saveResearchSession();
+    }
+
+    private String researchStatusForView(String view) {
+        if (ResearchAreaPanelController.VIEW_MINERALS.equals(view)) {
+            if (!activeResearchMineralLabel.isEmpty() && mineralOverlayController.isHeatmapVisible()) {
+                return activeResearchMineralLabel + " heatmap · " + mineralOverlayController.getHeatmapPointCount()
+                        + " source record" + (mineralOverlayController.getHeatmapPointCount() == 1 ? "" : "s");
+            }
+            if (activeMineralAreaAnalysis != null) {
+                return activeMineralAreaAnalysis.minerals.size() + " mineral/material terms available in this area.";
+            }
+            return "Mineral Evidence for this Research Area.";
+        }
+        if (ResearchAreaPanelController.VIEW_MINES.equals(view)) {
+            return historicMinesRequestedVisible
+                    ? "Historic Mines & Workings are shown for this Research Area."
+                    : "Historic Mines & Workings information for this Research Area.";
+        }
+        return activeResearchGeologyCount > 0
+                ? activeResearchGeologyCount + " mapped geology area"
+                    + (activeResearchGeologyCount == 1 ? "" : "s") + " shown."
+                : "Geology information for this Research Area.";
+    }
+
+    private TextView researchBodyText(String text) {
+        TextView body = new TextView(this);
+        body.setText(text == null ? "" : text);
+        body.setTextSize(12f);
+        body.setTextColor(Color.rgb(60, 60, 60));
+        body.setPadding(dp(6), dp(5), dp(6), dp(8));
+        return body;
+    }
+
+    private void saveCurrentResearchSnapshot() {
+        if (activeResearchBounds == null) {
+            showMessage("There is no active Research Area to save.");
+            return;
+        }
+        ProspectingAreaResearchStore.Snapshot snapshot = buildResearchSnapshot();
+        FieldDatabase.Area area = activeResearchAreaId > 0L
+                ? FieldDatabase.get(this).getArea(activeResearchAreaId) : null;
+        if (area != null) {
+            ProspectingAreaResearchStore.save(this, area.id, snapshot);
+            showMessage("Research saved with Prospecting Area: " + area.name);
+            saveResearchSession();
+            return;
+        }
+
+        List<GeoMath.Point> points = activeResearchGeometryPoints();
+        if (points.size() < 3) {
+            showMessage("This Research Area could not be converted into a Prospecting Area safely.");
+            return;
+        }
+        String defaultName = activeResearchAreaLabel == null
+                || activeResearchAreaLabel.trim().isEmpty()
+                || "Selected Area".equalsIgnoreCase(activeResearchAreaLabel.trim())
+                ? "Research Area" : activeResearchAreaLabel.trim();
+        ProspectingAreaCreator.savePolygon(this, defaultName,
+                "Created from the active RockMap Research Area so saved Research can stay attached to this area.",
+                points, false, (areaId, savedName) -> {
+                    activeResearchAreaId = areaId;
+                    activeResearchAreaLabel = savedName;
+                    ProspectingAreaResearchStore.save(MainActivity.this, areaId, snapshot);
+                    showMessage("Prospecting Area and Research saved: " + savedName);
+                    if (researchAreaPanel != null && !ResearchAreaPanelController.MODE_HIDDEN.equals(
+                            researchAreaPanel.currentMode())) {
+                        showResearchAreaPanel(activeResearchView, activeResearchStatus);
+                    }
+                    saveResearchSession();
+                });
+    }
+
+    private ProspectingAreaResearchStore.Snapshot buildResearchSnapshot() {
+        ProspectingAreaResearchStore.Snapshot snapshot = new ProspectingAreaResearchStore.Snapshot();
+        snapshot.savedAt = System.currentTimeMillis();
+        snapshot.south = activeResearchBounds.south;
+        snapshot.west = activeResearchBounds.west;
+        snapshot.north = activeResearchBounds.north;
+        snapshot.east = activeResearchBounds.east;
+        if (ResearchAreaPanelController.VIEW_MINERALS.equals(activeResearchView)) {
+            snapshot.dataset = "Mineral Evidence";
+            snapshot.source = "Installed RockMap mineral evidence index";
+            if (offlineDataManager != null && offlineDataManager.getActiveManifest() != null) {
+                snapshot.version = offlineDataManager.getActiveManifest().version;
+            }
+            snapshot.mineral = activeResearchMineralLabel;
+            snapshot.title = activeResearchMineralLabel.isEmpty()
+                    ? "Mineral Evidence" : activeResearchMineralLabel + " heatmap";
+            if (!activeResearchMineralMessage.isEmpty()) {
+                snapshot.summary = activeResearchMineralMessage;
+            } else if (activeMineralAreaAnalysis != null) {
+                snapshot.summary = activeMineralAreaAnalysis.recordsInArea + " installed evidence records in the area; "
+                        + activeMineralAreaAnalysis.minerals.size() + " explicit mineral/material terms available.";
+            } else {
+                snapshot.summary = activeResearchStatus;
+            }
+        } else if (ResearchAreaPanelController.VIEW_MINES.equals(activeResearchView)) {
+            snapshot.dataset = "Historic Mines & Workings";
+            snapshot.source = "Installed RockMap historic mine / mineral evidence index";
+            if (offlineDataManager != null && offlineDataManager.getActiveManifest() != null) {
+                snapshot.version = offlineDataManager.getActiveManifest().version;
+            }
+            snapshot.title = "Historic Mines & Workings";
+            snapshot.summary = activeResearchStatus.isEmpty()
+                    ? "Historic Mines & Workings map context was active for this Research Area."
+                    : activeResearchStatus;
+        } else {
+            snapshot.dataset = "Geology";
+            snapshot.source = "USGS State Geologic Map Compilation (SGMC)";
+            snapshot.version = new GeologyDataManager(this).getInstalledVersion();
+            snapshot.title = activeResearchGeologyTitle.isEmpty() ? "Geology" : activeResearchGeologyTitle;
+            snapshot.summary = activeResearchGeologyCount + " mapped geology area"
+                    + (activeResearchGeologyCount == 1 ? "" : "s")
+                    + " in this Research Area.";
+        }
+        return snapshot;
+    }
+
+    private List<GeoMath.Point> activeResearchGeometryPoints() {
+        if (activeResearchBounds == null) return new ArrayList<>();
+        if (activeResearchGeologyGeoJson != null && !activeResearchGeologyGeoJson.trim().isEmpty()
+                && sameResearchBounds(activeResearchBounds, activeResearchGeologyBounds)) {
+            try {
+                JSONObject root = new JSONObject(activeResearchGeologyGeoJson);
+                JSONObject query = root.optJSONObject("rockmapQuery");
+                JSONObject geometry = query == null ? null : query.optJSONObject("geometry");
+                if (geometry != null) {
+                    List<GeoMath.Point> exact = ProspectingAreaCreator.polygonFromGeometryJson(geometry.toString());
+                    if (exact.size() >= 3) return exact;
+                }
+            } catch (JSONException ignored) {}
+        }
+
+        double latSpan = Math.abs(activeResearchBounds.north - activeResearchBounds.south);
+        double lonSpan = Math.abs(activeResearchBounds.east - activeResearchBounds.west);
+        if (latSpan < 1e-10d && lonSpan < 1e-10d) {
+            return ProspectingAreaCreator.circlePoints(activeResearchBounds.south, activeResearchBounds.west, 250d);
+        }
+        ArrayList<GeoMath.Point> points = new ArrayList<>();
+        points.add(new GeoMath.Point(activeResearchBounds.south, activeResearchBounds.west));
+        points.add(new GeoMath.Point(activeResearchBounds.south, activeResearchBounds.east));
+        points.add(new GeoMath.Point(activeResearchBounds.north, activeResearchBounds.east));
+        points.add(new GeoMath.Point(activeResearchBounds.north, activeResearchBounds.west));
+        return points;
+    }
+
+    private void saveResearchSession() {
+        if (activeResearchBounds == null) return;
+        ResearchSessionState.Snapshot snapshot = new ResearchSessionState.Snapshot();
+        snapshot.active = true;
+        snapshot.south = activeResearchBounds.south;
+        snapshot.west = activeResearchBounds.west;
+        snapshot.north = activeResearchBounds.north;
+        snapshot.east = activeResearchBounds.east;
+        snapshot.areaLabel = activeResearchAreaLabel;
+        snapshot.activeView = activeResearchView;
+        snapshot.panelMode = researchAreaPanel == null
+                ? ResearchAreaPanelController.MODE_HIDDEN : researchAreaPanel.currentMode();
+        snapshot.areaId = activeResearchAreaId;
+        snapshot.geologyVisible = geologyOverlayController != null && geologyOverlayController.isVisible();
+        snapshot.mineralVisible = mineralOverlayController != null
+                && mineralOverlayController.isAreaAnalysisVisible();
+        snapshot.minesVisible = historicMinesRequestedVisible;
+        snapshot.mineralKey = activeResearchMineralKey;
+        snapshot.mineralLabel = activeResearchMineralLabel;
+        snapshot.geologyTitle = activeResearchGeologyTitle;
+        snapshot.geologyCount = activeResearchGeologyCount;
+        ResearchSessionState.save(this, snapshot);
+    }
+
+    private void restoreResearchSession() {
+        if (researchSessionRestored || skipSessionRestoreOnce) return;
+        researchSessionRestored = true;
+        ResearchSessionState.Snapshot snapshot = ResearchSessionState.load(this);
+        if (snapshot == null) return;
+        try {
+            activeResearchBounds = new GeologyRepository.Bounds(
+                    snapshot.south, snapshot.west, snapshot.north, snapshot.east);
+        } catch (IllegalArgumentException ex) {
+            return;
+        }
+        activeResearchAreaLabel = snapshot.areaLabel;
+        activeResearchAreaId = snapshot.areaId;
+        activeResearchView = snapshot.activeView;
+        activeResearchMineralKey = snapshot.mineralKey;
+        activeResearchMineralLabel = snapshot.mineralLabel;
+        activeResearchGeologyTitle = snapshot.geologyTitle;
+        activeResearchGeologyCount = snapshot.geologyCount;
+        activeResearchGeologyBounds = activeResearchBounds;
+        activeResearchStatus = "Restored the previous Research Area after RockMap restarted.";
+
+        if (snapshot.geologyVisible && snapshot.geologyCount > 0) {
+            try {
+                String geoJson = ResearchResultStore.geoJson(this);
+                GeologyRepository.Bounds storedBounds = researchBoundsFromGeoJson(geoJson);
+                if (storedBounds == null || sameResearchBounds(activeResearchBounds, storedBounds)) {
+                    activeResearchGeologyGeoJson = geoJson;
+                    geologyOverlayController.show(geoJson, snapshot.geologyTitle, snapshot.geologyCount);
+                }
+            } catch (IOException ignored) {}
+        }
+        if (snapshot.minesVisible) {
+            setHistoricMinesVisible(true, activeResearchBounds);
+        }
+
+        showResearchAreaPanel(snapshot.activeView, activeResearchStatus);
+        if (researchAreaPanel != null) researchAreaPanel.restoreMode(snapshot.panelMode);
+
+        if (snapshot.mineralVisible) {
+            restoreMineralSessionLayer(snapshot);
+        } else {
+            configureResearchPanelForView(snapshot.activeView);
+            if (researchAreaPanel != null) researchAreaPanel.restoreMode(snapshot.panelMode);
+            saveResearchSession();
+        }
+        FieldMapController.ensurePersistentEntry(this);
+    }
+
+    private void restoreMineralSessionLayer(ResearchSessionState.Snapshot snapshot) {
+        if (activeResearchBounds == null) return;
+        MineralSearchEngine.Bounds bounds = new MineralSearchEngine.Bounds(
+                activeResearchBounds.north, activeResearchBounds.east,
+                activeResearchBounds.south, activeResearchBounds.west);
+        mineralIndexRepository.analyzeArea(bounds, new MineralIndexRepository.AreaAnalysisCallback() {
+            @Override public void onResult(MineralAreaAnalyzer.AnalysisResult result) {
+                activeMineralAreaAnalysis = result;
+                mineralOverlayController.showAnalysisBounds(result.bounds);
+                MineralAreaAnalyzer.MineralSummary selected = findMineralSummary(
+                        result, snapshot.mineralKey, snapshot.mineralLabel);
+                if (selected == null || snapshot.mineralKey == null || snapshot.mineralKey.isEmpty()) {
+                    if (ResearchAreaPanelController.VIEW_MINERALS.equals(snapshot.activeView)) {
+                        researchAreaPanel.update(ResearchAreaPanelController.VIEW_MINERALS,
+                                "Restored Mineral Evidence for the previous Research Area.");
+                        configureMineralOverview(result);
+                        researchAreaPanel.restoreMode(snapshot.panelMode);
+                    }
+                    saveResearchSession();
+                    return;
+                }
+                mineralIndexRepository.loadAreaEvidence(result.bounds, selected.key,
+                        new MineralIndexRepository.AreaEvidenceCallback() {
+                    @Override public void onResult(List<MineralAreaAnalyzer.EvidencePoint> points) {
+                        activeResearchMineralEvidencePoints = points == null
+                                ? new ArrayList<>() : new ArrayList<>(points);
+                        if (!activeResearchMineralEvidencePoints.isEmpty()) {
+                            activeResearchMineralKey = selected.key == null ? "" : selected.key;
+                            activeResearchMineralLabel = selected.displayName == null ? "" : selected.displayName;
+                            activeResearchMineralMessage = activeResearchMineralEvidencePoints.size() + " source record"
+                                    + (activeResearchMineralEvidencePoints.size() == 1 ? " contributes" : "s contribute")
+                                    + " to the restored " + activeResearchMineralLabel + " heatmap.";
+                            mineralOverlayController.showHeatmap(activeResearchMineralEvidencePoints, result.bounds, activeResearchMineralLabel);
+                        }
+                        if (ResearchAreaPanelController.VIEW_MINERALS.equals(snapshot.activeView)) {
+                            researchAreaPanel.update(ResearchAreaPanelController.VIEW_MINERALS,
+                                    activeResearchMineralLabel.isEmpty()
+                                            ? "Restored Mineral Evidence."
+                                            : "Restored " + activeResearchMineralLabel + " heatmap.");
+                            if (!activeResearchMineralLabel.isEmpty()) {
+                                configureCurrentMineralInformation(selected, result, activeResearchMineralMessage);
+                            } else {
+                                configureMineralOverview(result);
+                            }
+                            researchAreaPanel.restoreMode(snapshot.panelMode);
+                        }
+                        saveResearchSession();
+                    }
+                    @Override public void onError(String message) {
+                        activeResearchMineralEvidencePoints = new ArrayList<>();
+                        if (ResearchAreaPanelController.VIEW_MINERALS.equals(snapshot.activeView)) {
+                            researchAreaPanel.update(ResearchAreaPanelController.VIEW_MINERALS,
+                                    "Mineral Evidence session restored; the previous heatmap could not be rebuilt.");
+                            configureMineralOverview(result);
+                            researchAreaPanel.restoreMode(snapshot.panelMode);
+                        }
+                        saveResearchSession();
+                    }
+                });
+            }
+            @Override public void onError(String message) {
+                if (ResearchAreaPanelController.VIEW_MINERALS.equals(snapshot.activeView)
+                        && researchAreaPanel != null) {
+                    researchAreaPanel.update(ResearchAreaPanelController.VIEW_MINERALS,
+                            "The Research Area was restored, but Mineral Evidence could not be rebuilt.");
+                    researchAreaPanel.restoreMode(snapshot.panelMode);
+                }
+                saveResearchSession();
             }
         });
     }
@@ -3278,6 +3903,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void handleResearchResult(Intent data) {
         String action = data.getStringExtra(ResearchActivity.RESULT_ACTION);
+        long returnedAreaId = data.getLongExtra(ResearchActivity.RESULT_AREA_ID, -1L);
+        if (returnedAreaId > 0L) activeResearchAreaId = returnedAreaId;
         if (ResearchActivity.ACTION_GEOLOGY.equals(action)) {
             String title = data.getStringExtra(ResearchActivity.RESULT_TITLE);
             int count = data.getIntExtra(ResearchActivity.RESULT_COUNT, 0);
@@ -3987,14 +4614,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
         super.onResume();
         mapView.onResume();
         MapContextCloseController.forMap(mapView).refresh();
+        FieldMapController.ensurePersistentEntry(this);
     }
 
     @Override protected void onPause() {
+        // Persist the recoverable Research workspace before MapLibre/activity state is paused.
+        saveResearchSession();
         mapView.onPause();
         super.onPause();
     }
 
     @Override protected void onStop() {
+        saveResearchSession();
         started = false;
         locationRepository.stop();
         mapView.onStop();
@@ -4008,6 +4639,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override protected void onSaveInstanceState(Bundle outState) {
         outState.putLong(STATE_PENDING_TRIP_EXPORT_ID, pendingTripExportId);
+        saveResearchSession();
         super.onSaveInstanceState(outState);
         mapView.onSaveInstanceState(outState);
     }
