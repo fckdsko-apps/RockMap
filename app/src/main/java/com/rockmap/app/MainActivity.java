@@ -23,6 +23,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.RadioButton;
@@ -539,7 +540,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (result.minerals.isEmpty()) {
             activeResearchMineralKey = "";
             activeResearchMineralLabel = "";
-            activeResearchMineralMessage = "No explicit Mineral Evidence terms were found inside the selected area.";
+            activeResearchMineralMessage = "No explicit minerals or materials were found inside the selected area.";
             showResearchEmptyState(
                     ResearchAreaPanelController.VIEW_MINERALS,
                     "Mineral Evidence",
@@ -547,176 +548,210 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
 
-        String statusText = result.minerals.size() + " mineral/material terms found in this area.";
+        String statusText = result.minerals.size() + " minerals & materials found in this area.";
         showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, statusText);
         configureMineralOverview(result);
     }
 
     /**
-     * Mineral Evidence uses the persistent Research workspace for context/details. Long content
-     * scrolls below static actions, and the searchable mineral chooser stays inside that same
-     * workspace so selection, navigation, colors, and close/collapse behavior remain consistent.
+     * Mineral Evidence uses the persistent Research workspace for context/details. The complete
+     * minerals/materials browser is exposed directly so search and alphabetical browse are obvious.
      */
     private void configureMineralOverview(MineralAreaAnalyzer.AnalysisResult result) {
-        if (researchAreaPanel == null || result == null) return;
-        ArrayList<ResearchAreaPanelController.ActionSpec> actions = new ArrayList<>();
-        if (mineralOverlayController.isHeatmapVisible() && !activeResearchMineralLabel.isEmpty()) {
-            actions.add(new ResearchAreaPanelController.ActionSpec(
-                    "Current: " + activeResearchMineralLabel,
-                    "Show information and options for the current " + activeResearchMineralLabel + " heatmap",
-                    this::showCurrentMineralInformation));
-        }
-        actions.add(new ResearchAreaPanelController.ActionSpec(
-                "Choose Mineral", "Choose a different mineral without leaving this Research Area",
-                () -> showMineralChooserDialog(result)));
-        actions.add(new ResearchAreaPanelController.ActionSpec(
-                "Save Research", "Save the current Research information with a Prospecting Area",
-                this::saveCurrentResearchSnapshot));
-        researchAreaPanel.setPrimaryActions(actions.toArray(new ResearchAreaPanelController.ActionSpec[0]));
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(6), dp(2), dp(6), dp(4));
-        // Preserve the established accessibility/offline contract used by RockMap preflight.
-        content.setContentDescription("Mineral results — " + activeMineralScopeLabel);
-        TextView summary = researchBodyText(result.recordsInArea + " installed evidence records fall inside this area; "
-                + result.recordsWithExplicitMineralTerms + " contain explicit mineral/material or commodity terms. "
-                + result.minerals.size() + " unique terms are available.\n\n"
-                + "Tap a mineral below or use Choose Mineral. Counts are source records, not specimen counts or a probability of finding the mineral.");
-        content.addView(summary);
-
-        int shown = Math.min(10, result.minerals.size());
-        for (int i = 0; i < shown; i++) {
-            MineralAreaAnalyzer.MineralSummary item = result.minerals.get(i);
-            Button button = smallActionButton(item.displayName + " · " + mineralAreaDetail(item));
-            button.setContentDescription("Show " + item.displayName + " evidence heatmap");
-            button.setOnClickListener(v -> showMineralAreaHeatmap(item, result));
-            content.addView(button, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-        if (result.minerals.size() > shown) {
-            content.addView(researchBodyText("Use Choose Mineral to browse, filter, and select from all "
-                    + result.minerals.size() + " mineral/material terms found in this Research Area."));
-        }
-        researchAreaPanel.setScrollableContent(content);
-        saveResearchSession();
+        showMineralBrowser(result);
     }
 
-    private void showMineralChooserDialog(MineralAreaAnalyzer.AnalysisResult result) {
-        if (result == null || result.minerals.isEmpty()) {
+    /**
+     * Mineral Evidence exposes the complete minerals/materials collection directly. Search,
+     * alphabetical browse, A-Z jump controls, and the current selection stay fixed while the
+     * full list scrolls independently. Selecting an item does not silently change the map: the
+     * explicit Show Evidence on Map action makes that consequence clear.
+     */
+    private void showMineralBrowser(MineralAreaAnalyzer.AnalysisResult result) {
+        if (result == null || result.minerals == null || result.minerals.isEmpty()) {
             showResearchEmptyState(
                     ResearchAreaPanelController.VIEW_MINERALS,
                     "Mineral Evidence",
-                    "No explicit Mineral Evidence terms were found in this area. Use Geology or Historic Mines, or close/collapse Research without losing the area.");
+                    "No explicit minerals or materials were found in this area. Use Geology or Historic Mines, or close/collapse Research without losing the area.");
             return;
         }
-
-        showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
-                "Choose a mineral without leaving this Research Area.");
         if (researchAreaPanel == null) return;
-        researchAreaPanel.reopenExpanded();
-        researchAreaPanel.setPrimaryActions(
-                new ResearchAreaPanelController.ActionSpec(
-                        "Back", "Back to Mineral Evidence results",
-                        () -> showMineralAreaResults(result)),
-                new ResearchAreaPanelController.ActionSpec(
-                        "Save Research", "Save the current Research information with a Prospecting Area",
-                        this::saveCurrentResearchSnapshot));
 
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(6), dp(2), dp(6), dp(5));
-        box.addView(researchPanelHeading("Choose Mineral"));
+        researchAreaPanel.reopenExpanded();
+        researchAreaPanel.update(ResearchAreaPanelController.VIEW_MINERALS,
+                result.minerals.size() + " minerals & materials available in this Research Area.");
+
+        ArrayList<MineralAreaAnalyzer.MineralSummary> allMinerals = new ArrayList<>(result.minerals);
+        allMinerals.sort((left, right) -> {
+            String leftName = left == null || left.displayName == null ? "" : left.displayName;
+            String rightName = right == null || right.displayName == null ? "" : right.displayName;
+            int insensitive = leftName.compareToIgnoreCase(rightName);
+            return insensitive != 0 ? insensitive : leftName.compareTo(rightName);
+        });
+
+        MineralAreaAnalyzer.MineralSummary current = findMineralSummary(
+                result, activeResearchMineralKey, activeResearchMineralLabel);
+        final MineralAreaAnalyzer.MineralSummary[] selected = new MineralAreaAnalyzer.MineralSummary[]{current};
+        final View[] letterAnchors = new View[26];
+        final Button[] letterButtons = new Button[26];
+
+        LinearLayout fixed = new LinearLayout(this);
+        fixed.setOrientation(LinearLayout.VERTICAL);
+        fixed.setPadding(dp(4), 0, dp(4), dp(3));
 
         EditText filter = new EditText(this);
-        filter.setHint("Filter minerals (for example: aquamarine)");
+        filter.setHint("Search " + allMinerals.size() + " minerals & materials");
         filter.setSingleLine(true);
         filter.setTextSize(14f);
         filter.setMinHeight(dp(48));
-        box.addView(filter, new LinearLayout.LayoutParams(
+        filter.setContentDescription("Search all " + allMinerals.size()
+                + " minerals and materials in this Research Area");
+        fixed.addView(filter, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        LinearLayout listControls = new LinearLayout(this);
-        listControls.setOrientation(LinearLayout.HORIZONTAL);
-        listControls.setGravity(Gravity.CENTER_VERTICAL);
-        listControls.setPadding(0, dp(3), 0, dp(3));
-        TextView listStatus = new TextView(this);
-        listStatus.setTextSize(11.5f);
-        listStatus.setTextColor(Color.rgb(82, 94, 96));
-        listControls.addView(listStatus, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button sort = researchChoiceButton("Sort: evidence", false);
-        listControls.addView(sort, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
-        box.addView(listControls);
+        TextView listTitle = researchPanelHeading("All Minerals & Materials · " + allMinerals.size());
+        listTitle.setPadding(0, dp(3), 0, dp(2));
+        fixed.addView(listTitle);
+
+        HorizontalScrollView jumpScroll = new HorizontalScrollView(this);
+        jumpScroll.setHorizontalScrollBarEnabled(false);
+        jumpScroll.setFillViewport(false);
+        jumpScroll.setContentDescription("Jump to a letter in the minerals and materials list");
+        LinearLayout jumpRow = new LinearLayout(this);
+        jumpRow.setOrientation(LinearLayout.HORIZONTAL);
+        jumpRow.setGravity(Gravity.CENTER_VERTICAL);
+        for (int i = 0; i < 26; i++) {
+            final int letterIndex = i;
+            char letter = (char) ('A' + i);
+            Button jump = researchLetterButton(String.valueOf(letter));
+            jump.setContentDescription("Jump to " + letter);
+            jump.setOnClickListener(v -> {
+                View anchor = letterAnchors[letterIndex];
+                if (anchor != null) researchAreaPanel.scrollDetailsTo(anchor);
+            });
+            letterButtons[i] = jump;
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(44), dp(44));
+            if (i > 0) params.setMargins(dp(2), 0, 0, 0);
+            jumpRow.addView(jump, params);
+        }
+        jumpScroll.addView(jumpRow, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fixed.addView(jumpScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+
+        TextView selectionStatus = new TextView(this);
+        selectionStatus.setTextSize(11.5f);
+        selectionStatus.setTextColor(Color.rgb(60, 60, 60));
+        selectionStatus.setPadding(dp(4), dp(3), dp(4), dp(3));
+        fixed.addView(selectionStatus);
+        researchAreaPanel.setFixedContent(fixed);
 
         LinearLayout rows = new LinearLayout(this);
         rows.setOrientation(LinearLayout.VERTICAL);
-        box.addView(rows, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        rows.setPadding(dp(4), 0, dp(4), dp(4));
+        // Preserve the established accessibility/offline contract used by RockMap preflight.
+        rows.setContentDescription("Mineral results — " + activeMineralScopeLabel);
+        researchAreaPanel.setScrollableContent(rows);
 
-        boolean[] alphabetical = new boolean[]{false};
-        Runnable refreshList = () -> {
+        final Runnable[] refreshList = new Runnable[1];
+        final Runnable updateSelection = () -> {
+            MineralAreaAnalyzer.MineralSummary item = selected[0];
+            if (item == null) {
+                selectionStatus.setText("Select a mineral or material from the list below.");
+                researchAreaPanel.setPrimaryActions();
+            } else {
+                String name = item.displayName == null || item.displayName.trim().isEmpty()
+                        ? "Selected mineral" : item.displayName.trim();
+                selectionStatus.setText("Selected: " + name + " — tap Show Evidence on Map to display its evidence for this Research Area.");
+                researchAreaPanel.setPrimaryActions(
+                        new ResearchAreaPanelController.ActionSpec(
+                                "Show Evidence on Map",
+                                "Show " + name + " Mineral Evidence on the map for this Research Area",
+                                () -> showMineralAreaHeatmap(item, result)));
+            }
+        };
+
+        refreshList[0] = () -> {
             String query = filter.getText() == null ? ""
                     : filter.getText().toString().trim().toLowerCase(Locale.US);
-            ArrayList<MineralAreaAnalyzer.MineralSummary> displayed = new ArrayList<>();
-            for (MineralAreaAnalyzer.MineralSummary item : result.minerals) {
-                String name = item.displayName == null ? "" : item.displayName;
-                String key = item.key == null ? "" : item.key;
-                if (query.isEmpty()
-                        || name.toLowerCase(Locale.US).contains(query)
-                        || key.toLowerCase(Locale.US).contains(query)) {
-                    displayed.add(item);
-                }
-            }
-            if (alphabetical[0]) {
-                displayed.sort((left, right) -> {
-                    String leftName = left.displayName == null ? "" : left.displayName;
-                    String rightName = right.displayName == null ? "" : right.displayName;
-                    int insensitive = leftName.compareToIgnoreCase(rightName);
-                    return insensitive != 0 ? insensitive : leftName.compareTo(rightName);
-                });
-            }
-
+            for (int i = 0; i < letterAnchors.length; i++) letterAnchors[i] = null;
             rows.removeAllViews();
-            int maximumRows = 80;
-            int shown = Math.min(maximumRows, displayed.size());
-            for (int i = 0; i < shown; i++) {
-                MineralAreaAnalyzer.MineralSummary item = displayed.get(i);
+
+            int matches = 0;
+            char lastHeader = 0;
+            for (MineralAreaAnalyzer.MineralSummary item : allMinerals) {
+                if (item == null) continue;
+                String name = item.displayName == null ? "" : item.displayName.trim();
+                String key = item.key == null ? "" : item.key.trim();
+                if (!query.isEmpty()
+                        && !name.toLowerCase(Locale.US).contains(query)
+                        && !key.toLowerCase(Locale.US).contains(query)) {
+                    continue;
+                }
+                matches++;
+                char initial = mineralInitial(name);
+                if (initial != lastHeader) {
+                    TextView header = researchPanelHeading(String.valueOf(initial));
+                    header.setTextSize(12.5f);
+                    header.setPadding(dp(4), dp(6), dp(4), dp(2));
+                    rows.addView(header, new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                    if (initial >= 'A' && initial <= 'Z') {
+                        letterAnchors[initial - 'A'] = header;
+                    }
+                    lastHeader = initial;
+                }
+
+                boolean isSelected = selected[0] != null
+                        && ((selected[0].key != null && selected[0].key.equals(item.key))
+                        || (selected[0].displayName != null && name.equalsIgnoreCase(selected[0].displayName)));
                 Button choice = researchChoiceButton(
-                        item.displayName + "\n" + mineralAreaDetail(item),
-                        !activeResearchMineralKey.isEmpty() && activeResearchMineralKey.equals(item.key));
+                        name + "\n" + mineralAreaDetail(item), isSelected);
                 choice.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-                choice.setContentDescription("Show " + item.displayName + " Mineral Evidence heatmap");
-                choice.setOnClickListener(v -> showMineralAreaHeatmap(item, result));
+                choice.setContentDescription((isSelected ? "Selected " : "Select ") + name
+                        + ". Use Show Evidence on Map to display its Mineral Evidence for this Research Area.");
+                choice.setOnClickListener(v -> {
+                    selected[0] = item;
+                    updateSelection.run();
+                    refreshList[0].run();
+                });
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
                 params.setMargins(0, 0, 0, dp(4));
                 rows.addView(choice, params);
             }
-            if (displayed.isEmpty()) {
-                rows.addView(researchBodyText("Nothing found for that mineral filter. Clear or change the filter to see the available Mineral Evidence terms."));
-            } else if (displayed.size() > shown) {
-                rows.addView(researchBodyText("Showing the first " + shown + " matching minerals. Narrow the filter to find another term."));
+
+            if (matches == 0) {
+                rows.addView(researchBodyText(
+                        "No minerals or materials match this search. Clear or change the search to browse the full list."));
             }
-            listStatus.setText("Showing " + displayed.size() + " of " + result.minerals.size()
-                    + (alphabetical[0] ? " · A–Z" : " · evidence count"));
+            listTitle.setText(query.isEmpty()
+                    ? "All Minerals & Materials · " + allMinerals.size()
+                    : "All Minerals & Materials · " + allMinerals.size() + " · " + matches + " matches");
+            for (int i = 0; i < letterButtons.length; i++) {
+                if (letterButtons[i] != null) letterButtons[i].setEnabled(letterAnchors[i] != null);
+            }
         };
-        refreshList.run();
+
+        updateSelection.run();
+        refreshList[0].run();
         filter.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) {}
-            @Override public void onTextChanged(CharSequence value, int start, int before, int count) { refreshList.run(); }
+            @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                refreshList[0].run();
+                researchAreaPanel.scrollDetailsToTop();
+            }
             @Override public void afterTextChanged(Editable value) {}
         });
-        sort.setOnClickListener(v -> {
-            alphabetical[0] = !alphabetical[0];
-            sort.setText(alphabetical[0] ? "Sort: A–Z" : "Sort: evidence");
-            refreshList.run();
-        });
-
-        researchAreaPanel.setScrollableContent(box);
         saveResearchSession();
-        filter.requestFocus();
+    }
+
+    private char mineralInitial(String name) {
+        if (name == null) return '#';
+        String trimmed = name.trim();
+        if (trimmed.isEmpty()) return '#';
+        char initial = Character.toUpperCase(trimmed.charAt(0));
+        return initial >= 'A' && initial <= 'Z' ? initial : '#';
     }
 
     private void refreshMineralAreaList(
@@ -774,6 +809,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (item == null || analysis == null) return;
         showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS,
                 "Loading " + item.displayName + " Mineral Evidence…");
+        if (researchAreaPanel != null) {
+            researchAreaPanel.clearFixedContent();
+            researchAreaPanel.setPrimaryActions();
+            researchAreaPanel.setScrollableContent(researchBodyText(
+                    "Loading " + item.displayName + " Mineral Evidence for this Research Area…"));
+        }
         mineralIndexRepository.loadAreaEvidence(
                 analysis.bounds, item.key, new MineralIndexRepository.AreaEvidenceCallback() {
                     @Override
@@ -850,13 +891,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                                                      MineralAreaAnalyzer.AnalysisResult analysis,
                                                      String detail) {
         if (researchAreaPanel == null || item == null || analysis == null) return;
+        researchAreaPanel.clearFixedContent();
         researchAreaPanel.setPrimaryActions(
                 new ResearchAreaPanelController.ActionSpec(
-                        "Back", "Back to the Mineral Evidence overview without hiding the heatmap",
-                        () -> showMineralAreaResults(analysis)),
-                new ResearchAreaPanelController.ActionSpec(
-                        "Choose Mineral", "Choose a different mineral without leaving this Research Area",
-                        () -> showMineralChooserDialog(analysis)),
+                        "Search Minerals", "Search or browse all minerals and materials in this Research Area",
+                        () -> showMineralBrowser(analysis)),
                 new ResearchAreaPanelController.ActionSpec(
                         "Save Research", "Save this Mineral Evidence information with a Prospecting Area",
                         this::saveCurrentResearchSnapshot));
@@ -1051,6 +1090,26 @@ public final class MainActivity extends Activity implements LocationRepository.L
         background.setCornerRadius(dp(7));
         button.setBackground(background);
         button.setContentDescription(label);
+        return button;
+    }
+
+    private Button researchLetterButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextSize(11f);
+        button.setMinWidth(0);
+        button.setMinimumWidth(0);
+        button.setMinHeight(dp(44));
+        button.setMinimumHeight(dp(44));
+        button.setPadding(0, 0, 0, 0);
+        button.setGravity(Gravity.CENTER);
+        button.setTextColor(Color.rgb(0, 112, 121));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Color.WHITE);
+        background.setStroke(dp(1), Color.rgb(190, 207, 209));
+        background.setCornerRadius(dp(6));
+        button.setBackground(background);
         return button;
     }
 
@@ -3556,6 +3615,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         showResearchAreaPanel(view, "Nothing found in this area");
         if (researchAreaPanel == null) return;
         researchAreaPanel.reopenExpanded();
+        researchAreaPanel.clearFixedContent();
         researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
                 "Save Research", "Save this zero-result Research outcome with a Prospecting Area",
                 this::saveCurrentResearchSnapshot));
@@ -3582,6 +3642,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     configureMineralOverview(activeMineralAreaAnalysis);
                 }
             } else {
+                researchAreaPanel.clearFixedContent();
                 researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
                         "Save Research", "Save the current Research information with a Prospecting Area",
                         this::saveCurrentResearchSnapshot));
@@ -3601,6 +3662,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void configureGeologyPanel() {
         if (researchAreaPanel == null) return;
+        researchAreaPanel.clearFixedContent();
         researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
                 "Save Research", "Save this Geology information with a Prospecting Area",
                 this::saveCurrentResearchSnapshot));
@@ -3660,6 +3722,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void configureHistoricMinesPanel() {
         if (researchAreaPanel == null) return;
+        researchAreaPanel.clearFixedContent();
         researchAreaPanel.setPrimaryActions(new ResearchAreaPanelController.ActionSpec(
                 "Save Research", "Save this Historic Mines & Workings research with a Prospecting Area",
                 this::saveCurrentResearchSnapshot));
@@ -3698,7 +3761,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         + " source record" + (mineralOverlayController.getHeatmapPointCount() == 1 ? "" : "s");
             }
             if (activeMineralAreaAnalysis != null) {
-                return activeMineralAreaAnalysis.minerals.size() + " mineral/material terms available in this area.";
+                return activeMineralAreaAnalysis.minerals.size() + " minerals & materials available in this area.";
             }
             return "Mineral Evidence for this Research Area.";
         }
@@ -3781,7 +3844,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 snapshot.summary = activeResearchMineralMessage;
             } else if (activeMineralAreaAnalysis != null) {
                 snapshot.summary = activeMineralAreaAnalysis.recordsInArea + " installed evidence records in the area; "
-                        + activeMineralAreaAnalysis.minerals.size() + " explicit mineral/material terms available.";
+                        + activeMineralAreaAnalysis.minerals.size() + " minerals & materials available.";
             } else {
                 snapshot.summary = activeResearchStatus;
             }

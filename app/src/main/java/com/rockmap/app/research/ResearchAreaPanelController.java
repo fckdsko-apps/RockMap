@@ -76,6 +76,7 @@ public final class ResearchAreaPanelController {
     private TextView title;
     private TextView status;
     private LinearLayout primaryActions;
+    private LinearLayout fixedContent;
     private LinearLayout scrollContent;
     private ScrollView detailScroll;
     private Button geology;
@@ -188,6 +189,33 @@ public final class ResearchAreaPanelController {
         primaryActions.setVisibility(count == 0 ? View.GONE : View.VISIBLE);
     }
 
+    /** Fixed controls such as Research search/browse tools remain visible while results scroll. */
+    public void setFixedContent(View content) {
+        ensurePanel();
+        fixedContent.removeAllViews();
+        if (content == null) {
+            fixedContent.setVisibility(View.GONE);
+            return;
+        }
+        detach(content);
+        fixedContent.addView(content, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fixedContent.setVisibility(View.VISIBLE);
+    }
+
+    public void clearFixedContent() { setFixedContent(null); }
+
+    public void scrollDetailsToTop() {
+        ensurePanel();
+        detailScroll.post(() -> detailScroll.scrollTo(0, 0));
+    }
+
+    public void scrollDetailsTo(View target) {
+        ensurePanel();
+        if (target == null) return;
+        detailScroll.post(() -> detailScroll.smoothScrollTo(0, Math.max(0, target.getTop() - dp(4))));
+    }
+
     /** Long details/results live here; header/tabs/primary actions above never scroll away. */
     public void setScrollableContent(View content) {
         ensurePanel();
@@ -270,6 +298,12 @@ public final class ResearchAreaPanelController {
         status.setTextColor(COLOR_MUTED);
         status.setPadding(dp(6), dp(4), dp(6), dp(4));
         expandedGroup.addView(status);
+
+        fixedContent = new LinearLayout(activity);
+        fixedContent.setOrientation(LinearLayout.VERTICAL);
+        fixedContent.setPadding(dp(4), 0, dp(4), dp(3));
+        fixedContent.setVisibility(View.GONE);
+        expandedGroup.addView(fixedContent);
 
         detailScroll = new ScrollView(activity);
         detailScroll.setFillViewport(false);
