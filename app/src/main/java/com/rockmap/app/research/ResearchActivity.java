@@ -60,6 +60,7 @@ public final class ResearchActivity extends Activity {
     public static final String EXTRA_POINT_LABEL = "rockmap.research.point_label";
     public static final String EXTRA_AUTO_GEOLOGY = "rockmap.research.auto_geology";
     public static final String EXTRA_CONTEXT_LABEL = "rockmap.research.context_label";
+    public static final String EXTRA_TOUR_REOPEN_GEOLOGY = "rockmap.research.tour_reopen_geology";
 
     public static final String RESULT_ACTION = "rockmap.research.result_action";
     public static final String RESULT_TITLE = "rockmap.research.title";
@@ -110,6 +111,13 @@ public final class ResearchActivity extends Activity {
             intent.removeExtra(EXTRA_AREA_ID);
             if (!geology.isReady()) showInstall();
             else analyzeArea(areaId);
+            return true;
+        }
+        if (intent != null && intent.getBooleanExtra(EXTRA_TOUR_REOPEN_GEOLOGY, false)) {
+            intent.removeExtra(EXTRA_TOUR_REOPEN_GEOLOGY);
+            if (!geology.isReady()) showInstall();
+            else if (visibleBounds != null) runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area");
+            else showHub();
             return true;
         }
         if (intent != null && intent.getBooleanExtra(EXTRA_AUTO_GEOLOGY, false)) {
@@ -245,7 +253,7 @@ public final class ResearchActivity extends Activity {
 
     private void startGeologyDataUpdate() {
         if (BuildConfig.GEOLOGY_MANIFEST_URL == null || BuildConfig.GEOLOGY_MANIFEST_URL.trim().isEmpty()) {
-            toast("This APK was not built from a configured public RockMap repository.");
+            toast("Colorado geology updates are not configured in this build.");
             return;
         }
         toast("Checking Colorado geology pack size…");
@@ -257,7 +265,7 @@ public final class ResearchActivity extends Activity {
                             new AlertDialog.Builder(ResearchActivity.this)
                                     .setTitle("Colorado Geology")
                                     .setMessage(preview.message.isEmpty()
-                                            ? "No fixed Colorado geology pack is currently published. Nothing was downloaded."
+                                            ? "No Colorado geology pack is currently published. Nothing was downloaded."
                                             : preview.message)
                                     .setPositiveButton("OK", null)
                                     .show();
@@ -318,8 +326,8 @@ public final class ResearchActivity extends Activity {
                     new AlertDialog.Builder(ResearchActivity.this)
                             .setTitle("Colorado Geology installed")
                             .setMessage(geologyDataManager.getLastUpdateStatus()
-                                    + "\n\nGeology searches and area queries now use the verified local database and work offline."
-                                    + "\n\nIf an older geology result is still visible on the map behind Research, run a new geology analysis before using that overlay; the saved prior Research result was cleared when the new snapshot activated.")
+                                    + "\n\nGeology searches and area queries use the verified local database and work offline."
+                                    + "\n\nRun a fresh geology analysis before relying on an overlay that was already visible when the data update completed.")
                             .setPositiveButton("Research", (d, w) -> showHub())
                             .show();
                 } else {
@@ -914,15 +922,36 @@ public final class ResearchActivity extends Activity {
                     "Analyze the visible area",
                     "Combined Analysis starts with the mapped geology already inside the visible map extent, then keeps that area available for Mineral Evidence and Historic Mines.",
                     "Tap “Visible Area — Combined Analysis”.", tourCombinedControl,
+                    tourBackAction(),
                     null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
             GuidedTourCoach.show(this, displayStep, displayTotal,
                     "Return the geology to the map",
                     "RockMap groups repeated mapped polygons by geologic unit for readability while keeping the underlying geometry and provenance.",
                     "Tap “Show Geology on Map”.", tourShowGeologyControl,
+                    tourBackAction(),
                     null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else {
             GuidedTourCoach.clear(this);
+        }
+    }
+
+    private Runnable tourBackAction() {
+        return GuidedTourState.step(this) > GuidedTourState.startStep(this)
+                ? this::backTourResearchStep : null;
+    }
+
+    private void backTourResearchStep() {
+        if (!GuidedTourState.isActive(this)) return;
+        int step = GuidedTourState.step(this);
+        if (step <= GuidedTourState.startStep(this)) return;
+        if (step == GuidedTourState.STEP_COMBINED_ANALYSIS) {
+            GuidedTourState.setStep(this, GuidedTourState.STEP_OPEN_RESEARCH);
+            GuidedTourCoach.clear(this);
+            finish();
+        } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            GuidedTourState.setStep(this, GuidedTourState.STEP_COMBINED_ANALYSIS);
+            showHub();
         }
     }
 

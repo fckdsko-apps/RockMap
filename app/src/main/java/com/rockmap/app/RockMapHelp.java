@@ -25,11 +25,10 @@ public final class RockMapHelp {
     }
 
     public static void showOfflineData(Activity activity, Runnable startTour) {
-        String message = "RockMap currently has two independently installable offline packages:\n\n"
-                + "• Core Offline Map & Research Data — the basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records are one integrity-versioned pack today.\n\n"
+        String message = "RockMap has two independently installable offline packages:\n\n"
+                + "• Core Offline Map & Research Data — the basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records are one integrity-versioned pack.\n\n"
                 + "• Queryable Colorado Geology — a separate verified statewide geology database.\n\n"
                 + "Check selected sizes reads only the small published manifests. It does not install the large files. RockMap shows the expected transfer before Install selected is enabled, reuses current files when possible, and verifies downloaded data before activation.\n\n"
-                + "More datasets can become separate choices later without changing this screen when they are packaged independently.\n\n"
                 + "Full and topic tours are always available from the small ? help button above the main map controls.";
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle("Offline Maps & Data help")

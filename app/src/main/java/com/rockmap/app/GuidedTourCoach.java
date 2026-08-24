@@ -48,6 +48,7 @@ public final class GuidedTourCoach {
 
     public static void show(Activity activity, int step, int total, String title, String message,
                             String requiredAction, View target,
+                            Runnable backAction,
                             String primaryLabel, Runnable primaryAction,
                             Runnable skipAction, Runnable exitAction) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
@@ -115,12 +116,12 @@ public final class GuidedTourCoach {
 
         if (requiredAction != null && !requiredAction.trim().isEmpty()) {
             TextView next = new TextView(activity);
-            next.setText("NEXT: " + requiredAction.trim());
+            next.setText("ACTION: " + requiredAction.trim());
             next.setTextSize(12.5f);
             next.setTextColor(Color.rgb(28, 50, 52));
             next.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             next.setPadding(0, dp(activity, 5), 0, 0);
-            next.setContentDescription("Next action: " + requiredAction.trim());
+            next.setContentDescription("Guided tour action: " + requiredAction.trim());
             card.addView(next);
             card.addNormalView(next);
         }
@@ -129,11 +130,29 @@ public final class GuidedTourCoach {
         actions.setOrientation(LinearLayout.VERTICAL);
         actions.setPadding(0, dp(activity, 5), 0, 0);
 
-        if (primaryLabel != null && !primaryLabel.trim().isEmpty()) {
+        boolean hasPrimary = primaryLabel != null && !primaryLabel.trim().isEmpty();
+        boolean hasBack = backAction != null;
+
+        if (hasPrimary) {
+            LinearLayout navigation = new LinearLayout(activity);
+            navigation.setOrientation(LinearLayout.HORIZONTAL);
+            navigation.setGravity(Gravity.CENTER_VERTICAL);
+
+            if (hasBack) {
+                Button back = button(activity, "Back");
+                back.setOnClickListener(v -> backAction.run());
+                navigation.addView(back, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+
             Button primary = button(activity, primaryLabel.trim());
             primary.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             primary.setOnClickListener(v -> { if (primaryAction != null) primaryAction.run(); });
-            actions.addView(primary, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams primaryParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (hasBack) primaryParams.setMargins(dp(activity, 6), 0, 0, 0);
+            navigation.addView(primary, primaryParams);
+            actions.addView(navigation, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
 
@@ -141,10 +160,18 @@ public final class GuidedTourCoach {
         persistentActions.setOrientation(LinearLayout.HORIZONTAL);
         persistentActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
 
+        if (hasBack && !hasPrimary) {
+            Button back = button(activity, "Back");
+            back.setOnClickListener(v -> backAction.run());
+            persistentActions.addView(back, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+
         Button skip = button(activity, "Skip step");
         skip.setOnClickListener(v -> { if (skipAction != null) skipAction.run(); });
         LinearLayout.LayoutParams skipParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        if (hasBack && !hasPrimary) skipParams.setMargins(dp(activity, 5), 0, 0, 0);
         persistentActions.addView(skip, skipParams);
 
         Button exit = button(activity, "Exit tour");
@@ -162,13 +189,16 @@ public final class GuidedTourCoach {
         card.addView(actions);
         card.addNormalView(actions);
 
-        boolean denseEligible = primaryLabel == null || primaryLabel.trim().isEmpty();
+        boolean denseEligible = true;
         if (denseEligible) {
             LinearLayout compact = new LinearLayout(activity);
-            compact.setOrientation(LinearLayout.HORIZONTAL);
-            compact.setGravity(Gravity.CENTER_VERTICAL);
-            compact.setMinimumHeight(dp(activity, 56));
+            compact.setOrientation(LinearLayout.VERTICAL);
             compact.setVisibility(View.GONE);
+
+            LinearLayout compactTop = new LinearLayout(activity);
+            compactTop.setOrientation(LinearLayout.HORIZONTAL);
+            compactTop.setGravity(Gravity.CENTER_VERTICAL);
+            compactTop.setMinimumHeight(dp(activity, 52));
 
             TextView compactDrag = new TextView(activity);
             compactDrag.setText(Math.max(1, step) + "/" + Math.max(step, total) + "\n↕");
@@ -180,29 +210,58 @@ public final class GuidedTourCoach {
             compactDrag.setFocusable(true);
             compactDrag.setContentDescription("Drag guided tour card");
             compactDrag.setOnTouchListener(card::handleDrag);
-            compact.addView(compactDrag, new LinearLayout.LayoutParams(
-                    dp(activity, 48), dp(activity, 56)));
+            compactTop.addView(compactDrag, new LinearLayout.LayoutParams(
+                    dp(activity, 48), dp(activity, 52)));
 
             TextView compactNext = new TextView(activity);
             String compactAction = requiredAction == null || requiredAction.trim().isEmpty()
                     ? "Continue the guided tour" : requiredAction.trim();
-            compactNext.setText("NEXT: " + compactAction);
+            compactNext.setText("ACTION: " + compactAction);
             compactNext.setTextSize(11.5f);
             compactNext.setTextColor(Color.rgb(28, 50, 52));
             compactNext.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             compactNext.setMaxLines(3);
             compactNext.setGravity(Gravity.CENTER_VERTICAL);
-            compactNext.setContentDescription("Next action: " + compactAction);
+            compactNext.setContentDescription("Guided tour action: " + compactAction);
             LinearLayout.LayoutParams compactNextParams = new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
             compactNextParams.setMargins(dp(activity, 4), 0, dp(activity, 4), 0);
-            compact.addView(compactNext, compactNextParams);
+            compactTop.addView(compactNext, compactNextParams);
+            compact.addView(compactTop, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            LinearLayout compactActions = new LinearLayout(activity);
+            compactActions.setOrientation(LinearLayout.HORIZONTAL);
+            compactActions.setGravity(Gravity.CENTER_VERTICAL);
+            compactActions.setPadding(0, dp(activity, 2), 0, 0);
+
+            if (backAction != null) {
+                Button compactBack = button(activity, "Back");
+                compactBack.setContentDescription("Go back one guided tour step");
+                compactBack.setOnClickListener(v -> backAction.run());
+                compactActions.addView(compactBack, new LinearLayout.LayoutParams(
+                        0, dp(activity, 48), 1f));
+            }
+
+            if (hasPrimary) {
+                Button compactPrimary = button(activity, primaryLabel.trim());
+                compactPrimary.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                compactPrimary.setOnClickListener(v -> {
+                    if (primaryAction != null) primaryAction.run();
+                });
+                LinearLayout.LayoutParams compactPrimaryParams = new LinearLayout.LayoutParams(
+                        0, dp(activity, 48), 1f);
+                if (backAction != null) compactPrimaryParams.setMargins(dp(activity, 5), 0, 0, 0);
+                compactActions.addView(compactPrimary, compactPrimaryParams);
+            }
 
             Button compactSkip = button(activity, "Skip");
             compactSkip.setContentDescription("Skip guided tour step");
             compactSkip.setOnClickListener(v -> { if (skipAction != null) skipAction.run(); });
-            compact.addView(compactSkip, new LinearLayout.LayoutParams(
-                    dp(activity, 48), dp(activity, 56)));
+            LinearLayout.LayoutParams compactSkipParams = new LinearLayout.LayoutParams(
+                    0, dp(activity, 48), 1f);
+            if (backAction != null || hasPrimary) compactSkipParams.setMargins(dp(activity, 5), 0, 0, 0);
+            compactActions.addView(compactSkip, compactSkipParams);
 
             Button compactExit = button(activity, "Exit");
             compactExit.setContentDescription("Exit guided tour");
@@ -212,9 +271,11 @@ public final class GuidedTourCoach {
                 clear(activity);
             });
             LinearLayout.LayoutParams compactExitParams = new LinearLayout.LayoutParams(
-                    dp(activity, 48), dp(activity, 56));
-            compactExitParams.setMargins(dp(activity, 3), 0, 0, 0);
-            compact.addView(compactExit, compactExitParams);
+                    0, dp(activity, 48), 1f);
+            compactExitParams.setMargins(dp(activity, 5), 0, 0, 0);
+            compactActions.addView(compactExit, compactExitParams);
+            compact.addView(compactActions, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
             card.addView(compact, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -373,6 +434,9 @@ public final class GuidedTourCoach {
                     setPadding(dp(this, 6), dp(this, 4), dp(this, 6), dp(this, 4));
                     for (View normal : normalViews) normal.setVisibility(View.GONE);
                     compactView.setVisibility(View.VISIBLE);
+                    FrameLayout.LayoutParams compactParams = (FrameLayout.LayoutParams) getLayoutParams();
+                    compactParams.width = Math.max(dp(this, 236), root.getWidth() - dp(this, 16));
+                    setLayoutParams(compactParams);
                     requestLayout();
                     postDelayed(this::placeForCurrentStep, 40L);
                     return;

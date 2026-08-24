@@ -129,7 +129,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(help("Field tools are map-first. Each ? opens a concise explainer and, when useful, a guided walkthrough for that specific tool."));
 
         root.addView(fieldToolRow(FieldUiNames.TRACK,
-                "Record GPS tracks that draw live on the main map. Opening a saved track uses its real basemap view.",
+                "Record GPS tracks that draw live on the main map. Opening a saved track shows it on the basemap.",
                 "Records a GPS breadcrumb track. Start, pause, resume, stop, reopen, and export tracks. Recording uses a visible Android foreground service and does not request background-location permission.",
                 this::showTracks, true));
         root.addView(fieldToolRow(FieldUiNames.FIELD_RECORDS,
@@ -142,11 +142,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 this::showLegacyWaypoints, true));
         root.addView(fieldToolRow(FieldUiNames.PROSPECTING_AREAS,
                 "Create, open, analyze, map, and manage saved prospecting areas.",
-                "Prospecting Areas are saved polygons. They can come from Measure or imports, stay visible on the real map, and can be analyzed with Research without turning spatial correlation into a mineral prediction.",
+                "Prospecting Areas are saved polygons. They can come from Measure or imports, stay visible on the map, and can be analyzed with Research without turning spatial correlation into a mineral prediction.",
                 this::showProspectingAreas, true));
         root.addView(fieldToolRow(FieldUiNames.MEASURE,
                 "Start a temporary map measurement. Save it as a Prospecting Area when you want to keep and analyze the polygon.",
-                "Measure is a temporary map tool. Add/edit points on the real map, finish or cancel explicitly, and save the polygon as a Prospecting Area when you want it to persist.",
+                "Measure is a temporary map tool. Add or edit points on the map, finish or cancel explicitly, and save the polygon as a Prospecting Area when you want it to persist.",
                 () -> { FieldMapState.requestMeasurement(this); returnToMap(); }, false));
         root.addView(fieldToolRow(FieldUiNames.IMPORT,
                 "Import GPX, KML, or GeoJSON files into RockMap.",
@@ -222,13 +222,13 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void startFieldTourByName(String tool) {
         if (FieldUiNames.TRACK.equals(tool)) {
-            startFieldToolTour(tool, "Start, pause, resume, stop, reopen, and export GPS tracks from the real map.", this::showTracks, true);
+            startFieldToolTour(tool, "Start, pause, resume, stop, reopen, and export GPS tracks from the map.", this::showTracks, true);
         } else if (FieldUiNames.FIELD_RECORDS.equals(tool)) {
             startFieldToolTour(tool, "Create richer field observations with notes, sample information, photos, GPS accuracy, elevation, and Research actions.", this::showFieldRecords, true);
         } else if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) {
             startFieldToolTour(tool, "Open lightweight saved points, map them, navigate to them, edit them, or copy them into Field Records.", this::showLegacyWaypoints, true);
         } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
-            startFieldToolTour(tool, "Open saved polygons, show them on the real map, and analyze them with Research.", this::showProspectingAreas, true);
+            startFieldToolTour(tool, "Open saved polygons, show them on the map, and analyze them with Research.", this::showProspectingAreas, true);
         } else if (FieldUiNames.MEASURE.equals(tool)) {
             startFieldToolTour(tool, "Start a temporary map measurement and save it as a Prospecting Area when you want it to persist.", () -> { FieldMapState.requestMeasurement(this); returnToMap(); }, false);
         } else if (FieldUiNames.IMPORT.equals(tool)) {
@@ -253,14 +253,16 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     tool,
                     explainer,
                     "Use the highlighted “" + tool + "” control.", target,
+                    null,
                     "Open " + tool, () -> {
                         GuidedTourCoach.clear(FieldActivity.this);
                         openAction.run();
                         if (staysInField) getWindow().getDecorView().postDelayed(() ->
                                 GuidedTourCoach.show(FieldActivity.this, 2, 2,
                                         tool + " screen",
-                                        "You are now inside the real " + tool + " interface. Explore its visible controls; the ? explainer remains available from Field Tools whenever you need a refresher.",
-                                        "Review the current " + tool + " controls, then tap Finish.", null,
+                                        "Explore the visible " + tool + " controls. The ? explainer remains available from Field Tools whenever you need a refresher.",
+                                        "Try the controls that are useful to you, then finish when you're ready.", null,
+                                        () -> startFieldToolTour(tool, explainer, openAction, staysInField),
                                         "Finish", () -> GuidedTourCoach.clear(FieldActivity.this),
                                         () -> GuidedTourCoach.clear(FieldActivity.this),
                                         () -> GuidedTourCoach.clear(FieldActivity.this)), 120L);
@@ -280,7 +282,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showTracks() {
         LinearLayout root = page();
         root.addView(title("Tracks"));
-        root.addView(help("Tracks are geographic objects. Tap any track below to open it on the real basemap, zoomed to its recorded extent with START/END context."));
+        root.addView(help("Tracks are geographic objects. Tap any track below to open it on the basemap, zoomed to its recorded extent with START/END context."));
 
         FieldDatabase.Track active = db.getActiveTrack();
         if (active == null) {
@@ -311,7 +313,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 List<GeoMath.Point> pts = db.getTrackPoints(track.id);
                 String visibility = FieldMapState.isTrackHidden(this, track.id) ? "hidden on map" : "visible on map";
                 root.addView(action(track.name,
-                        trackStatus(track, pts) + " · " + visibility + "\nTap to open the real map view.",
+                        trackStatus(track, pts) + " · " + visibility + "\nTap to open the map view.",
                         v -> showTrackOnMap(track.id)));
             }
         }
@@ -837,7 +839,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         .setTitle("This file was already imported")
                         .setMessage(previous.sourceName + " was imported on "
                                 + DateFormat.getDateTimeInstance().format(new Date(previous.importedAt))
-                                + ".\n\nTo test a clean re-import, remove that import first. You can still intentionally import another copy.")
+                                + ".\n\nTo replace it with a fresh import, remove the existing import first. You can also intentionally import another copy.")
                         .setPositiveButton("Open Existing Import", (d, w) -> showImportBatch(previous.id))
                         .setNeutralButton("Import Another Copy", (d, w) -> confirmImport(result, name, sha))
                         .setNegativeButton("Cancel", null)
@@ -912,7 +914,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         box.addView(help("Imported " + r.waypoints.size() + " Saved Location" + (r.waypoints.size() == 1 ? "" : "s")
                 + ", " + r.tracks.size() + " Track" + (r.tracks.size() == 1 ? "" : "s")
                 + ", and " + r.areas.size() + " Prospecting Area" + (r.areas.size() == 1 ? "" : "s")
-                + ". This import can now be shown, reviewed, or removed as one unit."));
+                + ". This import can be shown, reviewed, or removed as one unit."));
 
         box.addView(action("Show Import on Map",
                 "Zoom to all imported geometry. Tracks, Prospecting Areas, and Saved Locations are visible immediately.",
@@ -997,10 +999,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
 
         root.addView(section("Older Imports"));
-        root.addView(help("Older imports created before RockMap began tracking each imported file separately cannot be safely removed as one group. Manage those older items from Saved Locations, Tracks, or Prospecting Areas. New imports are tracked individually."));
-        root.addView(action("Review Saved Locations", "Delete any older imported Saved Location manually if you need a completely clean first re-test.", v -> showLegacyWaypoints()));
-        root.addView(action("Review Tracks", "Open or remove older untracked imported tracks.", v -> showTracks()));
-        root.addView(action("Review Prospecting Areas", "Open or remove older Prospecting Areas.", v -> showMeasure()));
+        root.addView(help("Some imported items are not grouped under a source file, so they cannot be safely removed as one batch. Manage those items from Saved Locations, Tracks, or Prospecting Areas."));
+        root.addView(action("Review Saved Locations", "Review or delete imported Saved Locations that are not grouped under an import file.", v -> showLegacyWaypoints()));
+        root.addView(action("Review Tracks", "Open or remove imported tracks that are not grouped under an import file.", v -> showTracks()));
+        root.addView(action("Review Prospecting Areas", "Open or remove imported Prospecting Areas that are not grouped under an import file.", v -> showMeasure()));
         root.addView(nav("Back to Field", v -> showHub()));
         setContentView(scroll(root));
     }
@@ -1169,7 +1171,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             FieldDatabase.Track t = db.getTrack(id);
             if (t == null) continue;
             any = true;
-            root.addView(action(t.name, trackStatus(t, db.getTrackPoints(t.id)) + "\nTap to open on the real map.",
+            root.addView(action(t.name, trackStatus(t, db.getTrackPoints(t.id)) + "\nTap to open on the map.",
                     v -> showTrackOnMap(t.id)));
         }
         if (!any) root.addView(help("No remaining tracks in this import."));

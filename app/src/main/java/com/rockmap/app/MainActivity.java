@@ -1887,7 +1887,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (GuidedTourState.isActive(this)
                 && GuidedTourState.step(this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO) {
             GuidedTourCoach.clear(this);
-            TextView tourHint = helperText("GUIDED TOUR — Search for Mount Antero, tap Find, then select the Mount Antero result. This is the same offline Find workflow you can use later for towns, peaks, lakes, and coordinates.");
+            TextView tourHint = helperText("GUIDED TOUR — Search for Mount Antero, tap Find, then select the Mount Antero result.");
             tourHint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             tourHint.setTextColor(Color.rgb(0, 112, 121));
             tourHint.setPadding(0, 0, 0, dp(8));
@@ -2417,7 +2417,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         ? "Land status — BLM Colorado SMA" : "Land status — unavailable",
                 landAvailable && mapController.isLandVisible());
         CheckBox claims = checkbox(claimsAvailable
-                        ? "Mining claims — BLM MLRS not closed" : "Mining claims — unavailable in current test",
+                        ? "Mining claims — BLM MLRS not closed" : "Mining claims — unavailable",
                 claimsAvailable && mapController.isClaimsVisible());
 
         String historicMineLabel = historicMinesAvailable
@@ -3546,7 +3546,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(core);
         TextView coreDetail = helperText(
                 "Basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records. "
-                        + "These are one integrity-versioned package today.\nStatus: "
+                        + "These are one integrity-versioned package.\nStatus: "
                         + (coreInstalled ? "installed" : "not installed")
                         + "\nDownload size: check required");
         coreDetail.setPadding(dp(30), 0, 0, dp(8));
@@ -3599,7 +3599,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             total.setText("Selection changed — check sizes again.");
             if (core.isChecked()) {
                 coreDetail.setText("Basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records. "
-                        + "These are one integrity-versioned package today.\nStatus: "
+                        + "These are one integrity-versioned package.\nStatus: "
                         + (coreInstalled ? "installed" : "not installed")
                         + "\nDownload size: check required");
             }
@@ -4196,6 +4196,79 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
     }
 
+    private Runnable tourBackAction() {
+        return GuidedTourState.step(this) > GuidedTourState.startStep(this)
+                ? this::backCurrentTourStep : null;
+    }
+
+    private void backCurrentTourStep() {
+        if (!GuidedTourState.isActive(this)) return;
+        int step = GuidedTourState.step(this);
+        if (step <= GuidedTourState.startStep(this)) return;
+
+        switch (step) {
+            case GuidedTourState.STEP_MINERAL_EVIDENCE:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_SHOW_GEOLOGY);
+                reopenTourGeologyResult();
+                return;
+            case GuidedTourState.STEP_CHOOSE_MINERAL:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_MINERAL_EVIDENCE);
+                showGuidedTourCoachForCurrentStep();
+                return;
+            case GuidedTourState.STEP_LAYERS_REVEAL:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_CHOOSE_MINERAL);
+                if (activeResearchBounds != null) {
+                    showMineralEvidenceForBounds(activeResearchBounds);
+                    mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 220L);
+                } else {
+                    showGuidedTourCoachForCurrentStep();
+                }
+                return;
+            case GuidedTourState.STEP_HISTORIC_MINES:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_LAYERS_REVEAL);
+                showGuidedTourCoachForCurrentStep();
+                return;
+            case GuidedTourState.STEP_WORKSPACE_COLLAPSE:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_HISTORIC_MINES);
+                if (researchAreaPanel != null) researchAreaPanel.expand();
+                showGuidedTourCoachForCurrentStep();
+                return;
+            case GuidedTourState.STEP_WORKSPACE_REOPEN:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_WORKSPACE_COLLAPSE);
+                if (researchAreaPanel != null) researchAreaPanel.expand();
+                showGuidedTourCoachForCurrentStep();
+                return;
+            case GuidedTourState.STEP_CONTEXT_CONTROLS:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_WORKSPACE_REOPEN);
+                if (researchAreaPanel != null) researchAreaPanel.collapse();
+                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 100L);
+                return;
+            case GuidedTourState.STEP_COMPLETE:
+                GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_CONTROLS);
+                showGuidedTourCoachForCurrentStep();
+                return;
+            default:
+                GuidedTourState.setStep(this, step - 1);
+                showGuidedTourCoachForCurrentStep();
+        }
+    }
+
+    private void reopenTourGeologyResult() {
+        if (activeResearchBounds == null) {
+            GuidedTourState.setStep(this, GuidedTourState.STEP_COMBINED_ANALYSIS);
+            showResearch();
+            return;
+        }
+        GuidedTourCoach.clear(this);
+        Intent intent = new Intent(this, ResearchActivity.class);
+        intent.putExtra(ResearchActivity.EXTRA_SOUTH, activeResearchBounds.south);
+        intent.putExtra(ResearchActivity.EXTRA_WEST, activeResearchBounds.west);
+        intent.putExtra(ResearchActivity.EXTRA_NORTH, activeResearchBounds.north);
+        intent.putExtra(ResearchActivity.EXTRA_EAST, activeResearchBounds.east);
+        intent.putExtra(ResearchActivity.EXTRA_TOUR_REOPEN_GEOLOGY, true);
+        startActivityForResult(intent, RESEARCH_REQUEST);
+    }
+
     private void exitTour() {
         GuidedTourState.exit(this);
         GuidedTourCoach.clear(this);
@@ -4289,41 +4362,46 @@ public final class MainActivity extends Activity implements LocationRepository.L
             case GuidedTourState.STEP_CENTER_GPS:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Center GPS",
-                        "Center GPS requests a fresh precise GPS-provider fix and recenters the map. It is different from saving a location.",
-                        "Review the highlighted Center GPS control, then tap Next.", mainGpsButton,
-                        "Next", () -> advanceTourTo(GuidedTourState.STEP_SAVE_GPS),
+                        "Center GPS requests a fresh precise GPS-provider fix and recenters the map. It does not save a location.",
+                        "Try Center GPS, then continue when you're ready.", mainGpsButton,
+                        tourBackAction(),
+                        "Continue", () -> advanceTourTo(GuidedTourState.STEP_SAVE_GPS),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_SAVE_GPS:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Save GPS",
                         "Save GPS creates a Saved Location from your current precise position. It does not simply recenter the map.",
-                        "Review the highlighted Save GPS control, then tap Next.", mainSaveGpsButton,
-                        "Next", () -> advanceTourTo(GuidedTourState.STEP_SAVED_LOCATIONS),
+                        "Review Save GPS. Use it if you want to save your current position, then continue.", mainSaveGpsButton,
+                        tourBackAction(),
+                        "Continue", () -> advanceTourTo(GuidedTourState.STEP_SAVED_LOCATIONS),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_SAVED_LOCATIONS:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Saved Locations",
                         "Saved Locations reopens points you have kept on the device so you can view, edit, research, or organize them later.",
-                        "Review the highlighted Saved Locations control, then tap Next.", mainSavedButton,
-                        "Next", () -> advanceTourTo(GuidedTourState.STEP_TRIPS),
+                        "Open Saved Locations if you want to look around, then continue.", mainSavedButton,
+                        tourBackAction(),
+                        "Continue", () -> advanceTourTo(GuidedTourState.STEP_TRIPS),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_TRIPS:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Trips",
                         "Trips are saved planning lists. To make one: Trips → New trip → enter a name → Create. The trip is saved immediately. Open it and use Add place / GPS or Add Saved Location; each stop is saved as you add it. Reopen Trips later and tap the trip name to continue planning. Removing a stop does not delete the original Saved Location or RockMap source record.",
-                        "Review how Trips are saved, then tap Next.", mainTripsButton,
-                        "Next", () -> advanceTourTo(GuidedTourState.STEP_OFFLINE_DATA),
+                        "Open Trips and review the New trip and saved-trip controls, then continue.", mainTripsButton,
+                        tourBackAction(),
+                        "Continue", () -> advanceTourTo(GuidedTourState.STEP_OFFLINE_DATA),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_OFFLINE_DATA:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Offline Data",
                         "Offline Data is the permanent place to check package sizes, install or update RockMap's offline packs, and review their status.",
-                        "Review the highlighted Offline Data control, then tap Next.", mainDataButton,
-                        "Next", () -> advanceTourTo(GuidedTourState.STEP_LAYERS_BASICS),
+                        "Open Offline Data if you want to review installed packages, then continue.", mainDataButton,
+                        tourBackAction(),
+                        "Continue", () -> advanceTourTo(GuidedTourState.STEP_LAYERS_BASICS),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_LAYERS_BASICS:
@@ -4331,13 +4409,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Layers control what you can see",
                         "RockMap can show several datasets in the same place. Layers lets you temporarily hide one so another is readable. Hiding a layer never deletes its data.",
                         "Tap “Layers”, toggle an available layer, then tap Apply.", mainLayersButton,
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_FIND_MOUNT_ANTERO:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Find Mount Antero",
-                        "Use the real Find workflow rather than a tour shortcut. Search the installed offline place index for Mount Antero and open the result on the map.",
+                        "Find searches the installed offline place index for named places and map features.",
                         "Tap “Find”, search for “Mount Antero”, then tap the Mount Antero result.", mainFindButton,
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_OPEN_RESEARCH:
@@ -4345,6 +4425,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Open Research",
                         "Research uses the area already visible on the map. This keeps the analysis tied to the place you just found.",
                         "Tap “Research”.", mainResearchButton,
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_MINERAL_EVIDENCE:
@@ -4353,6 +4434,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "The same Research Area can be inspected through different evidence views without rebuilding the location.",
                         "Tap “Mineral Evidence” in the Research workspace.",
                         researchAreaPanel == null ? null : researchAreaPanel.getMineralControl(),
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_CHOOSE_MINERAL:
@@ -4365,12 +4447,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
                             "Tap the highlighted mineral/material row (or any other one you prefer).",
                             tourMineralSelectionTarget != null ? tourMineralSelectionTarget
                                     : (researchAreaPanel == null ? null : researchAreaPanel.getScrollableContentControl()),
+                            tourBackAction(),
                             null, null, this::skipCurrentTourStep, this::exitTour);
                 } else {
                     GuidedTourCoach.show(this, displayStep, displayTotal,
                             "Show the selected evidence on the map",
                             "The selected mineral or material is ready. The heatmap shows documented evidence density, not a probability of finding specimens.",
                             "Tap “Show Evidence on Map”.", evidenceAction,
+                            tourBackAction(),
                             null, null, this::skipCurrentTourStep, this::exitTour);
                 }
                 break;
@@ -4379,6 +4463,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Reveal information under another layer",
                         "This is a normal map-reading problem: Mining Claims or another overlay can obscure a Mineral Evidence heatmap. Use Layers to hide the obstructing layer temporarily, inspect the heatmap, and turn it back on when you need claim context.",
                         "Tap “Layers”, turn Mining Claims off if it obscures the heatmap, then tap Apply.", mainLayersButton,
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_HISTORIC_MINES:
@@ -4387,6 +4472,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Historic records add another kind of evidence to the same area. They are research records and may represent hazardous old workings.",
                         "Tap “Historic Mines”.",
                         researchAreaPanel == null ? null : researchAreaPanel.getHistoricControl(),
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_WORKSPACE_COLLAPSE:
@@ -4395,22 +4481,25 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Collapse changes presentation only. The Research Area and mapped results stay active while you use the map.",
                         "Tap the highlighted collapse arrow “›”.",
                         researchAreaPanel == null ? null : researchAreaPanel.getCollapseControl(),
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_WORKSPACE_REOPEN:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Reopen Research",
-                        "The compact Research tab restores the workspace. Closing and collapsing are intentionally different actions.",
+                        "The compact Research tab reopens the workspace. Collapsing keeps the Research Area and mapped results active.",
                         "Tap “‹ Research” to reopen the workspace.",
                         researchAreaPanel == null ? null : researchAreaPanel.getExpandControl(),
+                        tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_CONTEXT_CONTROLS:
                 View contextMenu = MapContextCloseController.forMap(mapView).getContextMenuView();
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Mapped-context controls",
-                        "Mapped Research items use one consistent movable box, even when only one remains. Tap a labeled row to reopen that item's information. Tap its adjacent × to close only that mapped item. Drag the box when it covers geography you need to inspect. The Research panel itself has a labeled Close action.",
-                        "Try moving or opening the labeled context controls, then tap Finish tour.", contextMenu,
+                        "Mapped Research items appear in a movable labeled box. Tap a labeled row to reopen that item's information, use its adjacent × to close that item, or drag the box when it covers geography you need to inspect.",
+                        "Try moving, opening, or closing a mapped-context control.", contextMenu,
+                        tourBackAction(),
                         "Finish tour", () -> advanceTourTo(GuidedTourState.STEP_COMPLETE),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
@@ -4419,6 +4508,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         "Tour complete",
                         "You can restart the full tour or any individual topic at any time from the small ? help button above the main map controls. Field Tools also have their own ? explainers and feature tours.",
                         "Tap Finish.", mainHelpToursButton,
+                        tourBackAction(),
                         "Finish", () -> {
                             GuidedTourState.complete(this);
                             GuidedTourCoach.clear(this);
@@ -5678,7 +5768,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         text.append("\nMINING CLAIMS — BLM MLRS NOT CLOSED\n");
         if (!mapController.hasClaimsAvailable()) {
-            text.append("Mining-claim data is not included in the active test snapshot. No claim conclusion was made.");
+            text.append("Mining-claim data is not available in the active map data. No claim conclusion was made.");
         } else if (!mapController.isClaimsVisible()) {
             text.append("Claims layer is turned off. No claim conclusion was made.");
         } else if (claims.isEmpty()) {
@@ -5786,6 +5876,13 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mapView.onResume();
         MapContextCloseController.forMap(mapView).refresh();
         FieldMapController.ensurePersistentEntry(this);
+        if (GuidedTourState.isActive(this)) {
+            int step = GuidedTourState.step(this);
+            if (step != GuidedTourState.STEP_COMBINED_ANALYSIS
+                    && step != GuidedTourState.STEP_SHOW_GEOLOGY) {
+                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+            }
+        }
     }
 
     @Override protected void onPause() {
