@@ -26,6 +26,9 @@ import androidx.lifecycle.Observer;
 import androidx.work.WorkInfo;
 
 import com.rockmap.app.BuildConfig;
+import com.rockmap.app.GuidedTourCoach;
+import com.rockmap.app.GuidedTourState;
+import com.rockmap.app.RockMapHelp;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaCreator;
@@ -152,9 +155,9 @@ public final class ResearchActivity extends Activity {
         root.addView(section("Colorado geology is not installed"));
         root.addView(help("RockMap does not download geology from the live USGS service on this device. It first checks a small RockMap geology manifest so the exact download size can be shown before you decide whether to install it."));
         root.addView(help("After a verified pack is installed, geology searches and spatial queries use the local database and work offline."));
-        root.addView(action("Check Colorado Geology Pack",
-                "Check the published version and exact download/install sizes. Checking the small manifest does not download the geology database.",
-                v -> startGeologyDataUpdate()));
+        root.addView(action("Open Offline Data",
+                "Install or update Queryable Colorado Geology from RockMap's single offline-data manager, where the download size is checked before installation.",
+                v -> returnAction(ACTION_DATA, null)));
         root.addView(action("Search Mineral Evidence",
                 "Mineral Evidence does not depend on the geology pack.",
                 v -> returnAction(ACTION_MINERALS, null)));
@@ -166,6 +169,9 @@ public final class ResearchActivity extends Activity {
         LinearLayout root = page();
         root.addView(title("Research"));
         root.addView(help("Choose what you want to investigate. Mineral Evidence and Geology stay distinct until you deliberately combine them in an area analysis."));
+        root.addView(action("Research help",
+                "What each Research view means, how to interpret it, and how to restart the guided tour.",
+                v -> RockMapHelp.showResearch(this, "Research hub", this::startTourFromResearch)));
 
         root.addView(section("Mineral Evidence"));
         root.addView(action("Search Mineral Evidence",
@@ -198,13 +204,20 @@ public final class ResearchActivity extends Activity {
             if (visibleBounds != null) {
                 root.addView(action("Visible Area — Combined Analysis",
                         "Start with geology for the Visible Area, then continue into Mineral Evidence and Historic Mines & Workings.",
-                        v -> runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area")));
+                        v -> {
+                            if (GuidedTourState.isActive(this)
+                                    && GuidedTourState.step(this) == GuidedTourState.STEP_COMBINED_ANALYSIS) {
+                                GuidedTourState.setStep(this, GuidedTourState.STEP_SHOW_GEOLOGY);
+                                GuidedTourCoach.clear(this);
+                            }
+                            runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area");
+                        }));
             }
         } else {
             root.addView(help("Colorado geology is not installed. Mineral Evidence remains available above."));
-            root.addView(action("Install Colorado Geology",
-                    "Check the current fixed RockMap geology pack and see its exact download size before anything is downloaded.",
-                    v -> startGeologyDataUpdate()));
+            root.addView(action("Open Offline Data",
+                    "Install Queryable Colorado Geology from the same Offline Data manager used during setup.",
+                    v -> returnAction(ACTION_DATA, null)));
         }
 
         if (geology.isReady()) {
@@ -212,9 +225,9 @@ public final class ResearchActivity extends Activity {
             String version = active == null || active.version.isEmpty() ? "installed snapshot" : active.version;
             root.addView(help(geology.getRecordCount() + " mapped geology areas installed · "
                     + formatBytes(geology.getDatabaseBytes()) + " local database · " + version + "."));
-            root.addView(action("Check Geology Update",
-                    "Check for a newer fixed Colorado geology pack. RockMap shows the exact download and installed sizes before you confirm.",
-                    v -> startGeologyDataUpdate()));
+            root.addView(action("Manage Offline Data",
+                    "Check Queryable Colorado Geology and other offline packages from one place.",
+                    v -> returnAction(ACTION_DATA, null)));
         }
         if (ResearchResultStore.exists(this)) {
             ResearchResultStore.Summary r = ResearchResultStore.summary(this);
@@ -224,6 +237,7 @@ public final class ResearchActivity extends Activity {
         }
         root.addView(nav("Back", v -> finish()));
         setContentView(scroll(root));
+        maybeShowTourCoach();
     }
 
     private void startGeologyDataUpdate() {
@@ -651,8 +665,13 @@ public final class ResearchActivity extends Activity {
             Button showMap = button("Show Geology on Map");
             GeologyRepository.Bounds mapBounds = currentQueryContextJson.trim().isEmpty()
                     ? boundsOfUnits(safe) : null;
-            showMap.setOnClickListener(v -> returnGeology(
-                    geoJson, resultTitle, safe.size(), mapBounds));
+            showMap.setOnClickListener(v -> {
+                if (GuidedTourState.isActive(this)
+                        && GuidedTourState.step(this) == GuidedTourState.STEP_SHOW_GEOLOGY) {
+                    GuidedTourCoach.clear(this);
+                }
+                returnGeology(geoJson, resultTitle, safe.size(), mapBounds);
+            });
             top.addView(showMap);
         }
         addProspectingAreaAction(top, currentQueryContextJson, resultTitle);
@@ -711,6 +730,7 @@ public final class ResearchActivity extends Activity {
 
         setContentView(screen);
         screen.requestApplyInsets();
+        maybeShowTourCoach();
     }
 
     private void showUnitGroup(UnitGroup group, String resultTitle) {
@@ -876,6 +896,31 @@ public final class ResearchActivity extends Activity {
 
     private interface Work<T> { T run() throws Exception; }
     private interface Result<T> { void accept(T value); }
+
+    private void maybeShowTourCoach() {
+        if (!GuidedTourState.isActive(this)) {
+            GuidedTourCoach.clear(this);
+            return;
+        }
+        int step = GuidedTourState.step(this);
+        if (step == GuidedTourState.STEP_COMBINED_ANALYSIS) {
+            GuidedTourCoach.show(this, 3, 9, "Analyze the visible Mount Antero area",
+                    "Scroll to Combined Area Analysis and tap Visible Area — Combined Analysis. This runs the real offline geology query for the map extent you chose.",
+                    null, null, true, null);
+        } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            GuidedTourCoach.show(this, 4, 9, "Review the geology result",
+                    "RockMap groups repeated mapped areas by geologic unit. When you're ready, tap Show Geology on Map so the result returns to the same geographic workspace.",
+                    null, null, false, null);
+        } else {
+            GuidedTourCoach.clear(this);
+        }
+    }
+
+    private void startTourFromResearch() {
+        GuidedTourState.start(this);
+        GuidedTourCoach.clear(this);
+        returnAction(ACTION_DATA, null);
+    }
 
     private void returnGeology(String geoJson, String title, int count, GeologyRepository.Bounds bounds) {
         try {

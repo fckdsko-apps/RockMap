@@ -32,6 +32,7 @@ public final class ResearchAreaPanelController {
         void onGeology();
         void onMinerals();
         void onMines();
+        void onHelp();
         void onSaveResearch();
         void onBack();
         void onClosePanel();
@@ -258,6 +259,11 @@ public final class ResearchAreaPanelController {
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         title.setPadding(dp(7), 0, dp(5), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+        Button help = iconButton("?", "Open help for the current Research view");
+        help.setTextSize(16f);
+        help.setOnClickListener(v -> { if (listener != null) listener.onHelp(); });
+        header.addView(help, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
         Button collapse = iconButton("›", "Collapse Research to the right edge");
         collapse.setOnClickListener(v -> collapse());

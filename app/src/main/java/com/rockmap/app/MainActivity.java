@@ -60,6 +60,7 @@ import com.rockmap.app.places.PlaceIndexRepository;
 import com.rockmap.app.places.PlaceRecord;
 import com.rockmap.app.places.PlaceSearchEngine;
 import com.rockmap.app.research.GeologyDataManager;
+import com.rockmap.app.research.GeologyDataPreviewer;
 import com.rockmap.app.research.GeologyOverlayController;
 import com.rockmap.app.research.GeologyRepository;
 import com.rockmap.app.research.ResearchActivity;
@@ -136,6 +137,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private MineralOverlayController mineralOverlayController;
     private HistoricMineOverlayController historicMineOverlayController;
     private GeologyRepository geologyRepository;
+    private GeologyDataManager geologyDataManager;
     private GeologyOverlayController geologyOverlayController;
     private MineralSearchEngine.SearchResult activeMineralSearchResult;
     private MineralAreaAnalyzer.AnalysisResult activeMineralAreaAnalysis;
@@ -202,6 +204,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         mineralOverlayController = new MineralOverlayController(mapView, this::onMineralTapped);
         historicMineOverlayController = new HistoricMineOverlayController(mapView, this::onHistoricMinesTapped);
         geologyRepository = new GeologyRepository(this);
+        geologyDataManager = new GeologyDataManager(this);
         geologyOverlayController = new GeologyOverlayController(mapView, this::onGeologyTapped);
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -253,6 +256,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
             launchIntent.removeExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID);
             if (areaId > 0L) mapView.post(() -> openSavedProspectingAreaResearch(areaId));
         }
+        // SafetyDisclosureActivity is the hard first-run gate. Only after it has been accepted
+        // do we offer offline-data setup and, when the required packs are ready, the optional tour.
+        mapView.postDelayed(this::runPostDisclaimerOnboarding, 700L);
     }
 
     private void installResearchContextActions() {
@@ -309,7 +315,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         // Compatibility bridge: preflight still recognizes the legacy control identifiers,
         // while the user-facing labels follow the current Research/Saved Locations IA.
         String displayText = "Minerals".equals(text) ? "Research"
-                : ("Markers".equals(text) ? "Saved Locations" : text);
+                : ("Markers".equals(text) ? "Saved Locations"
+                : ("Data".equals(text) ? "Offline Data" : text));
         button.setText(displayText);
         button.setAllCaps(false);
         button.setTextSize(11.5f);
@@ -347,6 +354,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showResearch() {
+        if (GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_OPEN_RESEARCH) {
+            GuidedTourState.setStep(this, GuidedTourState.STEP_COMBINED_ANALYSIS);
+            GuidedTourCoach.clear(this);
+        }
         // Opening the top-level Research picker starts a new area choice. Existing map layers may
         // remain visible, but new results are not silently attached to an older saved area.
         activeResearchAreaId = -1L;
@@ -407,7 +419,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (!mineralIndexRepository.isAvailable()) {
             new AlertDialog.Builder(this)
                     .setTitle("Mineral data not installed")
-                    .setMessage("Mineral-search data is not active yet. Open Data and choose Check for update. Existing maps, Saved Locations, and trips are preserved.")
+                    .setMessage("Mineral Evidence is not active yet. Open Offline Data, select Core Offline Map & Research Data, check its size, then install it. Existing maps, Saved Locations, and trips are preserved.")
                     .setPositiveButton("Data", (d, w) -> showData())
                     .setNegativeButton("Close", null)
                     .show();
@@ -551,6 +563,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         String statusText = result.minerals.size() + " minerals & materials found in this area.";
         showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, statusText);
         configureMineralOverview(result);
+        if (GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_CHOOSE_MINERAL) {
+            mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 180L);
+        }
     }
 
     /**
@@ -847,6 +863,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                                 activeResearchMineralLabel + " heatmap · " + activeResearchMineralEvidencePoints.size()
                                         + " source record" + (activeResearchMineralEvidencePoints.size() == 1 ? "" : "s"));
                         configureCurrentMineralInformation(item, analysis, activeResearchMineralMessage);
+                        if (GuidedTourState.isActive(MainActivity.this)
+                                && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_CHOOSE_MINERAL) {
+                            GuidedTourState.setStep(MainActivity.this, GuidedTourState.STEP_HISTORIC_MINES);
+                            mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 250L);
+                        }
                     }
 
                     @Override
@@ -2243,6 +2264,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showLayers() {
+        boolean advanceTourAfterLayers = GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_LAYERS;
+        if (advanceTourAfterLayers) {
+            GuidedTourState.setStep(this, GuidedTourState.STEP_COMPLETE);
+            GuidedTourCoach.clear(this);
+        }
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(4), dp(20), dp(12));
@@ -2343,7 +2370,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (heatmapAvailable) addMineralHeatmapLegend(box);
         if (geologyResultAvailable) addGeologyLegend(box);
 
-        new AlertDialog.Builder(this)
+        AlertDialog layersDialog = new AlertDialog.Builder(this)
                 .setTitle("Layers")
                 .setView(boundedScrollableContent(box, 480))
                 .setPositiveButton("Apply", (d, w) -> {
@@ -2358,7 +2385,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     geologyOverlayController.setVisible(geologyResultAvailable && geology.isChecked());
                 })
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        if (advanceTourAfterLayers) {
+            layersDialog.setOnDismissListener(d -> mapView.postDelayed(
+                    this::showGuidedTourCoachForCurrentStep, 180L));
+        }
+        layersDialog.show();
     }
 
     private void addGeologyLegend(LinearLayout box) {
@@ -3337,31 +3369,268 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showData() {
+        showOfflineDataManager(false);
+    }
+
+    private void showOfflineDataManager(boolean initialSetup) {
+        GuidedTourCoach.clear(this);
+
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(4), dp(18), 0);
+        box.setPadding(dp(18), dp(4), dp(18), dp(4));
 
-        TextView summary = helperText(dataSummaryText());
-        summary.setTextSize(13f);
-        summary.setPadding(0, 0, 0, dp(8));
-        box.addView(boundedScrollableContent(summary, 250));
+        TextView intro = helperText(initialSetup
+                ? "Choose the offline packages you want on this device. RockMap checks the small published manifests first so it can show the expected transfer size before installation. The guided tour needs both packages."
+                : "Manage the offline packages stored on this device. Check selected sizes before installing so RockMap can show the expected transfer.");
+        intro.setTextSize(13f);
+        intro.setPadding(0, 0, 0, dp(8));
+        box.addView(intro);
+
+        boolean coreInstalled = offlineDataManager.hasRenderableActivePack()
+                && mineralIndexRepository.isAvailable()
+                && mineralIndexRepository.hasExpandedEvidence();
+        boolean geologyInstalled = geologyRepository != null && geologyRepository.isReady();
+
+        CheckBox core = checkbox("Core Offline Map & Research Data", !coreInstalled);
+        core.setContentDescription("Select Core Offline Map and Research Data for size check or installation");
+        box.addView(core);
+        TextView coreDetail = helperText(
+                "Basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records. "
+                        + "These are one integrity-versioned package today.\nStatus: "
+                        + (coreInstalled ? "installed" : "not installed")
+                        + "\nDownload size: check required");
+        coreDetail.setPadding(dp(30), 0, 0, dp(8));
+        box.addView(coreDetail);
+
+        CheckBox geology = checkbox("Queryable Colorado Geology", !geologyInstalled);
+        geology.setContentDescription("Select Queryable Colorado Geology for size check or installation");
+        box.addView(geology);
+        TextView geologyDetail = helperText(
+                "Statewide mapped geology used by geology search, area analysis, and Research map results.\nStatus: "
+                        + (geologyInstalled
+                        ? geologyRepository.getRecordCount() + " mapped areas installed"
+                        : "not installed")
+                        + "\nDownload size: check required");
+        geologyDetail.setPadding(dp(30), 0, 0, dp(8));
+        box.addView(geologyDetail);
+
+        TextView total = helperText("Select one or both packages, then check sizes.");
+        total.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        total.setPadding(0, dp(4), 0, dp(6));
+        box.addView(total);
+
+        Button checkSizes = smallActionButton("Check selected sizes");
+        box.addView(checkSizes, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button install = smallActionButton("Install selected");
+        install.setEnabled(false);
+        box.addView(install, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button help = smallActionButton("Offline data help & guided tour");
+        box.addView(help, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Button safetyPrivacy = smallActionButton("Safety & privacy");
+        box.addView(safetyPrivacy, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         Button diagnostics = smallActionButton("Technical diagnostics");
         box.addView(diagnostics, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Offline data & privacy")
-                .setView(box)
-                .setPositiveButton("Check for update", (d, w) -> startDataUpdate())
-                .setNeutralButton("Safety & privacy", (d, w) ->
-                        startActivity(new Intent(this, PrivacySafetyActivity.class)))
-                .setNegativeButton("Close", null)
-                .create();
-        diagnostics.setOnClickListener(v -> {
-            dialog.dismiss();
-            showDataDiagnostics();
+        final DataUpdatePreviewer.Preview[] corePreview = new DataUpdatePreviewer.Preview[1];
+        final GeologyDataPreviewer.Preview[] geologyPreview = new GeologyDataPreviewer.Preview[1];
+        final boolean[] sizeCheckValid = new boolean[]{false};
+
+        Runnable invalidate = () -> {
+            corePreview[0] = null;
+            geologyPreview[0] = null;
+            sizeCheckValid[0] = false;
+            install.setEnabled(false);
+            install.setText("Install selected");
+            total.setText("Selection changed — check sizes again.");
+            if (core.isChecked()) {
+                coreDetail.setText("Basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records. "
+                        + "These are one integrity-versioned package today.\nStatus: "
+                        + (coreInstalled ? "installed" : "not installed")
+                        + "\nDownload size: check required");
+            }
+            if (geology.isChecked()) {
+                geologyDetail.setText("Statewide mapped geology used by geology search, area analysis, and Research map results.\nStatus: "
+                        + (geologyInstalled
+                        ? geologyRepository.getRecordCount() + " mapped areas installed"
+                        : "not installed")
+                        + "\nDownload size: check required");
+            }
+        };
+        core.setOnCheckedChangeListener((button, checked) -> invalidate.run());
+        geology.setOnCheckedChangeListener((button, checked) -> invalidate.run());
+
+        checkSizes.setOnClickListener(v -> {
+            boolean wantsCore = core.isChecked();
+            boolean wantsGeology = geology.isChecked();
+            if (!wantsCore && !wantsGeology) {
+                showMessage("Select at least one offline package to check.");
+                return;
+            }
+            if (wantsCore && (BuildConfig.DATA_MANIFEST_URL == null
+                    || BuildConfig.DATA_MANIFEST_URL.trim().isEmpty())) {
+                showMessage("Core offline-data manifest is not configured in this APK.");
+                return;
+            }
+            if (wantsGeology && (BuildConfig.GEOLOGY_MANIFEST_URL == null
+                    || BuildConfig.GEOLOGY_MANIFEST_URL.trim().isEmpty())) {
+                showMessage("Colorado geology manifest is not configured in this APK.");
+                return;
+            }
+
+            corePreview[0] = null;
+            geologyPreview[0] = null;
+            sizeCheckValid[0] = false;
+            install.setEnabled(false);
+            checkSizes.setEnabled(false);
+            checkSizes.setText("Checking…");
+            total.setText("Checking selected package metadata…");
+
+            final int[] pending = new int[]{(wantsCore ? 1 : 0) + (wantsGeology ? 1 : 0)};
+            final boolean[] failed = new boolean[]{false};
+            Runnable finishPreview = () -> {
+                pending[0]--;
+                if (pending[0] > 0) return;
+                checkSizes.setEnabled(true);
+                checkSizes.setText("Check selected sizes");
+                sizeCheckValid[0] = !failed[0];
+                if (failed[0]) {
+                    install.setEnabled(false);
+                    total.setText("One or more selected package sizes could not be verified. Nothing has been installed.");
+                    return;
+                }
+                long transfer = 0L;
+                boolean downloadNeeded = false;
+                if (wantsCore && corePreview[0] != null) {
+                    transfer += Math.max(0L, corePreview[0].estimatedDownloadBytes);
+                    downloadNeeded |= corePreview[0].estimatedDownloadBytes > 0L;
+                }
+                if (wantsGeology && geologyPreview[0] != null) {
+                    transfer += geologyPreview[0].needsDownload
+                            ? Math.max(0L, geologyPreview[0].downloadBytes) : 0L;
+                    downloadNeeded |= geologyPreview[0].needsDownload;
+                }
+                total.setText(downloadNeeded
+                        ? "Expected selected transfer: " + formatBytes(transfer)
+                                + ". Review each package above, then install."
+                        : "Selected packages are current. No additional download is required.");
+                install.setText(downloadNeeded ? "Install selected" : "Continue");
+                install.setEnabled(true);
+            };
+
+            if (wantsCore) {
+                coreDetail.setText("Checking the published Core Offline Map & Research Data manifest…");
+                DataUpdatePreviewer.preview(this, BuildConfig.DATA_MANIFEST_URL,
+                        new DataUpdatePreviewer.Callback() {
+                    @Override public void onPreview(DataUpdatePreviewer.Preview preview) {
+                        corePreview[0] = preview;
+                        if (!preview.renderable) {
+                            failed[0] = true;
+                            coreDetail.setText("Core Offline Map & Research Data\nCould not verify a published installable pack: "
+                                    + (preview.message.isEmpty() ? "not currently published." : preview.message));
+                        } else {
+                            coreDetail.setText("Core Offline Map & Research Data\nVersion: " + preview.version
+                                    + "\nExpected transfer: " + formatBytes(preview.estimatedDownloadBytes)
+                                    + "\nFull pack size: " + formatBytes(preview.totalPackBytes)
+                                    + "\nFiles needed: " + preview.estimatedDownloadFileCount + " of " + preview.fileCount
+                                    + "\nCurrent files are reused when their declared size matches; installation performs integrity validation.");
+                        }
+                        finishPreview.run();
+                    }
+                    @Override public void onError(String message) {
+                        failed[0] = true;
+                        coreDetail.setText("Core Offline Map & Research Data\nSize check failed safely: "
+                                + (message == null ? "metadata unavailable." : message));
+                        finishPreview.run();
+                    }
+                });
+            }
+
+            if (wantsGeology) {
+                geologyDetail.setText("Checking the published Queryable Colorado Geology manifest…");
+                GeologyDataPreviewer.preview(this, BuildConfig.GEOLOGY_MANIFEST_URL,
+                        new GeologyDataPreviewer.Callback() {
+                    @Override public void onPreview(GeologyDataPreviewer.Preview preview) {
+                        geologyPreview[0] = preview;
+                        if (!preview.published) {
+                            failed[0] = true;
+                            geologyDetail.setText("Queryable Colorado Geology\nCould not verify a published installable pack: "
+                                    + (preview.message.isEmpty() ? "not currently published." : preview.message));
+                        } else {
+                            geologyDetail.setText("Queryable Colorado Geology\nVersion: " + preview.version
+                                    + "\nDownload size: " + formatBytes(preview.needsDownload ? preview.downloadBytes : 0L)
+                                    + (preview.needsDownload ? "" : " — already current")
+                                    + "\nInstalled database: " + formatBytes(preview.installedBytes)
+                                    + "\nMapped Colorado areas: " + preview.recordCount
+                                    + "\nThe asset and installed SQLite database are verified before activation.");
+                        }
+                        finishPreview.run();
+                    }
+                    @Override public void onError(String message) {
+                        failed[0] = true;
+                        geologyDetail.setText("Queryable Colorado Geology\nSize check failed safely: "
+                                + (message == null ? "metadata unavailable." : message));
+                        finishPreview.run();
+                    }
+                });
+            }
         });
+
+        final AlertDialog[] holder = new AlertDialog[1];
+        install.setOnClickListener(v -> {
+            if (!sizeCheckValid[0]) {
+                showMessage("Check the selected package sizes first.");
+                return;
+            }
+            boolean installCore = core.isChecked() && corePreview[0] != null
+                    && corePreview[0].renderable && corePreview[0].estimatedDownloadBytes > 0L;
+            boolean installGeology = geology.isChecked() && geologyPreview[0] != null
+                    && geologyPreview[0].published && geologyPreview[0].needsDownload;
+            if (!installCore && !installGeology) {
+                if (holder[0] != null) holder[0].dismiss();
+                return;
+            }
+
+            long transfer = 0L;
+            if (installCore) transfer += corePreview[0].estimatedDownloadBytes;
+            if (installGeology) transfer += geologyPreview[0].downloadBytes;
+            new AlertDialog.Builder(this)
+                    .setTitle("Install selected offline data?")
+                    .setMessage("Expected transfer: " + formatBytes(transfer)
+                            + "\n\nRockMap will install only the selected packages. Existing verified files and user-created Field data are preserved.")
+                    .setPositiveButton("Install", (d, w) -> {
+                        if (holder[0] != null) holder[0].dismiss();
+                        queueSelectedOfflineData(installCore, installGeology, this::maybeOfferGuidedTour);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(initialSetup ? "Set up Offline Maps & Data" : "Offline Maps & Data")
+                .setView(boundedScrollableContent(box, 560))
+                .setNegativeButton(initialSetup ? "Continue without download" : "Close", null)
+                .create();
+        holder[0] = dialog;
+        dialog.setOnDismissListener(d -> {
+            if (initialSetup) GuidedTourState.markInitialDataSetupSeen(this);
+            if (initialSetup || GuidedTourState.isActive(this)) maybeOfferGuidedTour();
+        });
+        help.setOnClickListener(v -> RockMapHelp.showOfflineData(this, () -> {
+            if (holder[0] != null) holder[0].dismiss();
+            startGuidedTourManually();
+        }));
+        safetyPrivacy.setOnClickListener(v ->
+                startActivity(new Intent(this, PrivacySafetyActivity.class)));
+        diagnostics.setOnClickListener(v -> showDataDiagnostics());
         dialog.show();
     }
 
@@ -3382,7 +3651,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     ? findCount + " Colorado place records ready"
                     : placeIndexRepository.isReady() ? "ready" : "not available")
                 + "\nMineral Evidence: " + (mineralsReady ? "ready" : "not installed")
-                + "\nQueryable geology: " + (geologyReady ? geologyCount + " Colorado mapped areas ready offline" : "not installed — open Research to install")
+                + "\nQueryable geology: " + (geologyReady ? geologyCount + " Colorado mapped areas ready offline" : "not installed — open Offline Data to install")
                 + "\nHistoric mine records: " + (minesReady ? "ready" : "not installed")
                 + "\nLand-management layer: " + (landReady ? "ready" : "not available")
                 + "\nMining-claim records: " + (claimsReady ? "ready" : "not available")
@@ -3512,6 +3781,216 @@ public final class MainActivity extends Activity implements LocationRepository.L
         updateObserver = null;
     }
 
+    private void queueSelectedOfflineData(boolean installCore, boolean installGeology, Runnable after) {
+        if (installCore) {
+            androidx.work.OneTimeWorkRequest request = offlineDataManager.queueUpdate();
+            Toast.makeText(this, "Installing Core Offline Map & Research Data…", Toast.LENGTH_SHORT).show();
+            clearUpdateObserver();
+            updateLiveData = androidx.work.WorkManager.getInstance(this)
+                    .getWorkInfoByIdLiveData(request.getId());
+            updateObserver = new Observer<WorkInfo>() {
+                @Override public void onChanged(WorkInfo info) {
+                    if (info == null || !info.getState().isFinished()) return;
+                    clearUpdateObserver();
+                    if (info.getState() != WorkInfo.State.SUCCEEDED) {
+                        showMessage(offlineDataManager.getLastUpdateStatus());
+                        return;
+                    }
+                    clearMinerals();
+                    mineralIndexRepository.clearCache();
+                    historicMineOverlayController.clear();
+                    historicMinesRequestedVisible = false;
+                    historicMinesLoading = false;
+                    if (mapController != null) mapController.reloadStyle();
+                    if (installGeology) queueSelectedGeologyData(after);
+                    else {
+                        showMessage("Core Offline Map & Research Data installed and integrity-checked.");
+                        if (after != null) mapView.postDelayed(after, 650L);
+                    }
+                }
+            };
+            updateLiveData.observeForever(updateObserver);
+            return;
+        }
+        if (installGeology) queueSelectedGeologyData(after);
+        else if (after != null) after.run();
+    }
+
+    private void queueSelectedGeologyData(Runnable after) {
+        androidx.work.OneTimeWorkRequest request = geologyDataManager.queueUpdate();
+        Toast.makeText(this, "Installing Queryable Colorado Geology…", Toast.LENGTH_SHORT).show();
+        clearUpdateObserver();
+        updateLiveData = androidx.work.WorkManager.getInstance(this)
+                .getWorkInfoByIdLiveData(request.getId());
+        updateObserver = new Observer<WorkInfo>() {
+            @Override public void onChanged(WorkInfo info) {
+                if (info == null || !info.getState().isFinished()) return;
+                clearUpdateObserver();
+                if (info.getState() != WorkInfo.State.SUCCEEDED) {
+                    showMessage(geologyDataManager.getLastUpdateStatus());
+                    return;
+                }
+                ResearchResultStore.clear(MainActivity.this);
+                geologyRepository = new GeologyRepository(MainActivity.this);
+                showMessage("Queryable Colorado Geology installed and verified for offline Research.");
+                if (after != null) mapView.postDelayed(after, 250L);
+            }
+        };
+        updateLiveData.observeForever(updateObserver);
+    }
+
+    private void runPostDisclaimerOnboarding() {
+        if (isFinishing() || isDestroyed()) return;
+        if (!SafetyAcknowledgement.isAccessAllowed(this)) return;
+        if (!GuidedTourState.initialDataSetupSeen(this)) {
+            showOfflineDataManager(true);
+            return;
+        }
+        if (GuidedTourState.isActive(this)) {
+            if (tourDataReady()) showGuidedTourCoachForCurrentStep();
+            else showOfflineDataManager(false);
+            return;
+        }
+        maybeOfferGuidedTour();
+    }
+
+    private boolean tourDataReady() {
+        return offlineDataManager != null
+                && offlineDataManager.hasRenderableActivePack()
+                && mineralIndexRepository != null
+                && mineralIndexRepository.isAvailable()
+                && mineralIndexRepository.hasExpandedEvidence()
+                && geologyRepository != null
+                && geologyRepository.isReady();
+    }
+
+    private void maybeOfferGuidedTour() {
+        if (isFinishing() || isDestroyed() || !tourDataReady()) return;
+        if (GuidedTourState.isActive(this)) {
+            showGuidedTourCoachForCurrentStep();
+            return;
+        }
+        if (!GuidedTourState.canAutoOffer(this)) return;
+
+        new AlertDialog.Builder(this)
+                .setTitle("Explore RockMap with a guided tour?")
+                .setMessage("Use the real offline map and Research tools around Mount Antero. The guide stays small and the normal interface remains usable. You can stop at any time.")
+                .setPositiveButton("Start guided tour", (d, w) -> startGuidedTourManually())
+                .setNeutralButton("Skip for now", (d, w) -> GuidedTourState.defer(this))
+                .setNegativeButton("Don't show this again", (d, w) -> GuidedTourState.disable(this))
+                .show();
+    }
+
+    private void startGuidedTourManually() {
+        if (!tourDataReady()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Offline data needed for the guided tour")
+                    .setMessage("The Mount Antero tour uses both Core Offline Map & Research Data and Queryable Colorado Geology. Install both first; you can still use RockMap without taking the tour.")
+                    .setPositiveButton("Offline Maps & Data", (d, w) -> showOfflineDataManager(false))
+                    .setNegativeButton("Close", null)
+                    .show();
+            return;
+        }
+        if (researchAreaPanel != null && researchAreaPanel.isVisible()) {
+            researchAreaPanel.closePanel();
+        }
+        GuidedTourState.start(this);
+        showGuidedTourCoachForCurrentStep();
+    }
+
+    private void showGuidedTourCoachForCurrentStep() {
+        if (!GuidedTourState.isActive(this)) {
+            GuidedTourCoach.clear(this);
+            return;
+        }
+        int step = GuidedTourState.step(this);
+        switch (step) {
+            case GuidedTourState.STEP_MOUNT_ANTERO:
+                GuidedTourCoach.show(this, 1, 9, "Start with Mount Antero",
+                        "This Colorado area gives the tour real geology, Mineral Evidence, mining history, and land/claim context. Tap below to move the real map there, or end the tour and keep using RockMap normally.",
+                        "Go to Mount Antero", this::focusTourOnMountAntero, true, null);
+                break;
+            case GuidedTourState.STEP_OPEN_RESEARCH:
+                GuidedTourCoach.show(this, 2, 9, "Open Research",
+                        "Tap the real Research button at the bottom of the map. Everything outside this card is still interactive.",
+                        null, null, true, null);
+                break;
+            case GuidedTourState.STEP_MINERAL_EVIDENCE:
+                GuidedTourCoach.show(this, 5, 9, "Compare Mineral Evidence",
+                        "The mapped geology stays in place. In the Research workspace, tap Mineral Evidence to analyze the same area without rebuilding the location.",
+                        null, null, false, null);
+                break;
+            case GuidedTourState.STEP_CHOOSE_MINERAL:
+                GuidedTourCoach.show(this, 6, 9, "Choose a mineral or material",
+                        "Browse or search the full list, select one, then tap Show Evidence on Map. Aquamarine is a useful Mount Antero example when it appears, but any available result works.",
+                        null, null, false, null);
+                break;
+            case GuidedTourState.STEP_HISTORIC_MINES:
+                GuidedTourCoach.show(this, 7, 9, "Compare historic activity",
+                        "Now tap Historic Mines in the same Research workspace. These are documented source records, not an invitation to enter old workings.",
+                        null, null, false, null);
+                break;
+            case GuidedTourState.STEP_LAYERS:
+                GuidedTourCoach.show(this, 8, 9, "Put the evidence in land context",
+                        "Tap Layers. Mining claims and land management stay separate from geology and Mineral Evidence so the map does not imply collecting rights that the source data cannot establish.",
+                        null, null, true, null);
+                break;
+            case GuidedTourState.STEP_COMPLETE:
+                GuidedTourCoach.show(this, 9, 9, "Tour complete",
+                        "You have used the main Research loop: real place → combined area analysis → mapped geology → Mineral Evidence → historic activity → land and claim context. Contextual ? help remains available later.",
+                        "Finish", () -> {
+                            GuidedTourState.complete(this);
+                            GuidedTourCoach.clear(this);
+                        }, true, null);
+                break;
+            default:
+                GuidedTourCoach.clear(this);
+                break;
+        }
+    }
+
+    private void focusTourOnMountAntero() {
+        if (!placeIndexRepository.isReady()) {
+            showMessage("Mount Antero needs the Core Offline Map & Research Data place index. Open Offline Data if it is not installed yet.");
+            return;
+        }
+        GuidedTourCoach.clear(this);
+        Toast.makeText(this, "Finding Mount Antero in the offline place index…", Toast.LENGTH_SHORT).show();
+        placeIndexRepository.search("Mount Antero", PLACE_SEARCH_LIMIT, new PlaceIndexRepository.Callback() {
+            @Override public void onResult(List<PlaceSearchEngine.Match> matches) {
+                PlaceRecord best = null;
+                if (matches != null) {
+                    for (PlaceSearchEngine.Match match : matches) {
+                        if (match == null || match.record == null || !isSupportedFindResult(match.record)) continue;
+                        if ("Mount Antero".equalsIgnoreCase(match.record.name)) {
+                            best = match.record;
+                            break;
+                        }
+                        if (best == null) best = match.record;
+                    }
+                }
+                if (best == null) {
+                    showMessage("Mount Antero was not found in the installed offline place index. The tour has not moved your map.");
+                    showGuidedTourCoachForCurrentStep();
+                    return;
+                }
+                showPlaceTarget(best);
+                // This camera change follows an explicit user action. A slightly wider view gives
+                // visible-area Research enough surrounding geology/mining context for the demo.
+                PlaceRecord target = best;
+                mapView.getMapAsync(mapLibreMap -> mapLibreMap.animateCamera(
+                        CameraUpdateFactory.newLatLngZoom(
+                                new LatLng(target.latitude, target.longitude), 11.1)));
+                GuidedTourState.setStep(MainActivity.this, GuidedTourState.STEP_OPEN_RESEARCH);
+                mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 650L);
+            }
+            @Override public void onError(String message) {
+                showMessage(message == null ? "Offline place search could not open Mount Antero." : message);
+                showGuidedTourCoachForCurrentStep();
+            }
+        });
+    }
+
     private void refreshWaypoints() {
         if (mapController == null) return;
         waypointRepository.getAll(mapController::setWaypoints);
@@ -3582,6 +4061,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
             }
             @Override public void onMinerals() {
                 if (activeResearchBounds == null) return;
+                if (GuidedTourState.isActive(MainActivity.this)
+                        && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_MINERAL_EVIDENCE) {
+                    GuidedTourState.setStep(MainActivity.this, GuidedTourState.STEP_CHOOSE_MINERAL);
+                    GuidedTourCoach.clear(MainActivity.this);
+                }
                 if (activeMineralAreaAnalysis != null
                         && sameResearchBounds(activeResearchBounds, geologyBounds(activeMineralAreaAnalysis.bounds))) {
                     showMineralAreaResults(activeMineralAreaAnalysis);
@@ -3590,7 +4074,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 }
             }
             @Override public void onMines() {
-                if (activeResearchBounds != null) showHistoricMinesForBounds(activeResearchBounds, false);
+                if (activeResearchBounds == null) return;
+                if (GuidedTourState.isActive(MainActivity.this)
+                        && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_HISTORIC_MINES) {
+                    GuidedTourState.setStep(MainActivity.this, GuidedTourState.STEP_LAYERS);
+                    GuidedTourCoach.clear(MainActivity.this);
+                }
+                showHistoricMinesForBounds(activeResearchBounds, false);
+                mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 350L);
+            }
+            @Override public void onHelp() {
+                RockMapHelp.showResearch(MainActivity.this, activeResearchView,
+                        MainActivity.this::startGuidedTourManually);
             }
             @Override public void onSaveResearch() { saveCurrentResearchSnapshot(); }
             @Override public void onBack() { handleResearchPanelBack(); }
@@ -4105,6 +4600,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     showResearchAreaPanel(ResearchAreaPanelController.VIEW_GEOLOGY,
                             count + " mapped geology area" + (count == 1 ? "" : "s")
                                     + " shown. Switch datasets without leaving this area.");
+                }
+                if (GuidedTourState.isActive(this)
+                        && GuidedTourState.step(this) == GuidedTourState.STEP_SHOW_GEOLOGY) {
+                    GuidedTourState.setStep(this, GuidedTourState.STEP_MINERAL_EVIDENCE);
+                    mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 250L);
                 }
             } catch (IOException ex) {
                 showMessage("Research result could not be opened on the map: " + ex.getMessage());
