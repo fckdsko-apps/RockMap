@@ -7,6 +7,7 @@ import android.content.ContentResolver;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.net.Uri;
@@ -127,6 +128,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private static final int LOCATION_ACTION_RESEARCH_GPS = 3;
 
     private FrameLayout mainRoot;
+    private LinearLayout mainControls;
     private Button mainGpsButton;
     private Button mainSaveGpsButton;
     private Button mainFindButton;
@@ -136,6 +138,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private Button mainTripsButton;
     private Button mainDataButton;
     private Button mainHelpToursButton;
+    private View tourMineralSelectionTarget;
     private MapView mapView;
     private MapController mapController;
     private LocationRepository locationRepository;
@@ -220,6 +223,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         LinearLayout controls = new LinearLayout(this);
+        mainControls = controls;
         // Two visible rows keep all eight map actions discoverable while preserving
         // comfortable touch targets on phone-width screens. addControl() groups four
         // buttons per row when its parent is vertical.
@@ -239,33 +243,40 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
         root.addView(controls, controlsParams);
 
-        // Permanent, low-profile entry for contextual help and every guided-tour topic.
-        // It remains available even when automatic tour prompts are permanently disabled.
+        // Permanent help/tour re-entry without adding another labeled map control. Keep this
+        // compact ? above the real bottom tray, opposite Field, and place it from live layout
+        // geometry so it cannot sit on top of another menu/control.
         mainHelpToursButton = new Button(this);
-        mainHelpToursButton.setText("Help & Tours");
+        mainHelpToursButton.setText("?");
         mainHelpToursButton.setAllCaps(false);
-        mainHelpToursButton.setTextSize(11.5f);
+        mainHelpToursButton.setTextSize(20f);
+        mainHelpToursButton.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        mainHelpToursButton.setMinWidth(dp(48));
+        mainHelpToursButton.setMinimumWidth(dp(48));
         mainHelpToursButton.setMinHeight(dp(48));
         mainHelpToursButton.setMinimumHeight(dp(48));
-        mainHelpToursButton.setPadding(dp(8), 0, dp(8), 0);
+        mainHelpToursButton.setPadding(0, 0, 0, 0);
         mainHelpToursButton.setContentDescription("Help and guided tours");
         mainHelpToursButton.setTag("rockmap-help-tours");
         mainHelpToursButton.setOnClickListener(v -> showHelpAndTours());
+        mainHelpToursButton.setVisibility(View.INVISIBLE);
         FrameLayout.LayoutParams helpToursParams = new FrameLayout.LayoutParams(
-                dp(112), dp(48), Gravity.TOP | Gravity.START);
-        helpToursParams.setMargins(dp(8), dp(8), 0, 0);
+                dp(48), dp(48), Gravity.BOTTOM | Gravity.START);
+        helpToursParams.setMargins(dp(8), 0, 0, dp(112));
         root.addView(mainHelpToursButton, helpToursParams);
+
+        View.OnLayoutChangeListener helpPositionListener =
+                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                        positionHelpToursButtonNow();
+        root.addOnLayoutChangeListener(helpPositionListener);
+        controls.addOnLayoutChangeListener(helpPositionListener);
 
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             int left = insets.getSystemWindowInsetLeft();
-            int top = insets.getSystemWindowInsetTop();
             int right = insets.getSystemWindowInsetRight();
             int bottom = insets.getSystemWindowInsetBottom();
             controls.setPadding(dp(6) + left, dp(6), dp(6) + right, dp(6) + bottom);
-            FrameLayout.LayoutParams hp = (FrameLayout.LayoutParams) mainHelpToursButton.getLayoutParams();
-            hp.leftMargin = dp(8) + left;
-            hp.topMargin = dp(8) + top;
-            mainHelpToursButton.setLayoutParams(hp);
+            mainHelpToursButton.post(this::positionHelpToursButtonNow);
             return insets;
         });
 
@@ -367,6 +378,39 @@ public final class MainActivity extends Activity implements LocationRepository.L
         params.setMargins(dp(2), dp(1), dp(2), dp(1));
         targetRow.addView(button, params);
         return button;
+    }
+
+    /** Keep the compact ? above the measured bottom control tray instead of guessing a corner. */
+    private void positionHelpToursButtonNow() {
+        if (mainHelpToursButton == null || mainRoot == null) return;
+        ViewGroup.LayoutParams raw = mainHelpToursButton.getLayoutParams();
+        if (!(raw instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams positioned = (FrameLayout.LayoutParams) raw;
+
+        View controls = mainControls;
+        if (controls == null || mainRoot.getHeight() <= 0
+                || controls.getHeight() <= 0 || controls.getTop() <= 0) {
+            mainHelpToursButton.setVisibility(View.INVISIBLE);
+            return;
+        }
+
+        Rect visible = new Rect();
+        mainRoot.getWindowVisibleDisplayFrame(visible);
+        int[] rootLoc = new int[2];
+        mainRoot.getLocationOnScreen(rootLoc);
+        int safeLeft = Math.max(dp(8), visible.left - rootLoc[0] + dp(8));
+        int bottomMargin = Math.max(dp(8), mainRoot.getHeight() - controls.getTop() + dp(8));
+
+        positioned.gravity = Gravity.BOTTOM | Gravity.START;
+        positioned.leftMargin = safeLeft;
+        positioned.topMargin = 0;
+        positioned.rightMargin = 0;
+        positioned.bottomMargin = bottomMargin;
+        positioned.width = dp(48);
+        positioned.height = dp(48);
+        mainHelpToursButton.setLayoutParams(positioned);
+        mainHelpToursButton.setVisibility(View.VISIBLE);
+        mainHelpToursButton.bringToFront();
     }
 
     private void locate() {
@@ -731,6 +775,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     : filter.getText().toString().trim().toLowerCase(Locale.US);
             for (int i = 0; i < letterAnchors.length; i++) letterAnchors[i] = null;
             rows.removeAllViews();
+            tourMineralSelectionTarget = null;
 
             int matches = 0;
             char lastHeader = 0;
@@ -765,6 +810,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 choice.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
                 choice.setContentDescription((isSelected ? "Selected " : "Select ") + name
                         + ". Use Show Evidence on Map to display its Mineral Evidence for this Research Area.");
+                if (tourMineralSelectionTarget == null) tourMineralSelectionTarget = choice;
                 choice.setOnClickListener(v -> {
                     selected[0] = item;
                     updateSelection.run();
@@ -2692,7 +2738,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             if (summaries.isEmpty()) {
                 new AlertDialog.Builder(this)
                         .setTitle("Trips")
-                        .setMessage("No trips yet. Create one, then add Find results, GPS coordinates, or Saved Locations to it.")
+                        .setMessage("Trips are saved planning lists. Tap New trip, enter a name, then tap Create. The trip is saved immediately. Open it to add places/GPS coordinates or Saved Locations; each stop is saved as you add it. There is no separate final ‘save trip’ step.")
                         .setPositiveButton("New trip", (d, w) -> showCreateTripDialog(null))
                         .setNegativeButton("Close", null)
                         .show();
@@ -2705,7 +2751,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         tripSummaryDetail(summary), "OPEN"));
             }
             showActionListDialog(
-                    "Trips", "Tap a trip to open its saved stops and planning tools.", rows,
+                    "Trips", "Trips are saved planning lists. Tap a trip to reopen it. Inside, Add place / GPS or Add Saved Location saves stops as you add them; Edit trip saves name/date/notes changes.", rows,
                     "New trip", (d, w) -> showCreateTripDialog(null),
                     null, null, "Close", null,
                     which -> showTripDetail(summaries.get(which).toEntity()));
@@ -4267,8 +4313,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
             case GuidedTourState.STEP_TRIPS:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Trips",
-                        "Trips organize Find results, coordinates, and Saved Locations into a field-planning list without changing the original records.",
-                        "Review the highlighted Trips control, then tap Next.", mainTripsButton,
+                        "Trips are saved planning lists. To make one: Trips → New trip → enter a name → Create. The trip is saved immediately. Open it and use Add place / GPS or Add Saved Location; each stop is saved as you add it. Reopen Trips later and tap the trip name to continue planning. Removing a stop does not delete the original Saved Location or RockMap source record.",
+                        "Review how Trips are saved, then tap Next.", mainTripsButton,
                         "Next", () -> advanceTourTo(GuidedTourState.STEP_OFFLINE_DATA),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
@@ -4316,8 +4362,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     GuidedTourCoach.show(this, displayStep, displayTotal,
                             "Choose a mineral or material",
                             "Choose one item from the visible Mineral Evidence list. RockMap will then expose the map action for that exact selection.",
-                            "Tap any mineral or material in the list.",
-                            researchAreaPanel == null ? null : researchAreaPanel.getScrollableContentControl(),
+                            "Tap the highlighted mineral/material row (or any other one you prefer).",
+                            tourMineralSelectionTarget != null ? tourMineralSelectionTarget
+                                    : (researchAreaPanel == null ? null : researchAreaPanel.getScrollableContentControl()),
                             null, null, this::skipCurrentTourStep, this::exitTour);
                 } else {
                     GuidedTourCoach.show(this, displayStep, displayTotal,
@@ -4370,7 +4417,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             case GuidedTourState.STEP_COMPLETE:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Tour complete",
-                        "You can restart the full tour or any individual topic at any time from the permanent “Help & Tours” button on the main map. Field Tools also have their own ? explainers and feature tours.",
+                        "You can restart the full tour or any individual topic at any time from the small ? help button above the main map controls. Field Tools also have their own ? explainers and feature tours.",
                         "Tap Finish.", mainHelpToursButton,
                         "Finish", () -> {
                             GuidedTourState.complete(this);

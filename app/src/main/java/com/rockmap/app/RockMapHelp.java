@@ -15,7 +15,7 @@ public final class RockMapHelp {
                 + "Historic Mines — documented mine/workings records and nearby evidence. Old workings can be hazardous.\n\n"
                 + "Claims and land management remain separate map layers. A missing rendered claim does not prove land is unclaimed, and land-management mapping is not a parcel/title determination.\n\n"
                 + "Current view: " + viewText + ".\n\n"
-                + "Full and topic tours are always available from Help & Tours on the main map.";
+                + "Full and topic tours are always available from the small ? help button above the main map controls.";
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle("Research help")
                 .setMessage(message)
@@ -30,7 +30,7 @@ public final class RockMapHelp {
                 + "• Queryable Colorado Geology — a separate verified statewide geology database.\n\n"
                 + "Check selected sizes reads only the small published manifests. It does not install the large files. RockMap shows the expected transfer before Install selected is enabled, reuses current files when possible, and verifies downloaded data before activation.\n\n"
                 + "More datasets can become separate choices later without changing this screen when they are packaged independently.\n\n"
-                + "Full and topic tours are always available from Help & Tours on the main map.";
+                + "Full and topic tours are always available from the small ? help button above the main map controls.";
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle("Offline Maps & Data help")
                 .setMessage(message)
