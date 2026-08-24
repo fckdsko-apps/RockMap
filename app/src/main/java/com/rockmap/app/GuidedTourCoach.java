@@ -64,9 +64,11 @@ public final class GuidedTourCoach {
         card.setElevation(dp(activity, 10));
         card.setClickable(true);
         card.setFocusable(true);
+        // Guided-tour UI uses a warm instructional surface so it cannot be mistaken for one of
+        // RockMap's normal white/gray map or Research panels. Keep the contrast clear but subdued.
         GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.argb(248, 255, 255, 255));
-        background.setStroke(dp(activity, 1), Color.rgb(171, 193, 195));
+        background.setColor(Color.argb(252, 255, 247, 219));
+        background.setStroke(dp(activity, 2), Color.rgb(183, 126, 22));
         background.setCornerRadius(dp(activity, 12));
         card.setBackground(background);
 
@@ -82,7 +84,7 @@ public final class GuidedTourCoach {
         TextView progress = new TextView(activity);
         progress.setText("GUIDED TOUR · " + Math.max(1, step) + " OF " + Math.max(step, total));
         progress.setTextSize(10.5f);
-        progress.setTextColor(Color.rgb(0, 112, 121));
+        progress.setTextColor(Color.rgb(126, 78, 0));
         progress.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         header.addView(progress, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -90,7 +92,7 @@ public final class GuidedTourCoach {
         TextView drag = new TextView(activity);
         drag.setText("DRAG  ↕");
         drag.setTextSize(10.5f);
-        drag.setTextColor(Color.rgb(75, 85, 87));
+        drag.setTextColor(Color.rgb(104, 75, 25));
         drag.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         drag.setContentDescription("Drag guided tour card");
         header.addView(drag);
@@ -203,7 +205,7 @@ public final class GuidedTourCoach {
             TextView compactDrag = new TextView(activity);
             compactDrag.setText(Math.max(1, step) + "/" + Math.max(step, total) + "\n↕");
             compactDrag.setTextSize(10f);
-            compactDrag.setTextColor(Color.rgb(0, 112, 121));
+            compactDrag.setTextColor(Color.rgb(126, 78, 0));
             compactDrag.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             compactDrag.setGravity(Gravity.CENTER);
             compactDrag.setClickable(true);

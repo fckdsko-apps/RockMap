@@ -204,6 +204,10 @@ public final class MapContextCloseController {
 
     public View getContextMenuView() {
         ensureViews();
+        // This getter is used when the guided tour teaches mapped-context controls. Rebuild the
+        // visible box immediately so the tour never targets a stale GONE view that only reappears
+        // after an unrelated camera movement.
+        if (map != null) refreshNow();
         return menu;
     }
 
@@ -236,7 +240,7 @@ public final class MapContextCloseController {
             menu.setPadding(dp(3), dp(3), dp(3), dp(3));
             menu.setElevation(dp(7));
             menu.setVisibility(View.GONE);
-            menu.setContentDescription("Active map layers for this area. Drag a layer row to move this box.");
+            menu.setContentDescription("Active map layers for this area. Drag the DRAG handle or a layer row to move this box.");
             menuTouchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
             GradientDrawable bg = new GradientDrawable();
             bg.setColor(Color.argb(238, 255, 255, 255));
@@ -280,9 +284,10 @@ public final class MapContextCloseController {
 
     private void showMenu(List<ContextItem> items) {
         menu.removeAllViews();
+        addDragAffordance();
         for (ContextItem item : items) addMenuRow(item);
         int width = dp(180);
-        int estimatedHeight = dp(6 + 48 * items.size());
+        int estimatedHeight = dp(32 + 48 * items.size());
         if (menuUserPositioned) {
             positionInRoot(menu, width, estimatedHeight, menuUserLeft, menuUserTop, true);
         } else {
@@ -301,7 +306,29 @@ public final class MapContextCloseController {
             position(menu, width, estimatedHeight, left, top);
         }
         menu.setVisibility(View.VISIBLE);
+        menu.requestLayout();
+        menu.invalidate();
+        root.invalidate();
         menu.bringToFront();
+    }
+
+    /** Small discoverability cue for the already-draggable mapped-context box. */
+    private void addDragAffordance() {
+        TextView drag = new TextView(activity);
+        drag.setText("DRAG  ↕");
+        drag.setTextSize(9.5f);
+        drag.setTextColor(Color.rgb(92, 92, 92));
+        drag.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        drag.setPadding(dp(6), 0, dp(7), 0);
+        drag.setMinHeight(dp(26));
+        drag.setMinimumHeight(dp(26));
+        drag.setClickable(true);
+        drag.setFocusable(true);
+        drag.setContentDescription("Drag mapped Research layers box");
+        // Use the same proven touch-slop drag path as the labeled context rows.
+        drag.setOnTouchListener((v, event) -> handleMenuDrag(v, event));
+        menu.addView(drag, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(26)));
     }
 
     private void addMenuRow(ContextItem item) {
