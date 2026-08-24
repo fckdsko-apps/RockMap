@@ -16,6 +16,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -49,6 +50,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     public static final String EXTRA_SCREEN = "rockmap.field.screen";
     public static final String EXTRA_AREA_ID = "rockmap.field.area_id";
     public static final String EXTRA_SHOW_HELP_TOURS = "rockmap.field.show_help_tours";
+    public static final String EXTRA_START_HELP_TOOL = "rockmap.field.start_help_tool";
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
@@ -114,7 +116,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
         } else {
             showHub();
             if ("import".equals(screen)) getWindow().getDecorView().post(this::beginImport);
-            if (getIntent() != null && getIntent().getBooleanExtra(EXTRA_SHOW_HELP_TOURS, false)) {
+            String requestedToolTour = getIntent() == null ? null
+                    : getIntent().getStringExtra(EXTRA_START_HELP_TOOL);
+            if (requestedToolTour != null && !requestedToolTour.trim().isEmpty()) {
+                getIntent().removeExtra(EXTRA_START_HELP_TOOL);
+                final String tool = requestedToolTour.trim();
+                getWindow().getDecorView().post(() -> startFieldTourByName(tool));
+            } else if (getIntent() != null
+                    && getIntent().getBooleanExtra(EXTRA_SHOW_HELP_TOURS, false)) {
                 getIntent().removeExtra(EXTRA_SHOW_HELP_TOURS);
                 getWindow().getDecorView().post(this::showFieldTourPicker);
             }
@@ -186,11 +195,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
         row.addView(action, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        Button helpButton = button("?");
-        helpButton.setTextSize(17f);
-        helpButton.setContentDescription("Help for " + tool);
-        helpButton.setOnClickListener(v -> showFieldToolHelp(tool, explainer, openAction, staysInField));
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(52), dp(68));
+        View helpButton = compactHelpButton("Help for " + tool,
+                v -> showFieldToolHelp(tool, explainer, openAction, staysInField));
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(40), dp(40));
         hp.setMargins(dp(6), 0, 0, 0);
         row.addView(helpButton, hp);
         return row;
@@ -1970,6 +1977,29 @@ public final class FieldActivity extends Activity implements LocationRepository.
         b.setMinHeight(dp(50));
         b.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         return b;
+    }
+
+    private View compactHelpButton(String description, View.OnClickListener listener) {
+        FrameLayout touch = new FrameLayout(this);
+        touch.setClickable(true);
+        touch.setFocusable(true);
+        touch.setContentDescription(description);
+        touch.setOnClickListener(listener);
+
+        TextView icon = new TextView(this);
+        icon.setText("?");
+        icon.setTextSize(14f);
+        icon.setTextColor(0xff1e5591);
+        icon.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        icon.setGravity(Gravity.CENTER);
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(0xffeef4fb);
+        background.setStroke(dp(1), 0xff7ea6cf);
+        icon.setBackground(background);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER);
+        touch.addView(icon, iconParams);
+        return touch;
     }
 
 

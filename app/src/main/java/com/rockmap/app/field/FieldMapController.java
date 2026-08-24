@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.os.Handler;
 import android.os.Looper;
@@ -663,42 +664,164 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void showFieldMenu() {
         final AlertDialog[] holder = new AlertDialog[1];
         LinearLayout box = dialogBox();
-        box.addView(dialogAction(FieldUiNames.TRACK, "Record a track and see it build live on this map.", v -> {
-            holder[0].dismiss(); openFieldScreen("tracks");
-        }));
-        box.addView(dialogAction(FieldUiNames.NAVIGATE, "Choose a Saved Location, Field Record, or coordinate and follow a live map line.", v -> {
-            holder[0].dismiss(); showNavigateMenu();
-        }));
-        box.addView(dialogAction(FieldUiNames.MEASURE, "Tap map points or use GPS/saved records; see distance and area directly here.", v -> {
-            holder[0].dismiss(); startMeasurement();
-        }));
-        box.addView(dialogAction(FieldUiNames.FIELD_RECORDS, "Create, edit, photograph, navigate to, and research saved field observations.", v -> {
-            holder[0].dismiss(); openFieldScreen("records");
-        }));
-        box.addView(dialogAction(FieldUiNames.PROSPECTING_AREAS, "Create, open, analyze, and manage saved prospecting areas.", v -> {
-            holder[0].dismiss(); openFieldScreen("areas");
-        }));
-        box.addView(dialogAction(FieldUiNames.IMPORT, "Import GPX, KML, or GeoJSON files into RockMap.", v -> {
-            holder[0].dismiss(); openFieldScreen("import");
-        }));
-        box.addView(dialogAction(FieldUiNames.IMPORTED_DATA, "Review imported files, show their contents on the map, or remove one import safely.", v -> {
-            holder[0].dismiss(); openFieldScreen("imports");
-        }));
-        box.addView(dialogAction(FieldUiNames.EXPORT, "Export Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, or combined field data.", v -> {
-            holder[0].dismiss(); openFieldScreen("export");
-        }));
-        box.addView(dialogAction(FieldUiNames.COORDINATES, "Convert decimal, DDM, DMS, UTM, and MGRS coordinates.", v -> {
-            holder[0].dismiss(); openFieldScreen("coordinates");
-        }));
-        box.addView(dialogAction(FieldUiNames.VISIBILITY, "Choose which Tracks, Prospecting Areas, Field Records, and Saved Location labels appear on the map.", v -> {
-            holder[0].dismiss(); showVisibilityMenu();
-        }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.TRACK,
+                "Record a track and see it build live on this map.",
+                "Tracks record a live GPS line. Start, pause, resume, stop, reopen, and export recorded tracks. The line remains available after recording stops until you hide or delete the track.",
+                FieldUiNames.TRACK,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("tracks"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.NAVIGATE,
+                "Choose a Saved Location, Field Record, or coordinate and follow a live map line.",
+                "Navigate lets you choose a Saved Location, Field Record, or entered coordinate as a target. RockMap draws a live line from your current position to that target until you stop navigation.",
+                null,
+                holder,
+                v -> { holder[0].dismiss(); showNavigateMenu(); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.MEASURE,
+                "Tap map points or use GPS/saved records; see distance and area directly here.",
+                "Measure is a temporary map tool. Add map, GPS, Saved Location, or Field Record points to measure distance and area. Save a polygon as a Prospecting Area when you want to keep it.",
+                FieldUiNames.MEASURE,
+                holder,
+                v -> { holder[0].dismiss(); startMeasurement(); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.FIELD_RECORDS,
+                "Create, edit, photograph, navigate to, and research saved field observations.",
+                "Field Records are saved observations that can include category, mineral, sample ID, notes, photo, GPS accuracy, elevation, map actions, and location-based Research.",
+                FieldUiNames.FIELD_RECORDS,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("records"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.PROSPECTING_AREAS,
+                "Create, open, analyze, and manage saved prospecting areas.",
+                "Prospecting Areas are saved polygons. Open them on the map, manage their visibility, and analyze their geography with Research. Spatial overlap is research context, not a prediction or permission to collect.",
+                FieldUiNames.PROSPECTING_AREAS,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("areas"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.IMPORT,
+                "Import GPX, KML, or GeoJSON files into RockMap.",
+                "Import accepts GPX, KML, and GeoJSON. Imported objects remain associated with their source import so you can review or remove that batch without deleting unrelated RockMap data.",
+                FieldUiNames.IMPORT,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("import"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.IMPORTED_DATA,
+                "Review imported files, show their contents on the map, or remove one import safely.",
+                "Imported Data lists the files RockMap has imported. Open a batch to inspect its Saved Locations, Tracks, and Prospecting Areas, show them on the map, or remove only that import.",
+                FieldUiNames.IMPORTED_DATA,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("imports"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.EXPORT,
+                "Export Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, or combined field data.",
+                "Export Data lets you choose the records and output format deliberately. Exporting creates a copy for sharing or use elsewhere and does not delete the original RockMap records.",
+                FieldUiNames.EXPORT,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("export"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.COORDINATES,
+                "Convert decimal, DDM, DMS, UTM, and MGRS coordinates.",
+                "Coordinates converts one location among decimal degrees, DDM, DMS, WGS84 UTM, and MGRS. It is a conversion and reference tool; it does not change the accuracy of a GPS fix.",
+                FieldUiNames.COORDINATES,
+                holder,
+                v -> { holder[0].dismiss(); openFieldScreen("coordinates"); }));
+        box.addView(dialogActionWithHelp(
+                FieldUiNames.VISIBILITY,
+                "Choose which Tracks, Prospecting Areas, Field Records, and Saved Location labels appear on the map.",
+                "Field Visibility controls which Field objects are drawn on the map. Hiding an item type changes display only; it does not delete the underlying saved records.",
+                null,
+                holder,
+                v -> { holder[0].dismiss(); showVisibilityMenu(); }));
         holder[0] = new AlertDialog.Builder(activity)
                 .setTitle("Field tools")
                 .setView(scrollDialog(box))
                 .setNegativeButton("Close", null)
                 .create();
         holder[0].show();
+    }
+
+    private View dialogActionWithHelp(String title, String detail, String helpText,
+                                      String guidedTourTool, AlertDialog[] fieldDialog,
+                                      View.OnClickListener listener) {
+        LinearLayout card = new LinearLayout(activity);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(8), dp(8), dp(10));
+        card.setMinimumHeight(dp(68));
+
+        LinearLayout heading = new LinearLayout(activity);
+        heading.setOrientation(LinearLayout.HORIZONTAL);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView h = new TextView(activity);
+        h.setText(title + "  ›");
+        h.setTextSize(15.5f);
+        h.setTextColor(Color.rgb(30, 85, 145));
+        h.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        h.setSingleLine(true);
+        h.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        heading.addView(h, new LinearLayout.LayoutParams(0, dp(40), 1f));
+
+        View help = compactHelpButton("Help for " + title, v ->
+                showFieldMenuHelp(title, helpText, guidedTourTool, fieldDialog));
+        LinearLayout.LayoutParams helpParams = new LinearLayout.LayoutParams(dp(40), dp(40));
+        helpParams.setMargins(dp(5), 0, 0, 0);
+        heading.addView(help, helpParams);
+        card.addView(heading, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+
+        TextView d = new TextView(activity);
+        d.setText(detail);
+        d.setTextSize(12.5f);
+        d.setTextColor(Color.rgb(80, 80, 80));
+        d.setPadding(0, dp(1), dp(4), 0);
+        card.addView(d);
+        card.setClickable(true);
+        card.setFocusable(true);
+        card.setOnClickListener(listener);
+        return card;
+    }
+
+    private View compactHelpButton(String description, View.OnClickListener listener) {
+        FrameLayout touch = new FrameLayout(activity);
+        touch.setClickable(true);
+        touch.setFocusable(true);
+        touch.setContentDescription(description);
+        touch.setOnClickListener(listener);
+
+        TextView icon = new TextView(activity);
+        icon.setText("?");
+        icon.setTextSize(14f);
+        icon.setTextColor(Color.rgb(30, 85, 145));
+        icon.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        icon.setGravity(Gravity.CENTER);
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(Color.rgb(238, 244, 251));
+        background.setStroke(dp(1), Color.rgb(126, 166, 207));
+        icon.setBackground(background);
+        touch.addView(icon, new FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER));
+        return touch;
+    }
+
+    private void showFieldMenuHelp(String tool, String message, String guidedTourTool,
+                                   AlertDialog[] fieldDialog) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(activity)
+                .setTitle(tool + " help")
+                .setMessage(message)
+                .setPositiveButton("Close", null);
+        if (guidedTourTool != null && !guidedTourTool.trim().isEmpty()) {
+            builder.setNeutralButton("Start guided tour", (d, w) -> {
+                if (fieldDialog != null && fieldDialog.length > 0 && fieldDialog[0] != null) {
+                    fieldDialog[0].dismiss();
+                }
+                Intent field = new Intent(activity, FieldActivity.class);
+                field.putExtra(FieldActivity.EXTRA_START_HELP_TOOL, guidedTourTool);
+                activity.startActivity(field);
+            });
+        }
+        builder.show();
     }
 
     private void showNavigateMenu() {
