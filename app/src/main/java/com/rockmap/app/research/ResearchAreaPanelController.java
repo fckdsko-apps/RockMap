@@ -83,6 +83,10 @@ public final class ResearchAreaPanelController {
     private Button geology;
     private Button minerals;
     private Button mines;
+    private Button collapseButton;
+    private Button expandButton;
+    private Button closeButton;
+    private Button firstPrimaryAction;
     private Listener listener;
     private String activeView = "";
     private String areaLabel = "Selected Area";
@@ -139,6 +143,14 @@ public final class ResearchAreaPanelController {
         return panel != null && !MODE_HIDDEN.equals(mode) && panel.getVisibility() == View.VISIBLE;
     }
     public boolean isCollapsed() { return MODE_COLLAPSED.equals(mode); }
+    public View getCollapseControl() { ensurePanel(); return collapseButton; }
+    public View getExpandControl() { ensurePanel(); return expandButton; }
+    public View getCloseControl() { ensurePanel(); return closeButton; }
+    public View getGeologyControl() { ensurePanel(); return geology; }
+    public View getMineralControl() { ensurePanel(); return minerals; }
+    public View getHistoricControl() { ensurePanel(); return mines; }
+    public View getPrimaryActionControl() { ensurePanel(); return firstPrimaryAction; }
+    public View getScrollableContentControl() { ensurePanel(); return detailScroll; }
 
     /** Close panel UI only. It intentionally does not clear mapped layers or the Research session. */
     public void closePanel() {
@@ -173,6 +185,7 @@ public final class ResearchAreaPanelController {
     public void setPrimaryActions(ActionSpec... actions) {
         ensurePanel();
         primaryActions.removeAllViews();
+        firstPrimaryAction = null;
         int count = 0;
         if (actions != null) {
             for (ActionSpec spec : actions) {
@@ -183,6 +196,7 @@ public final class ResearchAreaPanelController {
                 LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(46), 1f);
                 if (count > 0) params.setMargins(dp(4), 0, 0, 0);
                 primaryActions.addView(button, params);
+                if (firstPrimaryAction == null) firstPrimaryAction = button;
                 count++;
                 if (count >= 3) break;
             }
@@ -265,13 +279,15 @@ public final class ResearchAreaPanelController {
         help.setOnClickListener(v -> { if (listener != null) listener.onHelp(); });
         header.addView(help, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
-        Button collapse = iconButton("›", "Collapse Research to the right edge");
-        collapse.setOnClickListener(v -> collapse());
-        header.addView(collapse, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        collapseButton = iconButton("›", "Collapse Research to the right edge");
+        collapseButton.setOnClickListener(v -> collapse());
+        header.addView(collapseButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
-        Button close = iconButton("×", "Close Research panel without hiding mapped Research layers");
-        close.setOnClickListener(v -> closePanel());
-        header.addView(close, new LinearLayout.LayoutParams(dp(46), dp(46)));
+        closeButton = actionButton("Close");
+        closeButton.setTextSize(10.5f);
+        closeButton.setContentDescription("Close Research panel without hiding mapped Research layers");
+        closeButton.setOnClickListener(v -> closePanel());
+        header.addView(closeButton, new LinearLayout.LayoutParams(dp(64), dp(46)));
         expandedGroup.addView(header);
 
         LinearLayout tabs = new LinearLayout(activity);
@@ -331,15 +347,17 @@ public final class ResearchAreaPanelController {
         collapsedBar.setGravity(Gravity.CENTER_VERTICAL);
         collapsedBar.setPadding(dp(3), dp(3), dp(3), dp(3));
 
-        Button expand = actionButton("‹ Research");
-        expand.setTextSize(11.5f);
-        expand.setContentDescription("Expand Research map workspace");
-        expand.setOnClickListener(v -> expand());
-        collapsedBar.addView(expand, new LinearLayout.LayoutParams(dp(94), dp(46)));
+        expandButton = actionButton("‹ Research");
+        expandButton.setTextSize(11.5f);
+        expandButton.setContentDescription("Expand Research map workspace");
+        expandButton.setOnClickListener(v -> expand());
+        collapsedBar.addView(expandButton, new LinearLayout.LayoutParams(dp(94), dp(46)));
 
-        Button collapsedClose = iconButton("×", "Close Research panel without hiding mapped Research layers");
+        Button collapsedClose = actionButton("Close");
+        collapsedClose.setTextSize(10.5f);
+        collapsedClose.setContentDescription("Close Research panel without hiding mapped Research layers");
         collapsedClose.setOnClickListener(v -> closePanel());
-        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(46), dp(46));
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(64), dp(46));
         closeParams.setMargins(dp(3), 0, 0, 0);
         collapsedBar.addView(collapsedClose, closeParams);
         panel.addView(collapsedBar);

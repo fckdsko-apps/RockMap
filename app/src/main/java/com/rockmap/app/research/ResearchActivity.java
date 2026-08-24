@@ -87,6 +87,8 @@ public final class ResearchActivity extends Activity {
     private Observer<WorkInfo> geologyUpdateObserver;
     private boolean autoReturnToMap;
     private long currentAreaId = -1L;
+    private View tourCombinedControl;
+    private View tourShowGeologyControl;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -202,16 +204,17 @@ public final class ResearchActivity extends Activity {
                     "Choose a saved Prospecting Area and analyze its geology, then continue into Mineral Evidence and historic activity.",
                     v -> showAreaPicker()));
             if (visibleBounds != null) {
-                root.addView(action("Visible Area — Combined Analysis",
+                tourCombinedControl = action("Visible Area — Combined Analysis",
                         "Start with geology for the Visible Area, then continue into Mineral Evidence and Historic Mines & Workings.",
                         v -> {
                             if (GuidedTourState.isActive(this)
                                     && GuidedTourState.step(this) == GuidedTourState.STEP_COMBINED_ANALYSIS) {
-                                GuidedTourState.setStep(this, GuidedTourState.STEP_SHOW_GEOLOGY);
+                                GuidedTourState.advance(this, GuidedTourState.STEP_SHOW_GEOLOGY);
                                 GuidedTourCoach.clear(this);
                             }
                             runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area");
-                        }));
+                        });
+                root.addView(tourCombinedControl);
             }
         } else {
             root.addView(help("Colorado geology is not installed. Mineral Evidence remains available above."));
@@ -663,6 +666,7 @@ public final class ResearchActivity extends Activity {
         top.addView(help(compactSummary(safe, groups)));
         if (!safe.isEmpty()) {
             Button showMap = button("Show Geology on Map");
+            tourShowGeologyControl = showMap;
             GeologyRepository.Bounds mapBounds = currentQueryContextJson.trim().isEmpty()
                     ? boundsOfUnits(safe) : null;
             showMap.setOnClickListener(v -> {
@@ -903,23 +907,67 @@ public final class ResearchActivity extends Activity {
             return;
         }
         int step = GuidedTourState.step(this);
+        int displayStep = GuidedTourState.displayStep(this);
+        int displayTotal = GuidedTourState.displayTotal(this);
         if (step == GuidedTourState.STEP_COMBINED_ANALYSIS) {
-            GuidedTourCoach.show(this, 3, 9, "Analyze the visible Mount Antero area",
-                    "Scroll to Combined Area Analysis and tap Visible Area — Combined Analysis. This runs the real offline geology query for the map extent you chose.",
-                    null, null, true, null);
+            GuidedTourCoach.show(this, displayStep, displayTotal,
+                    "Analyze the visible area",
+                    "Combined Analysis starts with the mapped geology already inside the visible map extent, then keeps that area available for Mineral Evidence and Historic Mines.",
+                    "Tap “Visible Area — Combined Analysis”.", tourCombinedControl,
+                    null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
-            GuidedTourCoach.show(this, 4, 9, "Review the geology result",
-                    "RockMap groups repeated mapped areas by geologic unit. When you're ready, tap Show Geology on Map so the result returns to the same geographic workspace.",
-                    null, null, false, null);
+            GuidedTourCoach.show(this, displayStep, displayTotal,
+                    "Return the geology to the map",
+                    "RockMap groups repeated mapped polygons by geologic unit for readability while keeping the underlying geometry and provenance.",
+                    "Tap “Show Geology on Map”.", tourShowGeologyControl,
+                    null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else {
             GuidedTourCoach.clear(this);
         }
     }
 
-    private void startTourFromResearch() {
-        GuidedTourState.start(this);
+    private void skipTourResearchStep() {
+        if (!GuidedTourState.isActive(this)) return;
+        int step = GuidedTourState.step(this);
+        if (step == GuidedTourState.STEP_COMBINED_ANALYSIS) {
+            if (visibleBounds == null) {
+                GuidedTourState.advance(this, GuidedTourState.STEP_COMPLETE);
+                finish();
+                return;
+            }
+            GuidedTourState.advance(this, GuidedTourState.STEP_SHOW_GEOLOGY);
+            GuidedTourCoach.clear(this);
+            runBoundsQuery(visibleBounds, "Combined Area Analysis — Visible Area");
+        } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            if (currentResults == null || currentResults.isEmpty()) {
+                GuidedTourState.advance(this, GuidedTourState.STEP_COMPLETE);
+                finish();
+                return;
+            }
+            String geoJson = decorateQueryContext(geology.toGeoJson(currentResults), currentQueryContextJson);
+            GeologyRepository.Bounds mapBounds = currentQueryContextJson.trim().isEmpty()
+                    ? boundsOfUnits(currentResults) : null;
+            GuidedTourCoach.clear(this);
+            returnGeology(geoJson, currentResultTitle, currentResults.size(), mapBounds);
+        }
+    }
+
+    private void exitTourFromResearch() {
+        GuidedTourState.exit(this);
         GuidedTourCoach.clear(this);
-        returnAction(ACTION_DATA, null);
+    }
+
+    private void startTourFromResearch() {
+        if (visibleBounds == null) {
+            GuidedTourState.startFull(this);
+            GuidedTourCoach.clear(this);
+            returnAction(ACTION_DATA, null);
+            return;
+        }
+        GuidedTourState.startTopic(this, GuidedTourState.TOPIC_RESEARCH,
+                GuidedTourState.STEP_COMBINED_ANALYSIS,
+                GuidedTourState.STEP_CONTEXT_CONTROLS);
+        showHub();
     }
 
     private void returnGeology(String geoJson, String title, int count, GeologyRepository.Bounds bounds) {

@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.InsetDrawable;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -43,9 +42,9 @@ import java.util.WeakHashMap;
 /**
  * Contextual close controls attached to the map geometry they control.
  *
- * One active object gets one compact × at the top-right edge of the actual geometry (with a full
- * 48dp hit target). When several related map contexts are active, the individual × controls are
- * replaced by one color-coded layer menu placed near that same geometry so controls never overlap.
+ * Every active map context uses the same labeled, draggable row with an adjacent ×. Tapping the
+ * label reopens that context's information; tapping × closes only that mapped context. The control
+ * model never changes merely because only one context remains.
  */
 public final class MapContextCloseController {
     private static final String FIELD_AREA_FILL = "rockmap-field-area-fill";
@@ -76,7 +75,6 @@ public final class MapContextCloseController {
     private final Activity activity;
     private final FieldDatabase fieldDb;
     private FrameLayout root;
-    private TextView singleClose;
     private LinearLayout menu;
     private MapLibreMap map;
     private Target geology;
@@ -204,6 +202,11 @@ public final class MapContextCloseController {
         refresh();
     }
 
+    public View getContextMenuView() {
+        ensureViews();
+        return menu;
+    }
+
     public void refresh() {
         if (mapView != null) mapView.post(this::refreshNow);
     }
@@ -227,17 +230,6 @@ public final class MapContextCloseController {
             }
         }
         if (root == null) return;
-        if (singleClose == null) {
-            singleClose = new TextView(activity);
-            singleClose.setText("×");
-            singleClose.setTextSize(22f);
-            singleClose.setGravity(Gravity.CENTER);
-            singleClose.setClickable(true);
-            singleClose.setFocusable(true);
-            singleClose.setElevation(dp(6));
-            singleClose.setVisibility(View.GONE);
-            root.addView(singleClose, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.TOP | Gravity.START));
-        }
         if (menu == null) {
             menu = new LinearLayout(activity);
             menu.setOrientation(LinearLayout.VERTICAL);
@@ -257,7 +249,7 @@ public final class MapContextCloseController {
     }
 
     private void rebuildControls() {
-        if (root == null || map == null || singleClose == null || menu == null) return;
+        if (root == null || map == null || menu == null) return;
         ArrayList<ContextItem> items = new ArrayList<>();
         if (geology != null) items.add(ContextItem.fromTarget(geology, geologyOpenAction, () -> closeTarget(geology)));
         if (mineral != null) items.add(ContextItem.fromTarget(mineral, mineralOpenAction, () -> closeTarget(mineral)));
@@ -271,11 +263,8 @@ public final class MapContextCloseController {
             hideControls();
             return;
         }
-        if (items.size() == 1) {
-            showSingle(items.get(0));
-        } else {
-            showMenu(items);
-        }
+        // One interaction model for one or many contexts: always keep the labeled row + adjacent ×.
+        showMenu(items);
     }
 
     private void closeTarget(Target target) {
@@ -289,28 +278,7 @@ public final class MapContextCloseController {
         if (contextStateChangedAction != null) contextStateChangedAction.run();
     }
 
-    private void showSingle(ContextItem item) {
-        menu.setVisibility(View.GONE);
-        singleClose.setTextColor(item.color);
-        singleClose.setContentDescription("Close " + item.label);
-        singleClose.setOnClickListener(v -> item.close.run());
-        GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.OVAL);
-        bg.setColor(Color.argb(238, 255, 255, 255));
-        bg.setStroke(dp(2), item.color);
-        singleClose.setBackground(new InsetDrawable(bg, dp(9)));
-        PointF anchor = project(item.anchor != null ? item.anchor : northEast(item.bounds));
-        if (anchor == null) {
-            singleClose.setVisibility(View.GONE);
-            return;
-        }
-        position(singleClose, dp(48), dp(48), Math.round(anchor.x - dp(24)), Math.round(anchor.y - dp(24)));
-        singleClose.setVisibility(View.VISIBLE);
-        singleClose.bringToFront();
-    }
-
     private void showMenu(List<ContextItem> items) {
-        singleClose.setVisibility(View.GONE);
         menu.removeAllViews();
         for (ContextItem item : items) addMenuRow(item);
         int width = dp(180);
@@ -476,7 +444,6 @@ public final class MapContextCloseController {
     }
 
     private void hideControls() {
-        if (singleClose != null) singleClose.setVisibility(View.GONE);
         if (menu != null) menu.setVisibility(View.GONE);
     }
 

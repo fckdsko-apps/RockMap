@@ -14,7 +14,8 @@ public final class RockMapHelp {
                 + "Mineral Evidence — documented mineral/locality/source records. Evidence-density heatmaps show where installed evidence is denser or stronger; they are not probabilities of finding specimens.\n\n"
                 + "Historic Mines — documented mine/workings records and nearby evidence. Old workings can be hazardous.\n\n"
                 + "Claims and land management remain separate map layers. A missing rendered claim does not prove land is unclaimed, and land-management mapping is not a parcel/title determination.\n\n"
-                + "Current view: " + viewText + ".";
+                + "Current view: " + viewText + ".\n\n"
+                + "Full and topic tours are always available from Help & Tours on the main map.";
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle("Research help")
                 .setMessage(message)
@@ -28,7 +29,8 @@ public final class RockMapHelp {
                 + "• Core Offline Map & Research Data — the basemap, offline place search, Mineral Evidence, Historic Mines, land-management context, and mining-claim records are one integrity-versioned pack today.\n\n"
                 + "• Queryable Colorado Geology — a separate verified statewide geology database.\n\n"
                 + "Check selected sizes reads only the small published manifests. It does not install the large files. RockMap shows the expected transfer before Install selected is enabled, reuses current files when possible, and verifies downloaded data before activation.\n\n"
-                + "More datasets can become separate choices later without changing this screen when they are packaged independently.";
+                + "More datasets can become separate choices later without changing this screen when they are packaged independently.\n\n"
+                + "Full and topic tours are always available from Help & Tours on the main map.";
         AlertDialog.Builder builder = new AlertDialog.Builder(activity)
                 .setTitle("Offline Maps & Data help")
                 .setMessage(message)

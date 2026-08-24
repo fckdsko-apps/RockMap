@@ -21,6 +21,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rockmap.app.GuidedTourCoach;
 import com.rockmap.app.MainActivity;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
@@ -47,6 +48,7 @@ import java.util.Set;
 public final class FieldActivity extends Activity implements LocationRepository.Listener {
     public static final String EXTRA_SCREEN = "rockmap.field.screen";
     public static final String EXTRA_AREA_ID = "rockmap.field.area_id";
+    public static final String EXTRA_SHOW_HELP_TOURS = "rockmap.field.show_help_tours";
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
@@ -112,49 +114,165 @@ public final class FieldActivity extends Activity implements LocationRepository.
         } else {
             showHub();
             if ("import".equals(screen)) getWindow().getDecorView().post(this::beginImport);
+            if (getIntent() != null && getIntent().getBooleanExtra(EXTRA_SHOW_HELP_TOURS, false)) {
+                getIntent().removeExtra(EXTRA_SHOW_HELP_TOURS);
+                getWindow().getDecorView().post(this::showFieldTourPicker);
+            }
         }
     }
 
     private void showHub() {
+        GuidedTourCoach.clear(this);
         setTitle("RockMap Field");
         LinearLayout root = page();
-        root.addView(title("Field"));
-        root.addView(help("Field tools are map-first. Spatial features lead back to the main map so their position, scale, and relationship to the surrounding terrain are visible."));
+        root.addView(title("Field Tools"));
+        root.addView(help("Field tools are map-first. Each ? opens a concise explainer and, when useful, a guided walkthrough for that specific tool."));
 
-        root.addView(action(FieldUiNames.TRACK,
-                "Record GPS tracks that draw live on the main map. Opening a saved track now opens its real basemap view instead of an abstract squiggle.",
-                v -> showTracks()));
-        root.addView(action(FieldUiNames.FIELD_RECORDS,
+        root.addView(fieldToolRow(FieldUiNames.TRACK,
+                "Record GPS tracks that draw live on the main map. Opening a saved track uses its real basemap view.",
+                "Records a GPS breadcrumb track. Start, pause, resume, stop, reopen, and export tracks. Recording uses a visible Android foreground service and does not request background-location permission.",
+                this::showTracks, true));
+        root.addView(fieldToolRow(FieldUiNames.FIELD_RECORDS,
                 "Richer saved observations with category, mineral, sample ID, notes, photo, GPS accuracy and elevation.",
-                v -> showFieldRecords()));
-        root.addView(action(FieldUiNames.SAVED_LOCATIONS,
+                "Field Records are richer observations than simple Saved Locations. They can include category, mineral, sample ID, notes, photo, GPS accuracy, elevation, map actions, and location-based Research.",
+                this::showFieldRecords, true));
+        root.addView(fieldToolRow(FieldUiNames.SAVED_LOCATIONS,
                 "View your existing RockMap Saved Locations or copy one into a richer Field Record.",
-                v -> showLegacyWaypoints()));
-        root.addView(action(FieldUiNames.PROSPECTING_AREAS,
+                "Saved Locations are lightweight points stored on the device. Open one to view it on the map, navigate to it, edit it, or copy it into a Field Record.",
+                this::showLegacyWaypoints, true));
+        root.addView(fieldToolRow(FieldUiNames.PROSPECTING_AREAS,
                 "Create, open, analyze, map, and manage saved prospecting areas.",
-                v -> showProspectingAreas()));
-        root.addView(action(FieldUiNames.MEASURE,
+                "Prospecting Areas are saved polygons. They can come from Measure or imports, stay visible on the real map, and can be analyzed with Research without turning spatial correlation into a mineral prediction.",
+                this::showProspectingAreas, true));
+        root.addView(fieldToolRow(FieldUiNames.MEASURE,
                 "Start a temporary map measurement. Save it as a Prospecting Area when you want to keep and analyze the polygon.",
-                v -> { FieldMapState.requestMeasurement(this); returnToMap(); }));
-        root.addView(action(FieldUiNames.IMPORT,
+                "Measure is a temporary map tool. Add/edit points on the real map, finish or cancel explicitly, and save the polygon as a Prospecting Area when you want it to persist.",
+                () -> { FieldMapState.requestMeasurement(this); returnToMap(); }, false));
+        root.addView(fieldToolRow(FieldUiNames.IMPORT,
                 "Import GPX, KML, or GeoJSON files into RockMap.",
-                v -> beginImport()));
-        root.addView(action(FieldUiNames.IMPORTED_DATA,
+                "Import accepts GPX, KML, and GeoJSON. Imported objects stay tied to their import batch so removing one import does not delete unrelated RockMap data.",
+                this::beginImport, false));
+        root.addView(fieldToolRow(FieldUiNames.IMPORTED_DATA,
                 "Review imported files, show their contents on the map, or remove one import without affecting unrelated data.",
-                v -> showImports()));
-        root.addView(action("Research",
+                "Imported Data manages the files RockMap has already imported. Open a batch to inspect its Saved Locations, Tracks, and Prospecting Areas, show them on the map, or remove only that import.",
+                this::showImports, true));
+        root.addView(fieldToolRow("Research",
                 "Open Mineral Evidence, Geology, and Combined Area Analysis.",
-                v -> startResearch(new Intent(this, ResearchActivity.class))));
-        root.addView(action(FieldUiNames.EXPORT,
+                "Research connects field objects back to geology, Mineral Evidence, historic activity, and spatial analysis. Evidence and overlap are research context, not collecting permission or a prediction of what you will find.",
+                () -> startResearch(new Intent(this, ResearchActivity.class)), false));
+        root.addView(fieldToolRow(FieldUiNames.EXPORT,
                 "Export Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, or combined field data.",
-                v -> showExportHub()));
-        root.addView(action(FieldUiNames.COORDINATES,
+                "Export Data lets you choose the object and format deliberately. Export does not delete or move the original RockMap record.",
+                this::showExportHub, true));
+        root.addView(fieldToolRow(FieldUiNames.COORDINATES,
                 "Convert one location between decimal degrees, DDM, DMS, WGS84 UTM and MGRS.",
-                v -> showCoordinates()));
+                "Coordinates converts the same location between common coordinate formats. It is a conversion/reference tool, not a replacement for checking current GPS accuracy.",
+                this::showCoordinates, true));
         root.addView(action("Back to map",
                 "Return to the main RockMap map and its visual Field controls.",
                 v -> returnToMap()));
         setContentView(scroll(root));
+    }
+
+    private View fieldToolRow(String tool, String detail, String explainer,
+                              Runnable openAction, boolean staysInField) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(3), 0, dp(3));
+
+        View action = action(tool, detail, v -> openAction.run());
+        action.setTag(fieldToolTag(tool));
+        row.addView(action, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button helpButton = button("?");
+        helpButton.setTextSize(17f);
+        helpButton.setContentDescription("Help for " + tool);
+        helpButton.setOnClickListener(v -> showFieldToolHelp(tool, explainer, openAction, staysInField));
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(52), dp(68));
+        hp.setMargins(dp(6), 0, 0, 0);
+        row.addView(helpButton, hp);
+        return row;
+    }
+
+    private void showFieldToolHelp(String tool, String explainer,
+                                   Runnable openAction, boolean staysInField) {
+        new AlertDialog.Builder(this)
+                .setTitle(tool + " help")
+                .setMessage(explainer)
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Start guided tour", (d, w) ->
+                        startFieldToolTour(tool, explainer, openAction, staysInField))
+                .show();
+    }
+
+    private void showFieldTourPicker() {
+        final String[] tools = new String[]{
+                FieldUiNames.TRACK, FieldUiNames.FIELD_RECORDS, FieldUiNames.SAVED_LOCATIONS,
+                FieldUiNames.PROSPECTING_AREAS, FieldUiNames.MEASURE, FieldUiNames.IMPORT,
+                FieldUiNames.IMPORTED_DATA, "Research", FieldUiNames.EXPORT, FieldUiNames.COORDINATES
+        };
+        new AlertDialog.Builder(this)
+                .setTitle("Field Tools guided tours")
+                .setItems(tools, (d, which) -> startFieldTourByName(tools[which]))
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void startFieldTourByName(String tool) {
+        if (FieldUiNames.TRACK.equals(tool)) {
+            startFieldToolTour(tool, "Start, pause, resume, stop, reopen, and export GPS tracks from the real map.", this::showTracks, true);
+        } else if (FieldUiNames.FIELD_RECORDS.equals(tool)) {
+            startFieldToolTour(tool, "Create richer field observations with notes, sample information, photos, GPS accuracy, elevation, and Research actions.", this::showFieldRecords, true);
+        } else if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) {
+            startFieldToolTour(tool, "Open lightweight saved points, map them, navigate to them, edit them, or copy them into Field Records.", this::showLegacyWaypoints, true);
+        } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+            startFieldToolTour(tool, "Open saved polygons, show them on the real map, and analyze them with Research.", this::showProspectingAreas, true);
+        } else if (FieldUiNames.MEASURE.equals(tool)) {
+            startFieldToolTour(tool, "Start a temporary map measurement and save it as a Prospecting Area when you want it to persist.", () -> { FieldMapState.requestMeasurement(this); returnToMap(); }, false);
+        } else if (FieldUiNames.IMPORT.equals(tool)) {
+            startFieldToolTour(tool, "Choose a GPX, KML, or GeoJSON file. RockMap tracks imported objects by batch so removal stays scoped.", this::beginImport, false);
+        } else if (FieldUiNames.IMPORTED_DATA.equals(tool)) {
+            startFieldToolTour(tool, "Review imported batches and their objects, show them on the map, or remove one batch safely.", this::showImports, true);
+        } else if ("Research".equals(tool)) {
+            startFieldToolTour(tool, "Open RockMap Research from Field without rebuilding the same geographic context.", () -> startResearch(new Intent(this, ResearchActivity.class)), false);
+        } else if (FieldUiNames.EXPORT.equals(tool)) {
+            startFieldToolTour(tool, "Choose what to export and the format without changing the original local records.", this::showExportHub, true);
+        } else if (FieldUiNames.COORDINATES.equals(tool)) {
+            startFieldToolTour(tool, "Convert one location among decimal, DDM, DMS, UTM, and MGRS formats.", this::showCoordinates, true);
+        }
+    }
+
+    private void startFieldToolTour(String tool, String explainer,
+                                    Runnable openAction, boolean staysInField) {
+        showHub();
+        getWindow().getDecorView().post(() -> {
+            View target = findViewById(android.R.id.content).findViewWithTag(fieldToolTag(tool));
+            GuidedTourCoach.show(this, 1, staysInField ? 2 : 1,
+                    tool,
+                    explainer,
+                    "Use the highlighted “" + tool + "” control.", target,
+                    "Open " + tool, () -> {
+                        GuidedTourCoach.clear(FieldActivity.this);
+                        openAction.run();
+                        if (staysInField) getWindow().getDecorView().postDelayed(() ->
+                                GuidedTourCoach.show(FieldActivity.this, 2, 2,
+                                        tool + " screen",
+                                        "You are now inside the real " + tool + " interface. Explore its visible controls; the ? explainer remains available from Field Tools whenever you need a refresher.",
+                                        "Review the current " + tool + " controls, then tap Finish.", null,
+                                        "Finish", () -> GuidedTourCoach.clear(FieldActivity.this),
+                                        () -> GuidedTourCoach.clear(FieldActivity.this),
+                                        () -> GuidedTourCoach.clear(FieldActivity.this)), 120L);
+                    },
+                    () -> GuidedTourCoach.clear(FieldActivity.this),
+                    () -> GuidedTourCoach.clear(FieldActivity.this));
+        });
+    }
+
+    private String fieldToolTag(String tool) {
+        return "rockmap-field-tool-" + (tool == null ? "tool" : tool.toLowerCase(Locale.US)
+                .replace(' ', '-').replace('&', '-').replace('/', '-'));
     }
 
     // ---------- TRACKS ----------
