@@ -644,8 +644,57 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         LinearLayout primary = row();
         primary.addView(small("Back", v -> showArea(area)), weight());
-        primary.addView(small("Close to Map", v -> returnToMap()), weight());
+        primary.addView(small("Show on Map", v -> showSavedResearchOnMap(area, research)), weight());
+        primary.addView(small("Close", v -> returnToMap()), weight());
         setContentView(pageWithPinnedAction(root, primary));
+    }
+
+    private void showSavedResearchOnMap(FieldDatabase.Area area,
+                                        List<ProspectingAreaResearchStore.Snapshot> snapshots) {
+        if (area == null) { returnToMap(); return; }
+        if (snapshots == null || snapshots.isEmpty()) {
+            showAreaOnMap(area, null);
+            return;
+        }
+        if (snapshots.size() == 1) {
+            showAreaOnMap(area, snapshots.get(0));
+            return;
+        }
+
+        String[] labels = new String[snapshots.size()];
+        for (int i = 0; i < snapshots.size(); i++) {
+            ProspectingAreaResearchStore.Snapshot snapshot = snapshots.get(i);
+            labels[i] = snapshot.compactLabel() + " — "
+                    + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                    .format(new Date(snapshot.savedAt));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Show Saved Research on Map")
+                .setItems(labels, (dialog, which) -> {
+                    if (which >= 0 && which < snapshots.size()) {
+                        showAreaOnMap(area, snapshots.get(which));
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void showAreaOnMap(FieldDatabase.Area area,
+                               ProspectingAreaResearchStore.Snapshot snapshot) {
+        ProspectingAreaVisibility.showOnly(this, area.id);
+        FieldMapState.setAreasVisible(this, true);
+        FieldMapState.clearViewedMapContext(this);
+
+        FieldMapState.Bounds bounds = null;
+        if (snapshot != null
+                && Double.isFinite(snapshot.south) && Double.isFinite(snapshot.west)
+                && Double.isFinite(snapshot.north) && Double.isFinite(snapshot.east)
+                && snapshot.north > snapshot.south && snapshot.east > snapshot.west) {
+            bounds = new FieldMapState.Bounds(snapshot.south, snapshot.west, snapshot.north, snapshot.east);
+        }
+        if (bounds == null) bounds = FieldMapState.Bounds.fromPoints(area.points);
+        if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
+        returnToMap();
     }
 
     // ---------- IMPORT ----------

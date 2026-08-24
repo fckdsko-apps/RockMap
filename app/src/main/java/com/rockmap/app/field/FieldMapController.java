@@ -159,6 +159,8 @@ public final class FieldMapController implements LocationRepository.Listener {
     private String expandedTool;
     private boolean awaitingMapTap;
     private View tapCapture;
+    private boolean measurementDragHandlerInstalled;
+    private int draggingMeasurementIndex = -1;
     private Location latestNavigationLocation;
     private boolean navigationUpdatesStarted;
     private boolean cameraMoveListenerInstalled;
@@ -221,6 +223,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         fieldButton.setOnClickListener(v -> showFieldMenu());
         installHud();
         installCollapsedTabs();
+        installMeasurementDragHandler();
         installFieldButtonLayoutTracking();
         positionFieldButton();
         bringFieldUiToFront();
@@ -274,6 +277,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (root != null) root.removeOnLayoutChangeListener(fieldLayoutListener);
             if (controls != null) controls.removeOnLayoutChangeListener(fieldLayoutListener);
             fieldLayoutListener = null;
+        }
+        if (mapView != null && measurementDragHandlerInstalled) {
+            mapView.setOnTouchListener(null);
+            measurementDragHandlerInstalled = false;
         }
         worker.shutdownNow();
         waypointRepository.close();
@@ -619,6 +626,9 @@ public final class FieldMapController implements LocationRepository.Listener {
                     setExpandedTool(null);
                 }));
         hud.addView(hudText(measurementSummary()));
+        if (!measurement.isEmpty()) {
+            hud.addView(hudText("Drag any measurement point on the map to reshape the line or polygon."));
+        }
 
         LinearLayout first = buttonRow();
         first.addView(hudButton(awaitingMapTap ? "Cancel tap" : "Tap map", v -> {
@@ -931,8 +941,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (style.getSource(MEASURE_POINT_SOURCE) == null) style.addSource(new GeoJsonSource(MEASURE_POINT_SOURCE, emptyCollection()));
         if (style.getLayer(MEASURE_POINT_LAYER) == null) {
             CircleLayer points = new CircleLayer(MEASURE_POINT_LAYER, MEASURE_POINT_SOURCE);
-            points.setProperties(circleColor(Color.rgb(10, 120, 105)), circleRadius(6f),
-                    circleStrokeColor(Color.WHITE), circleStrokeWidth(2f));
+            points.setProperties(circleColor(Color.rgb(10, 120, 105)), circleRadius(8f),
+                    circleStrokeColor(Color.WHITE), circleStrokeWidth(2.5f));
             style.addLayer(points);
         }
     }
@@ -1247,6 +1257,137 @@ public final class FieldMapController implements LocationRepository.Listener {
         tapCapture = null;
     }
 
+    /**
+     * Measurement vertices are direct-manipulation handles. Touches that start away from a vertex
+     * continue to MapLibre unchanged, so normal pan/zoom gestures remain intact. A drag that starts
+     * on a vertex is consumed until release and updates the connected line/polygon in place.
+     */
+    private void installMeasurementDragHandler() {
+        if (mapView == null || measurementDragHandlerInstalled) return;
+        measurementDragHandlerInstalled = true;
+        mapView.setOnTouchListener((view, event) -> {
+            if (!measureActive || measurement.isEmpty() || awaitingMapTap || map == null) {
+                draggingMeasurementIndex = -1;
+                return false;
+            }
+
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                draggingMeasurementIndex = nearestMeasurementVertex(event.getX(), event.getY());
+                if (draggingMeasurementIndex < 0) return false;
+                if (view.getParent() != null) view.getParent().requestDisallowInterceptTouchEvent(true);
+                return true;
+            }
+
+            if (draggingMeasurementIndex < 0) return false;
+
+            if (action == MotionEvent.ACTION_MOVE) {
+                PointF screen = new PointF(event.getX(), event.getY());
+                LatLng moved = map.getProjection().fromScreenLocation(screen);
+                GeoMath.Point candidatePoint = new GeoMath.Point(moved.getLatitude(), moved.getLongitude());
+                ArrayList<GeoMath.Point> candidate = new ArrayList<>(measurement);
+                candidate.set(draggingMeasurementIndex, candidatePoint);
+                if (isSensibleMeasurementShape(candidate)) {
+                    measurement.set(draggingMeasurementIndex, candidatePoint);
+                    refreshMeasurementGeometryOnly();
+                }
+                return true;
+            }
+
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                FieldMapState.saveMeasurement(activity, measurement, true);
+                draggingMeasurementIndex = -1;
+                if (view.getParent() != null) view.getParent().requestDisallowInterceptTouchEvent(false);
+                refreshMeasurementGeometryOnly();
+                renderHud();
+                return true;
+            }
+            return true;
+        });
+    }
+
+    private int nearestMeasurementVertex(float x, float y) {
+        if (map == null || measurement.isEmpty()) return -1;
+        float radius = dp(30);
+        float best = radius * radius;
+        int bestIndex = -1;
+        for (int i = 0; i < measurement.size(); i++) {
+            GeoMath.Point point = measurement.get(i);
+            PointF screen = map.getProjection().toScreenLocation(new LatLng(point.lat, point.lon));
+            float dx = screen.x - x;
+            float dy = screen.y - y;
+            float d2 = dx * dx + dy * dy;
+            if (d2 <= best) {
+                best = d2;
+                bestIndex = i;
+            }
+        }
+        return bestIndex;
+    }
+
+    private void refreshMeasurementGeometryOnly() {
+        if (map == null) return;
+        map.getStyle(style -> {
+            updateMeasurementSources(style);
+            syncVisibility(style);
+        });
+    }
+
+    /** Keep user-created measurement polygons simple: no duplicate vertices or crossed edges. */
+    private boolean isSensibleMeasurementShape(List<GeoMath.Point> points) {
+        if (points == null || points.isEmpty()) return true;
+        for (int i = 0; i < points.size(); i++) {
+            GeoMath.Point a = points.get(i);
+            if (a == null || !Double.isFinite(a.lat) || !Double.isFinite(a.lon)) return false;
+            for (int j = i + 1; j < points.size(); j++) {
+                GeoMath.Point b = points.get(j);
+                if (b == null) return false;
+                if (GeoMath.distanceMeters(a, b) < 0.25d) return false;
+            }
+        }
+        int n = points.size();
+        if (n < 4) return true;
+
+        for (int i = 0; i < n; i++) {
+            GeoMath.Point a1 = points.get(i);
+            GeoMath.Point a2 = points.get((i + 1) % n);
+            for (int j = i + 1; j < n; j++) {
+                // Adjacent polygon edges intentionally meet at their shared vertex.
+                if (j == i || j == (i + 1) % n || (j + 1) % n == i) continue;
+                GeoMath.Point b1 = points.get(j);
+                GeoMath.Point b2 = points.get((j + 1) % n);
+                if (segmentsIntersect(a1, a2, b1, b2)) return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean segmentsIntersect(GeoMath.Point a, GeoMath.Point b,
+                                      GeoMath.Point c, GeoMath.Point d) {
+        double o1 = orientation(a, b, c);
+        double o2 = orientation(a, b, d);
+        double o3 = orientation(c, d, a);
+        double o4 = orientation(c, d, b);
+        double eps = 1e-12d;
+
+        if (((o1 > eps && o2 < -eps) || (o1 < -eps && o2 > eps))
+                && ((o3 > eps && o4 < -eps) || (o3 < -eps && o4 > eps))) return true;
+        if (Math.abs(o1) <= eps && onSegment(a, b, c)) return true;
+        if (Math.abs(o2) <= eps && onSegment(a, b, d)) return true;
+        if (Math.abs(o3) <= eps && onSegment(c, d, a)) return true;
+        return Math.abs(o4) <= eps && onSegment(c, d, b);
+    }
+
+    private double orientation(GeoMath.Point a, GeoMath.Point b, GeoMath.Point c) {
+        return (b.lon - a.lon) * (c.lat - a.lat) - (b.lat - a.lat) * (c.lon - a.lon);
+    }
+
+    private boolean onSegment(GeoMath.Point a, GeoMath.Point b, GeoMath.Point p) {
+        double eps = 1e-12d;
+        return p.lon >= Math.min(a.lon, b.lon) - eps && p.lon <= Math.max(a.lon, b.lon) + eps
+                && p.lat >= Math.min(a.lat, b.lat) - eps && p.lat <= Math.max(a.lat, b.lat) + eps;
+    }
+
     private void addGpsMeasurement() {
         locationRepository.requestFreshPrecise(location ->
                 addMeasurementPoint(point(location), true), this::toast);
@@ -1300,9 +1441,19 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void addMeasurementPoint(GeoMath.Point point, boolean centerIfFirst) {
+        if (point == null) return;
         if (!measureActive) measureActive = true;
+        ArrayList<GeoMath.Point> candidate = new ArrayList<>(measurement);
+        candidate.add(point);
+        if (candidate.size() > 2000) {
+            toast("A measurement can contain at most 2,000 points.");
+            return;
+        }
+        if (!isSensibleMeasurementShape(candidate)) {
+            toast("That point would cross or overlap the measurement shape. Place it so the outline stays simple.");
+            return;
+        }
         measurement.add(point);
-        if (measurement.size() > 2000) measurement.remove(measurement.size() - 1);
         FieldMapState.saveMeasurement(activity, measurement, true);
         if (centerIfFirst && measurement.size() == 1) centerExplicit(point, 16d);
         applyCachedSources();

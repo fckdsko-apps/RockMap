@@ -16,13 +16,16 @@ import android.widget.TextView;
 import com.rockmap.app.field.FieldMapController;
 
 /**
- * Map-supporting Research workspace for sibling views of one geographic area.
+ * Map-first Research workspace for sibling views of one geographic area.
  *
- * Android interaction contract used here:
- * - Back changes the information subview; it never disables a mapped feature.
- * - Collapse leaves the whole Research session active while exposing the map.
- * - Close hides this panel only; mapped Research layers remain until their map-context × is used.
- * - Primary actions stay static while long result/detail content scrolls independently.
+ * Interaction contract:
+ * - Back changes the Research information subview; it never disables a mapped feature.
+ * - Collapse docks Research to the right edge and leaves the Research session active.
+ * - Close hides this workspace only; mapped layers remain until their map-context × is used.
+ * - Primary actions stay static while long results/details scroll independently.
+ *
+ * The expanded workspace intentionally follows RockMap's Track/Measure pattern: it lives at the
+ * top of the map, away from the permanent bottom navigation, and can collapse to a compact side tab.
  */
 public final class ResearchAreaPanelController {
     public interface Listener {
@@ -55,14 +58,22 @@ public final class ResearchAreaPanelController {
     public static final String MODE_COLLAPSED = "collapsed";
     public static final String MODE_HIDDEN = "hidden";
 
+    // One Research palette: teal identifies Research interaction/selection; mapped datasets keep
+    // their own map colors. This prevents button state colors from being confused with map evidence.
+    private static final int COLOR_SURFACE = Color.rgb(250, 250, 250);
+    private static final int COLOR_CARD = Color.WHITE;
+    private static final int COLOR_BORDER = Color.rgb(190, 207, 209);
+    private static final int COLOR_TEXT = Color.rgb(32, 38, 40);
+    private static final int COLOR_MUTED = Color.rgb(82, 94, 96);
+    private static final int COLOR_ACCENT = Color.rgb(0, 112, 121);
+    private static final int COLOR_ACCENT_BG = Color.rgb(222, 242, 243);
+
     private final Activity activity;
     private final FrameLayout root;
     private LinearLayout panel;
     private LinearLayout expandedGroup;
     private LinearLayout collapsedBar;
     private TextView title;
-    private TextView collapsedTitle;
-    private TextView collapsedView;
     private TextView status;
     private LinearLayout primaryActions;
     private LinearLayout scrollContent;
@@ -87,8 +98,6 @@ public final class ResearchAreaPanelController {
         this.activeView = clean(activeView, VIEW_GEOLOGY);
         ensurePanel();
         setStatus(statusText);
-        // Do not reopen a panel the user explicitly closed just because an asynchronous
-        // query finished. Explicit navigation/reopen actions call reopenExpanded().
         updateLabels();
         updateTabs();
         renderMode();
@@ -104,7 +113,7 @@ public final class ResearchAreaPanelController {
         renderMode();
     }
 
-    /** Reopen from a map-context label and expose the working controls. */
+    /** Reopen from a map-context label or explicit Research action. */
     public void reopenExpanded() {
         ensurePanel();
         mode = MODE_EXPANDED;
@@ -124,7 +133,9 @@ public final class ResearchAreaPanelController {
     }
 
     public String currentMode() { return mode; }
-    public boolean isVisible() { return panel != null && !MODE_HIDDEN.equals(mode) && panel.getVisibility() == View.VISIBLE; }
+    public boolean isVisible() {
+        return panel != null && !MODE_HIDDEN.equals(mode) && panel.getVisibility() == View.VISIBLE;
+    }
     public boolean isCollapsed() { return MODE_COLLAPSED.equals(mode); }
 
     /** Close panel UI only. It intentionally does not clear mapped layers or the Research session. */
@@ -167,8 +178,9 @@ public final class ResearchAreaPanelController {
                 Button button = actionButton(spec.label);
                 button.setContentDescription(spec.contentDescription);
                 button.setOnClickListener(v -> { if (spec.action != null) spec.action.run(); });
-                primaryActions.addView(button, new LinearLayout.LayoutParams(
-                        0, dp(48), 1f));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(46), 1f);
+                if (count > 0) params.setMargins(dp(4), 0, 0, 0);
+                primaryActions.addView(button, params);
                 count++;
                 if (count >= 3) break;
             }
@@ -176,7 +188,7 @@ public final class ResearchAreaPanelController {
         primaryActions.setVisibility(count == 0 ? View.GONE : View.VISIBLE);
     }
 
-    /** Long details/results live here; the header/tabs/primary actions above never scroll away. */
+    /** Long details/results live here; header/tabs/primary actions above never scroll away. */
     public void setScrollableContent(View content) {
         ensurePanel();
         scrollContent.removeAllViews();
@@ -195,14 +207,11 @@ public final class ResearchAreaPanelController {
 
     private void ensurePanel() {
         if (panel != null) return;
+
         panel = new LinearLayout(activity);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setElevation(dp(8));
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(Color.argb(248, 255, 255, 255));
-        background.setStroke(dp(1), Color.rgb(175, 175, 175));
-        background.setCornerRadius(dp(10));
-        panel.setBackground(background);
+        panel.setElevation(dp(7));
+        panel.setBackground(panelBackground());
 
         expandedGroup = new LinearLayout(activity);
         expandedGroup.setOrientation(LinearLayout.VERTICAL);
@@ -214,48 +223,55 @@ public final class ResearchAreaPanelController {
 
         Button back = iconButton("‹", "Back without hiding the active Research map feature");
         back.setOnClickListener(v -> back());
-        header.addView(back, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        header.addView(back, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
         title = new TextView(activity);
-        title.setTextSize(13f);
+        title.setTextSize(13.5f);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setTextColor(Color.rgb(30, 30, 30));
+        title.setTextColor(COLOR_TEXT);
+        title.setGravity(Gravity.CENTER_VERTICAL);
         title.setSingleLine(true);
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        title.setPadding(dp(7), 0, dp(5), 0);
+        header.addView(title, new LinearLayout.LayoutParams(0, dp(46), 1f));
 
-        Button collapse = iconButton("⌄", "Collapse Research Area panel");
+        Button collapse = iconButton("›", "Collapse Research to the right edge");
         collapse.setOnClickListener(v -> collapse());
-        header.addView(collapse, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        header.addView(collapse, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
-        Button close = iconButton("×", "Close Research Area panel without hiding mapped Research layers");
+        Button close = iconButton("×", "Close Research panel without hiding mapped Research layers");
         close.setOnClickListener(v -> closePanel());
-        header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        header.addView(close, new LinearLayout.LayoutParams(dp(46), dp(46)));
         expandedGroup.addView(header);
 
         LinearLayout tabs = new LinearLayout(activity);
         tabs.setOrientation(LinearLayout.HORIZONTAL);
         tabs.setGravity(Gravity.CENTER);
+        tabs.setPadding(0, dp(2), 0, dp(4));
         geology = tabButton("Geology");
         minerals = tabButton("Mineral Evidence");
         mines = tabButton("Historic Mines");
         geology.setOnClickListener(v -> { if (listener != null) listener.onGeology(); });
         minerals.setOnClickListener(v -> { if (listener != null) listener.onMinerals(); });
         mines.setOnClickListener(v -> { if (listener != null) listener.onMines(); });
-        tabs.addView(geology, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        tabs.addView(minerals, new LinearLayout.LayoutParams(0, dp(48), 1.15f));
-        tabs.addView(mines, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        LinearLayout.LayoutParams tabA = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        LinearLayout.LayoutParams tabB = new LinearLayout.LayoutParams(0, dp(46), 1.16f);
+        tabB.setMargins(dp(4), 0, dp(4), 0);
+        tabs.addView(geology, tabA);
+        tabs.addView(minerals, tabB);
+        tabs.addView(mines, new LinearLayout.LayoutParams(0, dp(46), 1f));
         expandedGroup.addView(tabs);
 
         primaryActions = new LinearLayout(activity);
         primaryActions.setOrientation(LinearLayout.HORIZONTAL);
         primaryActions.setGravity(Gravity.CENTER_VERTICAL);
+        primaryActions.setPadding(0, 0, 0, dp(3));
         primaryActions.setVisibility(View.GONE);
         expandedGroup.addView(primaryActions);
 
         status = new TextView(activity);
         status.setTextSize(11.5f);
-        status.setTextColor(Color.rgb(65, 65, 65));
+        status.setTextColor(COLOR_MUTED);
         status.setPadding(dp(6), dp(4), dp(6), dp(4));
         expandedGroup.addView(status);
 
@@ -265,44 +281,34 @@ public final class ResearchAreaPanelController {
         scrollContent.setOrientation(LinearLayout.VERTICAL);
         scrollContent.setPadding(dp(4), 0, dp(4), dp(2));
         detailScroll.addView(scrollContent);
-        int detailHeight = Math.min(dp(156), Math.max(dp(96),
-                Math.round(activity.getResources().getDisplayMetrics().heightPixels * 0.18f)));
+        int detailHeight = Math.min(dp(176), Math.max(dp(96),
+                Math.round(activity.getResources().getDisplayMetrics().heightPixels * 0.19f)));
         expandedGroup.addView(detailScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, detailHeight));
         detailScroll.setVisibility(View.GONE);
         panel.addView(expandedGroup);
 
+        // Collapsed state mirrors RockMap's Track/Measure side tabs: a compact reopen target plus
+        // an explicit close affordance. It never occupies the bottom navigation area.
         collapsedBar = new LinearLayout(activity);
         collapsedBar.setOrientation(LinearLayout.HORIZONTAL);
         collapsedBar.setGravity(Gravity.CENTER_VERTICAL);
-        collapsedBar.setPadding(dp(10), dp(2), dp(4), dp(2));
-        collapsedTitle = new TextView(activity);
-        collapsedTitle.setTextSize(12.5f);
-        collapsedTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        collapsedTitle.setTextColor(Color.rgb(35, 35, 35));
-        collapsedTitle.setSingleLine(true);
-        collapsedTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        collapsedBar.addView(collapsedTitle, new LinearLayout.LayoutParams(0, dp(52), 1f));
-        collapsedView = new TextView(activity);
-        collapsedView.setTextSize(11f);
-        collapsedView.setTextColor(Color.rgb(85, 85, 85));
-        collapsedView.setSingleLine(true);
-        collapsedView.setGravity(Gravity.CENTER_VERTICAL);
-        collapsedBar.addView(collapsedView, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
-        Button expand = iconButton("⌃", "Expand Research Area panel");
+        collapsedBar.setPadding(dp(3), dp(3), dp(3), dp(3));
+
+        Button expand = actionButton("‹ Research");
+        expand.setTextSize(11.5f);
+        expand.setContentDescription("Expand Research map workspace");
         expand.setOnClickListener(v -> expand());
-        collapsedBar.addView(expand, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        Button collapsedClose = iconButton("×", "Close Research Area panel without hiding mapped Research layers");
+        collapsedBar.addView(expand, new LinearLayout.LayoutParams(dp(94), dp(46)));
+
+        Button collapsedClose = iconButton("×", "Close Research panel without hiding mapped Research layers");
         collapsedClose.setOnClickListener(v -> closePanel());
-        collapsedBar.addView(collapsedClose, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(46), dp(46));
+        closeParams.setMargins(dp(3), 0, 0, 0);
+        collapsedBar.addView(collapsedClose, closeParams);
         panel.addView(collapsedBar);
 
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        params.setMargins(dp(8), 0, dp(8), dp(126));
-        root.addView(panel, params);
+        root.addView(panel, expandedLayoutParams());
         updateLabels();
         updateTabs();
         renderMode();
@@ -315,9 +321,7 @@ public final class ResearchAreaPanelController {
     }
 
     private void updateLabels() {
-        if (title != null) title.setText("Research Area — " + areaLabel);
-        if (collapsedTitle != null) collapsedTitle.setText("Research — " + areaLabel);
-        if (collapsedView != null) collapsedView.setText(viewLabel(activeView));
+        if (title != null) title.setText("Research — " + areaLabel + " · " + viewLabel(activeView));
     }
 
     private void renderMode() {
@@ -329,22 +333,40 @@ public final class ResearchAreaPanelController {
             boolean collapsed = MODE_COLLAPSED.equals(mode);
             expandedGroup.setVisibility(collapsed ? View.GONE : View.VISIBLE);
             collapsedBar.setVisibility(collapsed ? View.VISIBLE : View.GONE);
+            panel.setLayoutParams(collapsed ? collapsedLayoutParams() : expandedLayoutParams());
+            panel.setBackground(panelBackground());
             panel.bringToFront();
         }
         FieldMapController.ensurePersistentEntry(activity);
+    }
+
+    private FrameLayout.LayoutParams expandedLayoutParams() {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        params.setMargins(dp(8), statusBarHeight() + dp(8), dp(8), 0);
+        return params;
+    }
+
+    private FrameLayout.LayoutParams collapsedLayoutParams() {
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END);
+        params.setMargins(0, statusBarHeight() + dp(82), dp(6), 0);
+        return params;
     }
 
     private void updateTabs() {
         updateTab(geology, VIEW_GEOLOGY.equals(activeView));
         updateTab(minerals, VIEW_MINERALS.equals(activeView));
         updateTab(mines, VIEW_MINES.equals(activeView));
-        if (collapsedView != null) collapsedView.setText(viewLabel(activeView));
     }
 
     private void updateTab(Button button, boolean selected) {
         if (button == null) return;
         button.setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
-        button.setAlpha(selected ? 1f : 0.76f);
+        button.setTextColor(selected ? COLOR_ACCENT : COLOR_TEXT);
+        button.setBackground(buttonBackground(selected));
         button.setSelected(selected);
     }
 
@@ -358,27 +380,52 @@ public final class ResearchAreaPanelController {
         Button button = new Button(activity);
         button.setText(text);
         button.setAllCaps(false);
-        button.setTextSize(11f);
-        button.setMinHeight(dp(48));
-        button.setMinimumHeight(dp(48));
+        button.setTextSize(11.5f);
+        button.setTextColor(COLOR_TEXT);
+        button.setMinHeight(dp(46));
+        button.setMinimumHeight(dp(46));
         button.setMinWidth(0);
         button.setMinimumWidth(0);
-        button.setPadding(dp(5), 0, dp(5), 0);
+        button.setPadding(dp(6), 0, dp(6), 0);
+        button.setGravity(Gravity.CENTER);
+        button.setBackground(buttonBackground(false));
         return button;
     }
 
     private Button iconButton(String text, String description) {
         Button button = actionButton(text);
         button.setTextSize(19f);
+        button.setTextColor(COLOR_ACCENT);
         button.setPadding(0, 0, 0, 0);
         button.setContentDescription(description);
         return button;
+    }
+
+    private GradientDrawable panelBackground() {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(COLOR_SURFACE);
+        background.setStroke(dp(1), COLOR_BORDER);
+        background.setCornerRadius(dp(9));
+        return background;
+    }
+
+    private GradientDrawable buttonBackground(boolean selected) {
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(selected ? COLOR_ACCENT_BG : COLOR_CARD);
+        background.setStroke(dp(1), selected ? COLOR_ACCENT : COLOR_BORDER);
+        background.setCornerRadius(dp(7));
+        return background;
     }
 
     private String viewLabel(String view) {
         if (VIEW_MINERALS.equals(view)) return "Minerals";
         if (VIEW_MINES.equals(view)) return "Mines";
         return "Geology";
+    }
+
+    private int statusBarHeight() {
+        int id = activity.getResources().getIdentifier("status_bar_height", "dimen", "android");
+        return id > 0 ? activity.getResources().getDimensionPixelSize(id) : 0;
     }
 
     private static String clean(String value, String fallback) {
