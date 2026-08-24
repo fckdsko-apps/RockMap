@@ -19,7 +19,7 @@ import com.rockmap.app.field.FieldMapController;
  * Map-first Research workspace for sibling views of one geographic area.
  *
  * Interaction contract:
- * - Back changes the Research information subview; it never disables a mapped feature.
+ * - Back appears only inside subviews that actually have a previous Research view.
  * - Collapse docks Research to the right edge and leaves the Research session active.
  * - Close hides this workspace only; mapped layers remain until their map-context × is used.
  * - Primary actions stay static while long results/details scroll independently.
@@ -220,10 +220,6 @@ public final class ResearchAreaPanelController {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-
-        Button back = iconButton("‹", "Back without hiding the active Research map feature");
-        back.setOnClickListener(v -> back());
-        header.addView(back, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
         title = new TextView(activity);
         title.setTextSize(13.5f);

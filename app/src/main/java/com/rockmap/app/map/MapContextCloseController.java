@@ -8,7 +8,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.InsetDrawable;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -85,6 +87,15 @@ public final class MapContextCloseController {
     private Runnable historicOpenAction;
     private Runnable contextStateChangedAction;
     private boolean listenersInstalled;
+    private boolean menuUserPositioned;
+    private int menuUserLeft;
+    private int menuUserTop;
+    private float menuDragDownRawX;
+    private float menuDragDownRawY;
+    private int menuDragStartLeft;
+    private int menuDragStartTop;
+    private boolean menuDragging;
+    private int menuTouchSlop;
 
     private MapContextCloseController(MapView mapView) {
         this.mapView = mapView;
@@ -233,7 +244,8 @@ public final class MapContextCloseController {
             menu.setPadding(dp(3), dp(3), dp(3), dp(3));
             menu.setElevation(dp(7));
             menu.setVisibility(View.GONE);
-            menu.setContentDescription("Active map layers for this area");
+            menu.setContentDescription("Active map layers for this area. Drag a layer row to move this box.");
+            menuTouchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
             GradientDrawable bg = new GradientDrawable();
             bg.setColor(Color.argb(238, 255, 255, 255));
             bg.setStroke(dp(1), Color.rgb(165, 165, 165));
@@ -301,23 +313,25 @@ public final class MapContextCloseController {
         singleClose.setVisibility(View.GONE);
         menu.removeAllViews();
         for (ContextItem item : items) addMenuRow(item);
-        ContextItem anchorItem = items.get(0);
-        PointF anchor = project(anchorItem.anchor != null ? anchorItem.anchor : northEast(anchorItem.bounds));
-        if (anchor == null) {
-            menu.setVisibility(View.GONE);
-            return;
-        }
         int width = dp(180);
         int estimatedHeight = dp(6 + 48 * items.size());
-        // Prefer just outside the north-east edge so the controls remain associated with the
-        // geometry without covering the center of the area being inspected. Clamping handles
-        // screen edges and falls back beside the visible geometry.
-        int left = Math.round(anchor.x + dp(7));
-        int top = Math.round(anchor.y - estimatedHeight - dp(7));
-        if (left + width > Math.max(root.getWidth(), mapView.getWidth()) - dp(6)) {
-            left = Math.round(anchor.x - width - dp(7));
+        if (menuUserPositioned) {
+            positionInRoot(menu, width, estimatedHeight, menuUserLeft, menuUserTop, true);
+        } else {
+            ContextItem anchorItem = items.get(0);
+            PointF anchor = project(anchorItem.anchor != null ? anchorItem.anchor : northEast(anchorItem.bounds));
+            if (anchor == null) {
+                menu.setVisibility(View.GONE);
+                return;
+            }
+            // Before the user moves it, keep the menu associated with the mapped geometry.
+            int left = Math.round(anchor.x + dp(7));
+            int top = Math.round(anchor.y - estimatedHeight - dp(7));
+            if (left + width > Math.max(root.getWidth(), mapView.getWidth()) - dp(6)) {
+                left = Math.round(anchor.x - width - dp(7));
+            }
+            position(menu, width, estimatedHeight, left, top);
         }
-        position(menu, width, estimatedHeight, left, top);
         menu.setVisibility(View.VISIBLE);
         menu.bringToFront();
     }
@@ -334,6 +348,7 @@ public final class MapContextCloseController {
             if (item.open != null) item.open.run();
             else focus(item.bounds);
         });
+        row.setOnTouchListener((v, event) -> handleMenuDrag(v, event));
 
         View swatch = new View(activity);
         GradientDrawable swatchBg = new GradientDrawable();
@@ -363,6 +378,70 @@ public final class MapContextCloseController {
         row.addView(close, new LinearLayout.LayoutParams(dp(48), dp(48)));
         menu.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+    }
+
+    /** Drag the whole multi-context menu by any row without stealing ordinary row taps. */
+    private boolean handleMenuDrag(View touchedRow, MotionEvent event) {
+        if (menu == null || root == null || event == null) return false;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) menu.getLayoutParams();
+                menuDragDownRawX = event.getRawX();
+                menuDragDownRawY = event.getRawY();
+                menuDragStartLeft = start.leftMargin;
+                menuDragStartTop = start.topMargin;
+                menuDragging = false;
+                return false;
+            case MotionEvent.ACTION_MOVE:
+                float dx = event.getRawX() - menuDragDownRawX;
+                float dy = event.getRawY() - menuDragDownRawY;
+                if (!menuDragging && Math.hypot(dx, dy) >= Math.max(1, menuTouchSlop)) {
+                    menuDragging = true;
+                    touchedRow.setPressed(false);
+                }
+                if (menuDragging) {
+                    positionInRoot(menu, menu.getWidth(), menu.getHeight(),
+                            menuDragStartLeft + Math.round(dx),
+                            menuDragStartTop + Math.round(dy), true);
+                    return true;
+                }
+                return false;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (menuDragging) {
+                    touchedRow.setPressed(false);
+                    menuDragging = false;
+                    return true;
+                }
+                return false;
+            default:
+                return menuDragging;
+        }
+    }
+
+    /** Position using root coordinates, used after the user has manually moved the menu. */
+    private void positionInRoot(View view, int width, int height, int left, int top, boolean rememberMenu) {
+        if (root == null || view == null) return;
+        int rootWidth = Math.max(root.getWidth(), mapView.getWidth());
+        int rootHeight = Math.max(root.getHeight(), mapView.getHeight());
+        int resolvedWidth = width > 0 ? width : dp(180);
+        int resolvedHeight = height > 0 ? height : Math.max(dp(54), view.getHeight());
+        int margin = dp(6);
+        int bottomGuard = dp(118);
+        left = clamp(left, margin, Math.max(margin, rootWidth - resolvedWidth - margin));
+        top = clamp(top, margin, Math.max(margin, rootHeight - resolvedHeight - bottomGuard));
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.leftMargin = left;
+        params.topMargin = top;
+        if (width > 0) params.width = width;
+        if (height > 0) params.height = height;
+        view.setLayoutParams(params);
+        if (rememberMenu && view == menu) {
+            menuUserPositioned = true;
+            menuUserLeft = left;
+            menuUserTop = top;
+        }
     }
 
     private void position(View view, int width, int height, int left, int top) {

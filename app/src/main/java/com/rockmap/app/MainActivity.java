@@ -595,7 +595,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
         if (result.minerals.size() > shown) {
-            content.addView(researchBodyText("Use Choose Mineral for all " + result.minerals.size() + " terms and filtering."));
+            content.addView(researchBodyText("Use Choose Mineral to browse, filter, and select from all "
+                    + result.minerals.size() + " mineral/material terms found in this Research Area."));
         }
         researchAreaPanel.setScrollableContent(content);
         saveResearchSession();
