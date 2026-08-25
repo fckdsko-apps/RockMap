@@ -54,89 +54,52 @@ public final class GuidedTourCoach {
      */
     public static FrameLayout prepareDialogHost(Activity activity, AlertDialog dialog) {
         if (activity == null || dialog == null || dialog.getWindow() == null) return null;
-        Window window = dialog.getWindow();
-        View decor = window.getDecorView();
+        View decor = dialog.getWindow().getDecorView();
         if (!(decor instanceof FrameLayout)) return null;
         FrameLayout decorRoot = (FrameLayout) decor;
         View existing = decorRoot.findViewWithTag(DIALOG_HOST_TAG);
         if (existing instanceof FrameLayout) {
-            existing.setElevation(dp(activity, 80));
+            existing.setElevation(dp(activity, 96));
+            existing.setTranslationZ(dp(activity, 96));
             existing.bringToFront();
             return (FrameLayout) existing;
         }
 
-        // Capture the real, already-rendered alert panel before turning the dialog window into the
-        // full-screen coordinate space used by the coach. The previous implementation captured the
-        // decor size too early and could lock a dialog to a tiny fallback height, clipping its rows.
-        View content = decorRoot.findViewById(android.R.id.content);
-        View dialogPanel = content;
-        if (dialogPanel != null) {
-            ViewParent parent = dialogPanel.getParent();
-            while (parent instanceof View && parent != decorRoot) {
-                dialogPanel = (View) parent;
-                parent = dialogPanel.getParent();
-            }
-        }
-        if (dialogPanel == null && decorRoot.getChildCount() > 0) dialogPanel = decorRoot.getChildAt(0);
-        final View panel = dialogPanel;
-
+        // Do not resize, recolor, re-parent, or otherwise alter the AlertDialog window or panel.
+        // The dialog keeps Android's native geometry and background. The coach is only an overlay
+        // sibling inside the already-laid-out dialog decor, with a higher Z than the alert panel.
         FrameLayout host = new FrameLayout(activity);
         host.setTag(DIALOG_HOST_TAG);
         host.setClickable(false);
         host.setFocusable(false);
         host.setClipChildren(false);
         host.setClipToPadding(false);
-        host.setElevation(dp(activity, 80));
+        host.setElevation(dp(activity, 96));
+        host.setTranslationZ(dp(activity, 96));
         FrameLayout.LayoutParams hostParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                 Gravity.TOP | Gravity.START);
         decorRoot.addView(host, hostParams);
 
-        final Runnable expandWhenMeasured = new Runnable() {
-            int attempts;
-            @Override public void run() {
-                if (dialog.getWindow() == null || !dialog.isShowing()) return;
-                int measuredWidth = panel == null ? 0 : Math.max(panel.getWidth(), panel.getMeasuredWidth());
-                int measuredHeight = panel == null ? 0 : Math.max(panel.getHeight(), panel.getMeasuredHeight());
-                if ((measuredWidth <= 0 || measuredHeight <= 0) && attempts++ < 12) {
-                    decorRoot.postDelayed(this, 32L);
+        ViewTreeObserver.OnGlobalLayoutListener keepAbove = new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override public void onGlobalLayout() {
+                if (host.getParent() != decorRoot) {
+                    if (decorRoot.getViewTreeObserver().isAlive()) {
+                        decorRoot.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                    }
                     return;
                 }
-                // Only now expand the window. Preserve the alert panel's measured dimensions exactly;
-                // changing the window must not change the menu/dialog that the user is being taught.
-                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-                window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
-                        WindowManager.LayoutParams.MATCH_PARENT);
-                final int panelWidth = measuredWidth;
-                final int panelHeight = measuredHeight;
-                decorRoot.post(() -> {
-                    if (panel != null && panel.getParent() == decorRoot
-                            && panelWidth > 0 && panelHeight > 0) {
-                        ViewGroup.LayoutParams raw = panel.getLayoutParams();
-                        raw.width = panelWidth;
-                        raw.height = panelHeight;
-                        if (raw instanceof FrameLayout.LayoutParams) {
-                            ((FrameLayout.LayoutParams) raw).gravity = Gravity.CENTER;
-                        }
-                        panel.setLayoutParams(raw);
-                        panel.setElevation(dp(activity, 16));
-                    }
-                    host.setElevation(dp(activity, 80));
-                    host.bringToFront();
-                    host.post(() -> {
-                        host.setElevation(dp(activity, 80));
-                        host.bringToFront();
-                        View coach = host.findViewWithTag(TAG);
-                        if (coach != null) {
-                            coach.setElevation(dp(activity, 96));
-                            coach.bringToFront();
-                        }
-                    });
-                });
+                host.setElevation(dp(activity, 96));
+                host.setTranslationZ(dp(activity, 96));
+                host.bringToFront();
             }
         };
-        decorRoot.post(expandWhenMeasured);
-        host.bringToFront();
+        decorRoot.getViewTreeObserver().addOnGlobalLayoutListener(keepAbove);
+        host.post(() -> {
+            host.setElevation(dp(activity, 96));
+            host.setTranslationZ(dp(activity, 96));
+            host.bringToFront();
+        });
         return host;
     }
 

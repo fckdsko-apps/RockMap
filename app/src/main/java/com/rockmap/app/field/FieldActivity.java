@@ -361,31 +361,6 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 });
     }
 
-    private View findClickableByText(View root, String wanted) {
-        if (root == null || wanted == null) return null;
-        if (root instanceof TextView) {
-            CharSequence text = ((TextView) root).getText();
-            if (text != null && wanted.equals(text.toString().trim())) return nearestClickable(root);
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findClickableByText(group.getChildAt(i), wanted);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private View nearestClickable(View view) {
-        View current = view;
-        while (current != null) {
-            if (current.isClickable()) return current;
-            if (!(current.getParent() instanceof View)) break;
-            current = (View) current.getParent();
-        }
-        return view;
-    }
 
     private View findFirstFeatureAction(View root) {
         if (root == null) return null;
@@ -425,6 +400,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) FieldTourState.step(this, 3);
                 startNewTrack();
             });
+            startTrack.setTag("rockmap-track-start-new");
             root.addView(startTrack);
         } else {
             List<GeoMath.Point> points = db.getTrackPoints(active.id);
@@ -463,7 +439,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 root.addView(trackAction);
             }
         }
-        root.addView(back());
+        Button backToMap = back();
+        backToMap.setTag("rockmap-track-back-to-map");
+        root.addView(backToMap);
         setContentView(scroll(root));
         getWindow().getDecorView().post(this::showTracksTourCoach);
     }
@@ -573,7 +551,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (!FieldTourState.is(this, FieldUiNames.TRACK)) return;
         int step = FieldTourState.step(this);
         if (step == 2) {
-            View target = findClickableByText(findViewById(android.R.id.content), "Start new track");
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-track-start-new");
             if (target == null) {
                 FieldDatabase.Track active = db.getActiveTrack();
                 if (active != null) {
@@ -597,7 +575,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             return;
         }
         if (step == 10) {
-            View target = findClickableByText(findViewById(android.R.id.content), "Back to map");
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-track-back-to-map");
             if (target == null) {
                 FieldTourState.step(this, 11);
                 returnToMap();
@@ -627,7 +605,6 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 return;
             }
             View target = findViewById(android.R.id.content).findViewWithTag("rockmap-track-row:" + track.id);
-            if (target == null) target = findClickableByText(findViewById(android.R.id.content), track.name);
             if (target == null) {
                 getWindow().getDecorView().postDelayed(this::showTracksTourCoach, 60L);
                 return;
@@ -709,10 +686,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
             if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 4);
             newFieldAtGps();
         });
+        newGps.setTag("rockmap-field-record-new-gps");
         Button newCoords = small("New at coordinates", v -> {
             if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 3);
             newFieldAtCoordinates();
         });
+        newCoords.setTag("rockmap-field-record-new-coordinates");
         add.addView(newGps, weight());
         add.addView(newCoords, weight());
         add.setTag("rockmap-field-record-create-choice");
@@ -1063,7 +1042,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     returnToMap();
                 }, null, null,
                 () -> {
-                    View gps = findClickableByText(findViewById(android.R.id.content), "New at GPS");
+                    View gps = findViewById(android.R.id.content).findViewWithTag("rockmap-field-record-new-gps");
                     if (gps != null) gps.performClick();
                 });
     }
@@ -1642,12 +1621,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 + ", and " + r.areas.size() + " Prospecting Area" + (r.areas.size() == 1 ? "" : "s")
                 + ". This import can be shown, reviewed, or removed as one unit."));
 
-        box.addView(action("Show Import on Map",
+        View showImportOnMap = action("Show Import on Map",
                 "Zoom to all imported geometry. Tracks, Prospecting Areas, and Saved Locations are visible immediately.",
                 v -> {
                     holder[0].dismiss();
                     focusImportBatch(batchId);
-                }));
+                });
+        showImportOnMap.setTag("rockmap-import-complete-show-map");
+        box.addView(showImportOnMap);
 
         if (!r.waypoints.isEmpty()) {
             box.addView(action("Saved Locations from This File",
@@ -1678,12 +1659,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     }));
         }
 
-        box.addView(action("Manage This Import",
+        View manageThisImport = action("Manage This Import",
                 "Open this import later or remove only the objects created by this file.",
                 v -> {
                     holder[0].dismiss();
                     showImportBatch(batchId);
-                }));
+                });
+        manageThisImport.setTag("rockmap-import-complete-manage");
+        box.addView(manageThisImport);
 
         box.addView(action("Remove This Import",
                 "Remove this import’s remaining Saved Locations, Tracks, and Prospecting Areas without touching unrelated RockMap data.",
@@ -1700,19 +1683,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
         holder[0].show();
         if (FieldTourState.is(this, FieldUiNames.IMPORT, 3)) {
             FieldTourState.entityId(this, batchId);
-            View target = findClickableByText(box, "Show Import on Map");
+            View target = box.findViewWithTag("rockmap-import-complete-show-map");
             showDialogCoach(holder[0], 3, FieldUiNames.IMPORT, "Import complete",
                     "The file is now grouped as one import batch. Depending on its geometry, you can review imported Saved Locations, Tracks, and Prospecting Areas, show the whole import on the map, manage it later, or remove only this import.",
                     "Review the available actions for this imported file.", target,
                     () -> {
                         FieldTourState.step(this, 2);
-                        View reviewTarget = findClickableByText(box, "Manage This Import");
+                        View reviewTarget = box.findViewWithTag("rockmap-import-complete-manage");
                         showDialogCoach(holder[0], 2, FieldUiNames.IMPORT, "What RockMap loaded",
                                 "Imported point/waypoint geometry becomes Saved Locations, line/track geometry becomes Tracks, and polygon geometry becomes Prospecting Areas. The exact buttons shown here depend on what this file contained.",
                                 "Review the imported categories.", reviewTarget,
                                 null, "Continue", () -> {
                                     FieldTourState.step(this, 3);
-                                    View showTarget = findClickableByText(box, "Show Import on Map");
+                                    View showTarget = box.findViewWithTag("rockmap-import-complete-show-map");
                                     showDialogCoach(holder[0], 3, FieldUiNames.IMPORT, "Import complete",
                                             "The file is now grouped as one import batch. You can show, review, manage, or remove this import without affecting unrelated RockMap data.",
                                             "Review the available actions for this imported file.", showTarget,
@@ -1727,6 +1710,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
                                             });
                                 }, () -> {
                                     FieldTourState.step(this, 3);
+                                    View showTarget = box.findViewWithTag("rockmap-import-complete-show-map");
+                                    showDialogCoach(holder[0], 3, FieldUiNames.IMPORT, "Import complete",
+                                            "The file is now grouped as one import batch. You can show, review, manage, or remove this import without affecting unrelated RockMap data.",
+                                            "Review the available actions for this imported file.", showTarget,
+                                            null, "Finish", () -> {
+                                                finishFieldTour();
+                                                holder[0].dismiss();
+                                                showHub();
+                                            }, () -> {
+                                                finishFieldTour();
+                                                holder[0].dismiss();
+                                                showHub();
+                                            });
                                 });
                     },
                     "Finish", () -> {

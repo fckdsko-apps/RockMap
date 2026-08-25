@@ -2859,6 +2859,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                     refreshFieldSnapshot();
                     applyCachedSources();
                     renderHud();
+                    dialog.setOnDismissListener(null);
                     dialog.dismiss();
                 } catch (RuntimeException ex) {
                     name.setError(ex.getMessage() == null ? "Could not save this Prospecting Area." : ex.getMessage());
@@ -2868,6 +2869,21 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (FieldTourState.is(activity, FieldUiNames.MEASURE, 17)
                     || FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15)) {
                 showSaveAreaTour(dialog, name, save);
+            }
+        });
+        dialog.setOnDismissListener(d -> {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 17)) {
+                GuidedTourCoach.clear(activity);
+                FieldTourState.text(activity, "");
+                FieldTourState.step(activity, 16);
+                lastFieldTourCoachKey = "";
+                main.post(this::renderHud);
+            } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15)) {
+                GuidedTourCoach.clear(activity);
+                FieldTourState.text(activity, "");
+                FieldTourState.step(activity, 14);
+                lastFieldTourCoachKey = "";
+                main.post(this::renderHud);
             }
         });
         dialog.show();
@@ -2888,6 +2904,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                             : "Give the saved polygon a name you will recognize later.",
                     "Enter an area name.", name,
                     () -> {
+                        dialog.setOnDismissListener(null);
                         dialog.dismiss();
                         FieldTourState.step(activity,
                                 FieldUiNames.MEASURE.equals(tool) ? 16 : 14);
@@ -2899,12 +2916,19 @@ public final class FieldMapController implements LocationRepository.Listener {
                         showSaveAreaTour(dialog, name, save);
                     },
                     () -> {
-                        dialog.dismiss();
-                        FieldTourState.text(activity, "");
-                        finishActiveFieldTour();
-                        renderHud();
+                        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+                            FieldTourState.text(activity, "save");
+                            showSaveAreaTour(dialog, name, save);
+                        } else {
+                            dialog.setOnDismissListener(null);
+                            dialog.dismiss();
+                            FieldTourState.text(activity, "");
+                            finishActiveFieldTour();
+                            renderHud();
+                        }
                     },
                     () -> {
+                        dialog.setOnDismissListener(null);
                         dialog.dismiss();
                         finishActiveFieldTour();
                     });
@@ -2919,12 +2943,18 @@ public final class FieldMapController implements LocationRepository.Listener {
                     },
                     null, null,
                     () -> {
-                        dialog.dismiss();
-                        FieldTourState.text(activity, "");
-                        finishActiveFieldTour();
-                        renderHud();
+                        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+                            save.performClick();
+                        } else {
+                            dialog.setOnDismissListener(null);
+                            dialog.dismiss();
+                            FieldTourState.text(activity, "");
+                            finishActiveFieldTour();
+                            renderHud();
+                        }
                     },
                     () -> {
+                        dialog.setOnDismissListener(null);
                         dialog.dismiss();
                         finishActiveFieldTour();
                     });

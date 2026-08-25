@@ -931,6 +931,12 @@ public final class ResearchActivity extends Activity {
         int displayStep = GuidedTourState.displayStep(this);
         int displayTotal = GuidedTourState.displayTotal(this);
         if (step == GuidedTourState.STEP_COMBINED_ANALYSIS) {
+            if (tourCombinedControl == null || !tourCombinedControl.isAttachedToWindow()
+                    || tourCombinedControl.getWidth() <= 0 || tourCombinedControl.getHeight() <= 0) {
+                getWindow().getDecorView().postDelayed(this::maybeShowTourCoach, 60L);
+                return;
+            }
+            tourCombinedControl.requestFocus();
             GuidedTourCoach.show(this, displayStep, displayTotal,
                     "Analyze the visible area",
                     "Combined Analysis starts with the mapped geology already inside the visible map extent, then keeps that area available for Mineral Evidence and Historic Mines.",
@@ -938,6 +944,12 @@ public final class ResearchActivity extends Activity {
                     tourBackAction(),
                     null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            if (tourShowGeologyControl == null || !tourShowGeologyControl.isAttachedToWindow()
+                    || tourShowGeologyControl.getWidth() <= 0 || tourShowGeologyControl.getHeight() <= 0) {
+                getWindow().getDecorView().postDelayed(this::maybeShowTourCoach, 60L);
+                return;
+            }
+            tourShowGeologyControl.requestFocus();
             GuidedTourCoach.show(this, displayStep, displayTotal,
                     "Return the geology to the map",
                     "RockMap groups repeated mapped polygons by geologic unit for readability while keeping the underlying geometry and provenance.",
@@ -1009,7 +1021,11 @@ public final class ResearchActivity extends Activity {
         GuidedTourState.startTopic(this, GuidedTourState.TOPIC_RESEARCH,
                 GuidedTourState.STEP_COMBINED_ANALYSIS,
                 GuidedTourState.STEP_CONTEXT_REOPEN);
-        showHub();
+        GuidedTourCoach.clear(this);
+        getWindow().getDecorView().post(() -> {
+            showHub();
+            getWindow().getDecorView().postDelayed(this::maybeShowTourCoach, 120L);
+        });
     }
 
     private void returnGeology(String geoJson, String title, int count, GeologyRepository.Bounds bounds) {

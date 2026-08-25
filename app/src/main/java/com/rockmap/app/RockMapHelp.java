@@ -20,8 +20,20 @@ public final class RockMapHelp {
                 .setTitle("Research help")
                 .setMessage(message)
                 .setPositiveButton("Close", null);
-        if (startTour != null) builder.setNeutralButton("Start guided tour", (d, w) -> startTour.run());
-        builder.show();
+        if (startTour != null) builder.setNeutralButton("Start guided tour", null);
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(ignored -> {
+            if (startTour == null) return;
+            android.widget.Button start = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            start.setOnClickListener(v -> {
+                dialog.setOnDismissListener(null);
+                dialog.dismiss();
+                android.view.View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+                if (decor != null) decor.post(startTour);
+                else startTour.run();
+            });
+        });
+        dialog.show();
     }
 
     public static void showOfflineData(Activity activity, Runnable startTour) {
