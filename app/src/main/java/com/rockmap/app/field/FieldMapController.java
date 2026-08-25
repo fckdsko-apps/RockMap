@@ -95,6 +95,12 @@ public final class FieldMapController implements LocationRepository.Listener {
         activity.runOnUiThread(() -> {
             controller.attach();
             controller.positionFieldButton();
+            if (FieldTourState.active(activity)) {
+                // MainActivity's normal resume path calls ensurePersistentEntry(). A Field tour
+                // may have been started from FieldActivity immediately before returning here, so
+                // resume the pending tour after the map controls have reattached.
+                controller.main.post(controller::resumeActiveFieldTour);
+            }
             if (controller.fieldButton != null) {
                 controller.fieldButton.setVisibility(View.VISIBLE);
                 controller.fieldButton.bringToFront();
@@ -190,6 +196,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private int collapsedTabsUserLeft;
     private int collapsedTabsUserTop;
     private String lastFieldTourCoachKey = "";
+    private AlertDialog activeFieldMenuDialog;
 
     private final Runnable refreshLoop = new Runnable() {
         @Override public void run() {
@@ -877,6 +884,21 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void showFieldMenu() {
+        if (activeFieldMenuDialog != null && activeFieldMenuDialog.isShowing()) {
+            if (FieldTourState.active(activity) && FieldTourState.step(activity) == 1) {
+                String tourTool = FieldTourState.tool(activity);
+                View target = activeFieldMenuDialog.getWindow() == null ? null
+                        : activeFieldMenuDialog.getWindow().getDecorView()
+                        .findViewWithTag(fieldMenuTourTag(tourTool));
+                if (target != null) {
+                    final AlertDialog existingDialog = activeFieldMenuDialog;
+                    target.post(() -> showUnifiedFieldMenuTourCoach(
+                            existingDialog, target, tourTool));
+                }
+            }
+            return;
+        }
+
         final AlertDialog[] holder = new AlertDialog[1];
         LinearLayout box = dialogBox();
         box.addView(dialogActionWithHelp(
@@ -960,7 +982,9 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setView(scrollDialog(box))
                 .setNegativeButton("Close", null)
                 .create();
+        activeFieldMenuDialog = holder[0];
         holder[0].setOnDismissListener(d -> {
+            if (activeFieldMenuDialog == holder[0]) activeFieldMenuDialog = null;
             if (FieldTourState.active(activity) && FieldTourState.step(activity) == 1) {
                 // Closing the Field menu while its first tour step is active ends only this tour.
                 FieldTourState.finish(activity);
@@ -1064,13 +1088,25 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setPositiveButton("Close", null);
         if (guidedTourTool != null && !guidedTourTool.trim().isEmpty()) {
             builder.setNeutralButton("Start guided tour", (d, w) -> {
-                if (fieldDialog != null && fieldDialog.length > 0 && fieldDialog[0] != null) {
-                    fieldDialog[0].dismiss();
-                }
+                // Keep the existing Field menu alive underneath this help dialog. Dismissing and
+                // immediately reopening it caused the old menu's asynchronous onDismiss callback
+                // to cancel the newly started tour before its first coach could render.
                 FieldTourState.start(activity, guidedTourTool);
                 lastFieldTourCoachKey = "";
                 GuidedTourCoach.clear(activity);
-                showFieldMenu();
+                final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
+                        ? fieldDialog[0] : null;
+                main.post(() -> {
+                    if (field != null && field.isShowing() && field.getWindow() != null) {
+                        View target = field.getWindow().getDecorView()
+                                .findViewWithTag(fieldMenuTourTag(guidedTourTool));
+                        if (target != null) {
+                            showUnifiedFieldMenuTourCoach(field, target, guidedTourTool);
+                            return;
+                        }
+                    }
+                    showFieldMenu();
+                });
             });
         }
         builder.show();
