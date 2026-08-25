@@ -981,6 +981,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
     }
 
+    private String fieldMenuTourTag(String tool) {
+        return "rockmap-field-menu-tour:" + (tool == null ? "" : tool);
+    }
+
     private View dialogActionWithHelp(String title, String detail, String helpText,
                                       String guidedTourTool, AlertDialog[] fieldDialog,
                                       View.OnClickListener listener) {
