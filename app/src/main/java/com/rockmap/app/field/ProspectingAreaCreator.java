@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.view.Gravity;
+import android.view.WindowInsets;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -37,6 +38,8 @@ public final class ProspectingAreaCreator {
     private static final int CIRCLE_SEGMENTS = 72;
     public static final String EXTRA_OPEN_RESEARCH_AREA_ID = "rockmap.openResearchAreaId";
     private static final String SAVED_PROMPT_TAG = "rockmap-prospecting-area-saved-prompt";
+    public static final String SAVED_RESEARCH_BUTTON_TAG = "rockmap-prospecting-area-research-action";
+    public static final String SAVED_NOT_NOW_BUTTON_TAG = "rockmap-prospecting-area-not-now-action";
 
     private ProspectingAreaCreator() {}
 
@@ -45,6 +48,15 @@ public final class ProspectingAreaCreator {
                                            double lon,
                                            String baseName,
                                            String sourceNote) {
+        chooseRadiusAndSave(activity, lat, lon, baseName, sourceNote, null);
+    }
+
+    public static void chooseRadiusAndSave(Activity activity,
+                                           double lat,
+                                           double lon,
+                                           String baseName,
+                                           String sourceNote,
+                                           SaveCallback callback) {
         if (activity == null || !validCoordinate(lat, lon)) return;
         String[] labels = new String[]{"250 m", "500 m", "1 km", "2 km", "5 km", "Custom…"};
         double[] meters = new double[]{250d, 500d, 1000d, 2000d, 5000d};
@@ -52,9 +64,9 @@ public final class ProspectingAreaCreator {
                 .setTitle("Create Prospecting Area Around Here")
                 .setItems(labels, (dialog, which) -> {
                     if (which >= 0 && which < meters.length) {
-                        saveCircle(activity, lat, lon, meters[which], baseName, sourceNote);
+                        saveCircle(activity, lat, lon, meters[which], baseName, sourceNote, callback);
                     } else if (which == labels.length - 1) {
-                        showCustomRadius(activity, lat, lon, baseName, sourceNote);
+                        showCustomRadius(activity, lat, lon, baseName, sourceNote, callback);
                     }
                 })
                 .setNegativeButton("Cancel", null)
@@ -65,7 +77,8 @@ public final class ProspectingAreaCreator {
                                          double lat,
                                          double lon,
                                          String baseName,
-                                         String sourceNote) {
+                                         String sourceNote,
+                                         SaveCallback callback) {
         EditText input = new EditText(activity);
         input.setHint("Radius in meters (1–100000)");
         input.setSingleLine(true);
@@ -86,7 +99,7 @@ public final class ProspectingAreaCreator {
                             return;
                         }
                         dialog.dismiss();
-                        saveCircle(activity, lat, lon, radius, baseName, sourceNote);
+                        saveCircle(activity, lat, lon, radius, baseName, sourceNote, callback);
                     } catch (NumberFormatException ex) {
                         input.setError("Enter a number in meters.");
                     }
@@ -99,7 +112,8 @@ public final class ProspectingAreaCreator {
                                    double lon,
                                    double radiusMeters,
                                    String baseName,
-                                   String sourceNote) {
+                                   String sourceNote,
+                                   SaveCallback callback) {
         List<GeoMath.Point> points = circlePoints(lat, lon, radiusMeters);
         String name = clean(baseName, "Prospecting Area") + " — " + radiusLabel(radiusMeters);
         String note = clean(sourceNote, "Created from a RockMap map point")
@@ -107,7 +121,7 @@ public final class ProspectingAreaCreator {
                 + "\nRadius: " + radiusLabel(radiusMeters);
         // A newly created point/radius area should exist visibly as soon as it is saved.
         // Researching the area is a separate optional next step, not the trigger that makes it appear.
-        savePolygon(activity, name, note, points, false);
+        savePolygon(activity, name, note, points, false, callback);
     }
 
     public static void savePolygon(Activity activity,
@@ -203,7 +217,7 @@ public final class ProspectingAreaCreator {
      * Lightweight, non-blocking save confirmation with the immediate next task kept one tap away.
      * Dismissing it is equivalent to Not Now; the saved area remains available in Field.
      */
-    private static void showSavedResearchPrompt(Activity activity, long areaId, String name) {
+    public static void showSavedResearchPrompt(Activity activity, long areaId, String name) {
         if (activity == null || areaId <= 0L) return;
         View content = activity.findViewById(android.R.id.content);
         if (!(content instanceof FrameLayout)) {
@@ -233,6 +247,7 @@ public final class ProspectingAreaCreator {
         bar.addView(message, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         Button research = promptButton(activity, "Research Area");
+        research.setTag(SAVED_RESEARCH_BUTTON_TAG);
         research.setOnClickListener(v -> {
             root.removeView(bar);
             Intent map = new Intent(activity, MainActivity.class);
@@ -244,6 +259,7 @@ public final class ProspectingAreaCreator {
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 48)));
 
         Button notNow = promptButton(activity, "Not Now");
+        notNow.setTag(SAVED_NOT_NOW_BUTTON_TAG);
         notNow.setOnClickListener(v -> root.removeView(bar));
         bar.addView(notNow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 48)));
@@ -251,7 +267,9 @@ public final class ProspectingAreaCreator {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        int bottom = activity instanceof MainActivity ? dp(activity, 126) : dp(activity, 18);
+        int bottom = activity instanceof MainActivity
+                ? dp(activity, 126)
+                : dp(activity, 18) + systemBottomInset(activity);
         params.setMargins(dp(activity, 10), 0, dp(activity, 10), bottom);
         root.addView(bar, params);
         bar.bringToFront();
@@ -259,6 +277,25 @@ public final class ProspectingAreaCreator {
             bar.bringToFront();
             FieldMapController.ensurePersistentEntry(activity);
         });
+    }
+
+    public static void dismissSavedResearchPrompt(Activity activity) {
+        if (activity == null) return;
+        View content = activity.findViewById(android.R.id.content);
+        if (!(content instanceof FrameLayout)) return;
+        View prompt = ((FrameLayout) content).findViewWithTag(SAVED_PROMPT_TAG);
+        if (prompt != null) ((FrameLayout) content).removeView(prompt);
+    }
+
+    private static int systemBottomInset(Activity activity) {
+        if (activity == null || activity.getWindow() == null) return 0;
+        View decor = activity.getWindow().getDecorView();
+        WindowInsets insets = decor == null ? null : decor.getRootWindowInsets();
+        if (insets != null) return Math.max(0, insets.getSystemWindowInsetBottom());
+        android.graphics.Rect visible = new android.graphics.Rect();
+        if (decor != null) decor.getWindowVisibleDisplayFrame(visible);
+        int height = activity.getResources().getDisplayMetrics().heightPixels;
+        return Math.max(0, height - visible.bottom);
     }
 
     private static Button promptButton(Activity activity, String text) {

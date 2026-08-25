@@ -309,7 +309,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (FieldUiNames.TRACK.equals(tool)) return 17;
         if (FieldUiNames.NAVIGATE.equals(tool)) return 10;
         if (FieldUiNames.MEASURE.equals(tool)) return 20;
-        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 17;
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 15;
         if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return 15;
         if (FieldUiNames.IMPORT.equals(tool)) return 3;
         if (FieldUiNames.IMPORTED_DATA.equals(tool)) return 8;
@@ -335,22 +335,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     private FrameLayout dialogTourRoot(AlertDialog dialog) {
-        if (dialog == null || dialog.getWindow() == null) return null;
-        View content = dialog.getWindow().findViewById(android.R.id.content);
-        if (content instanceof FrameLayout) return (FrameLayout) content;
-        return findFirstFrameLayout(dialog.getWindow().getDecorView());
-    }
-
-    private FrameLayout findFirstFrameLayout(View view) {
-        if (view instanceof FrameLayout) return (FrameLayout) view;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                FrameLayout found = findFirstFrameLayout(group.getChildAt(i));
-                if (found != null) return found;
-            }
-        }
-        return null;
+        return GuidedTourCoach.prepareDialogHost(this, dialog);
     }
 
     private void showDialogCoach(AlertDialog dialog, int step, String tool, String title,
@@ -605,6 +590,27 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         returnToMap();
                     }, null, null,
                     target::performClick);
+            return;
+        }
+        if (step == 10) {
+            View target = findClickableByText(findViewById(android.R.id.content), "Back to map");
+            if (target == null) {
+                FieldTourState.step(this, 11);
+                returnToMap();
+                return;
+            }
+            target.setOnClickListener(v -> {
+                FieldTourState.step(FieldActivity.this, 11);
+                GuidedTourCoach.clear(FieldActivity.this);
+                returnToMap();
+            });
+            showFieldCoach(10, FieldUiNames.TRACK, "Tracks while recording",
+                    "The active recording stays listed here with earlier tracks. Recording continues while you review this screen.",
+                    "Tap “Back to map” to continue.", target,
+                    () -> {
+                        FieldTourState.step(this, 9);
+                        returnToMap();
+                    }, null, null, target::performClick);
             return;
         }
         if (step == 12) {
@@ -987,8 +993,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(researchAction);
         View createAreaAction = action("Create Prospecting Area Around Here",
                 "Choose a radius around this Field Record and save it as a Prospecting Area.",
-                v -> ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
-                        "Created from Field Record: " + r.name));
+                v -> {
+                    ProspectingAreaCreator.SaveCallback callback = null;
+                    if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 14)) {
+                        callback = (areaId, savedName) -> {
+                            FieldTourState.auxId(FieldActivity.this, areaId);
+                            FieldTourState.step(FieldActivity.this, 15);
+                            GuidedTourCoach.clear(FieldActivity.this);
+                            getWindow().getDecorView().post(() -> showSavedFieldRecordTourCoach(r));
+                        };
+                    }
+                    ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
+                            "Created from Field Record: " + r.name, callback);
+                });
         createAreaAction.setTag("rockmap-field-record-create-area");
         View navigateAction = action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
@@ -1036,7 +1053,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private void showSavedFieldRecordTourCoach(FieldDatabase.FieldRecord record) {
         if (record == null || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)) return;
         int step = FieldTourState.step(this);
-        if (step < 12 || step > 17) return;
+        if (step < 12 || step > 15) return;
         View root = findViewById(android.R.id.content);
         View target;
         String title;
@@ -1053,19 +1070,37 @@ public final class FieldActivity extends Activity implements LocationRepository.
             target = root.findViewWithTag("rockmap-field-record-create-area");
             title = "Create a Prospecting Area";
             body = "Create Prospecting Area Around Here builds a saved area around this point using a radius you choose.";
-        } else if (step == 15) {
-            target = root.findViewWithTag("rockmap-field-record-navigate");
-            title = "Navigate to this point";
-            body = "Navigate to this point uses the record as a directional target on the map. Navigation is directional guidance, not a calculated route.";
-        } else if (step == 16) {
-            target = root.findViewWithTag("rockmap-field-record-edit");
-            title = "Edit";
-            body = "Edit lets you change the saved observation, including its descriptive fields and attached photo.";
         } else {
-            target = root.findViewWithTag("rockmap-field-record-delete");
-            title = "Delete";
-            body = "Delete permanently removes this Field Record from the device. The tour will not press it.";
+            long areaId = FieldTourState.auxId(this);
+            FieldDatabase.Area area = areaId > 0L ? db.getArea(areaId) : null;
+            target = root.findViewWithTag(ProspectingAreaCreator.SAVED_RESEARCH_BUTTON_TAG);
+            if (target == null && area != null) {
+                ProspectingAreaCreator.showSavedResearchPrompt(this, area.id, area.name);
+                getWindow().getDecorView().postDelayed(() -> showSavedFieldRecordTourCoach(record), 60L);
+                return;
+            }
+            title = "Research Area";
+            body = "Research Area keeps the Prospecting Area you just created as the exact Research context, then offers RockMap's existing Research guided tour.";
+            final long selectedAreaId = areaId;
+            if (target != null && selectedAreaId > 0L) {
+                target.setOnClickListener(v -> {
+                    finishFieldTour();
+                    ProspectingAreaCreator.dismissSavedResearchPrompt(FieldActivity.this);
+                    Intent research = new Intent(FieldActivity.this, ResearchActivity.class)
+                            .putExtra(ResearchActivity.EXTRA_AREA_ID, selectedAreaId)
+                            .putExtra(ResearchActivity.EXTRA_SHOW_HELP_ON_START, true);
+                    startResearch(research);
+                });
+                View notNow = root.findViewWithTag(ProspectingAreaCreator.SAVED_NOT_NOW_BUTTON_TAG);
+                if (notNow != null) {
+                    notNow.setOnClickListener(v -> {
+                        finishFieldTour();
+                        ProspectingAreaCreator.dismissSavedResearchPrompt(FieldActivity.this);
+                    });
+                }
+            }
         }
+
         Runnable back = () -> {
             if (step == 12) {
                 FieldTourState.step(this, 11);
@@ -1075,10 +1110,21 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 showSavedFieldRecordTourCoach(record);
             }
         };
-        if (step == 17) {
+
+        if (step == 14) {
+            final View createTarget = target;
             showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
-                    "Review what this action does.", target, back,
-                    "Finish", this::finishFieldTour, this::finishFieldTour);
+                    "Tap “Create Prospecting Area Around Here”.", target, back,
+                    null, null, () -> {
+                        if (createTarget != null) createTarget.performClick();
+                    });
+        } else if (step == 15) {
+            final View researchTarget = target;
+            showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
+                    "Tap “Research Area”.", target, back,
+                    null, null, () -> {
+                        if (researchTarget != null) researchTarget.performClick();
+                    });
         } else {
             showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
                     "Review the highlighted action.", target, back,

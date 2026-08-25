@@ -1,9 +1,11 @@
 package com.rockmap.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
@@ -13,6 +15,8 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -32,11 +36,78 @@ import java.util.List;
  */
 public final class GuidedTourCoach {
     private static final String TAG = "rockmap-guided-tour-coach";
+    private static final String DIALOG_HOST_TAG = "rockmap-guided-tour-dialog-host";
     private static WeakReference<View> highlightedView = new WeakReference<>(null);
     private static Drawable highlightedDrawable;
     private static WeakReference<ViewGroup> activeCoachRoot = new WeakReference<>(null);
+    private static long highlightGeneration;
 
     private GuidedTourCoach() {}
+
+    /**
+     * Give a tour that is teaching an AlertDialog a full-screen, non-clickable presentation layer.
+     * The actual alert panel keeps its measured size in the middle of the screen, while the coach
+     * card can move across the entire usable display. Empty space in this host is not clickable, so
+     * the real dialog controls underneath remain the controls the user actually operates.
+     */
+    public static FrameLayout prepareDialogHost(Activity activity, AlertDialog dialog) {
+        if (activity == null || dialog == null || dialog.getWindow() == null) return null;
+        Window window = dialog.getWindow();
+        View decor = window.getDecorView();
+        if (!(decor instanceof FrameLayout)) return null;
+        FrameLayout decorRoot = (FrameLayout) decor;
+        View existing = decorRoot.findViewWithTag(DIALOG_HOST_TAG);
+        if (existing instanceof FrameLayout) {
+            existing.bringToFront();
+            return (FrameLayout) existing;
+        }
+
+        final View dialogPanel = decorRoot.getChildCount() > 0 ? decorRoot.getChildAt(0) : null;
+        final int originalWidth = Math.max(dp(activity, 240), decorRoot.getWidth());
+        final int originalHeight = Math.max(dp(activity, 120), decorRoot.getHeight());
+        final Drawable panelBackground = dialogPanel == null ? null : dialogPanel.getBackground();
+
+        // The dialog window becomes the screen-sized coordinate space used by the tour, but its
+        // original alert panel is immediately constrained back to its original measured size.
+        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+
+        FrameLayout host = new FrameLayout(activity);
+        host.setTag(DIALOG_HOST_TAG);
+        host.setClickable(false);
+        host.setFocusable(false);
+        host.setClipChildren(false);
+        host.setClipToPadding(false);
+        FrameLayout.LayoutParams hostParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP | Gravity.START);
+        decorRoot.addView(host, hostParams);
+        host.bringToFront();
+
+        decorRoot.post(() -> {
+            if (dialogPanel != null && dialogPanel.getParent() == decorRoot) {
+                ViewGroup.LayoutParams raw = dialogPanel.getLayoutParams();
+                raw.width = Math.min(originalWidth,
+                        Math.max(dp(activity, 240), activity.getResources().getDisplayMetrics().widthPixels - dp(activity, 20)));
+                raw.height = Math.min(originalHeight,
+                        Math.max(dp(activity, 120), activity.getResources().getDisplayMetrics().heightPixels - dp(activity, 32)));
+                if (raw instanceof FrameLayout.LayoutParams) {
+                    ((FrameLayout.LayoutParams) raw).gravity = Gravity.CENTER;
+                }
+                dialogPanel.setLayoutParams(raw);
+                if (panelBackground != null) dialogPanel.setBackground(panelBackground);
+                else {
+                    GradientDrawable background = new GradientDrawable();
+                    background.setColor(Color.WHITE);
+                    background.setCornerRadius(dp(activity, 10));
+                    dialogPanel.setBackground(background);
+                }
+                dialogPanel.setElevation(dp(activity, 16));
+            }
+            host.bringToFront();
+        });
+        return host;
+    }
 
     public static void clear(Activity activity) {
         clearHighlight();
@@ -336,20 +407,30 @@ public final class GuidedTourCoach {
     private static void highlight(View target) {
         clearHighlight();
         if (target == null) return;
-        target.post(() -> {
-            if (target.getWidth() <= 0 || target.getHeight() <= 0) return;
-            GradientDrawable outline = new GradientDrawable();
-            outline.setColor(Color.TRANSPARENT);
-            outline.setStroke(dp(target, 4), Color.rgb(0, 112, 121));
-            outline.setCornerRadius(dp(target, 8));
-            outline.setBounds(new Rect(0, 0, target.getWidth(), target.getHeight()));
-            target.getOverlay().add(outline);
-            highlightedView = new WeakReference<>(target);
-            highlightedDrawable = outline;
-        });
+        final long generation = highlightGeneration;
+        target.post(() -> applyHighlightWhenReady(target, generation, 0));
+    }
+
+    private static void applyHighlightWhenReady(View target, long generation, int attempt) {
+        if (target == null || generation != highlightGeneration) return;
+        if (target.getWidth() <= 0 || target.getHeight() <= 0 || !target.isShown()) {
+            if (attempt < 12) {
+                target.postDelayed(() -> applyHighlightWhenReady(target, generation, attempt + 1), 40L);
+            }
+            return;
+        }
+        GradientDrawable outline = new GradientDrawable();
+        outline.setColor(Color.TRANSPARENT);
+        outline.setStroke(dp(target, 4), Color.rgb(0, 112, 121));
+        outline.setCornerRadius(dp(target, 8));
+        outline.setBounds(new Rect(0, 0, target.getWidth(), target.getHeight()));
+        target.getOverlay().add(outline);
+        highlightedView = new WeakReference<>(target);
+        highlightedDrawable = outline;
     }
 
     private static void clearHighlight() {
+        highlightGeneration++;
         View old = highlightedView.get();
         if (old != null && highlightedDrawable != null) old.getOverlay().remove(highlightedDrawable);
         highlightedView = new WeakReference<>(null);

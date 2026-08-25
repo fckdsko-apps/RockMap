@@ -61,6 +61,7 @@ public final class ResearchActivity extends Activity {
     public static final String EXTRA_AUTO_GEOLOGY = "rockmap.research.auto_geology";
     public static final String EXTRA_CONTEXT_LABEL = "rockmap.research.context_label";
     public static final String EXTRA_TOUR_REOPEN_GEOLOGY = "rockmap.research.tour_reopen_geology";
+    public static final String EXTRA_SHOW_HELP_ON_START = "rockmap.research.show_help_on_start";
 
     public static final String RESULT_ACTION = "rockmap.research.result_action";
     public static final String RESULT_TITLE = "rockmap.research.title";
@@ -90,6 +91,7 @@ public final class ResearchActivity extends Activity {
     private long currentAreaId = -1L;
     private View tourCombinedControl;
     private View tourShowGeologyControl;
+    private boolean showHelpAfterAreaLoad;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -108,7 +110,9 @@ public final class ResearchActivity extends Activity {
         long areaId = intent == null ? -1L : intent.getLongExtra(EXTRA_AREA_ID, -1L);
         if (areaId > 0L) {
             currentAreaId = areaId;
+            showHelpAfterAreaLoad = intent.getBooleanExtra(EXTRA_SHOW_HELP_ON_START, false);
             intent.removeExtra(EXTRA_AREA_ID);
+            intent.removeExtra(EXTRA_SHOW_HELP_ON_START);
             if (!geology.isReady()) showInstall();
             else analyzeArea(areaId);
             return true;
@@ -460,6 +464,9 @@ public final class ResearchActivity extends Activity {
         ArrayList<GeologyRepository.Point> polygon = new ArrayList<>();
         for (GeoMath.Point p : area.points) polygon.add(new GeologyRepository.Point(p.lat, p.lon));
         GeologyRepository.Bounds bounds = boundsOf(polygon);
+        // Keep the exact saved polygon as the active Research context. This also gives the existing
+        // Research guided tour the bounds it already expects; no separate tour is created here.
+        visibleBounds = bounds;
         runAsync("Analyzing " + area.name + "…", () -> geology.queryPolygon(polygon, 0),
                 results -> {
                     // Research and saved-area visibility are independent. If the user chose to keep
@@ -467,6 +474,12 @@ public final class ResearchActivity extends Activity {
                     // context menu handles the saved polygon and Research layer as separate contexts.
                     showResults(results, "Combined Area Analysis — " + area.name, bounds,
                             queryPolygonContext(polygon, area.name, area.id));
+                    if (showHelpAfterAreaLoad) {
+                        showHelpAfterAreaLoad = false;
+                        getWindow().getDecorView().post(() -> RockMapHelp.showResearch(
+                                ResearchActivity.this, "Prospecting Area — " + area.name,
+                                ResearchActivity.this::startTourFromResearch));
+                    }
                 });
     }
 

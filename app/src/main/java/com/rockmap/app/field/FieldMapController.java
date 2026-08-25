@@ -614,15 +614,21 @@ public final class FieldMapController implements LocationRepository.Listener {
                 row.addView(pause, weight());
             }
             Button stop = hudButton("Stop", v -> {
-                if (FieldTourState.is(activity, FieldUiNames.TRACK, 10)) {
-                    FieldTourState.step(activity, 11);
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 11)) {
                     lastFieldTourCoachKey = "";
                 }
                 confirmStopTrack(activeTrack);
             });
             stop.setTag("rockmap-track-stop");
             row.addView(stop, weight());
-            Button tracks = hudButton("Tracks", v -> openFieldScreen("tracks"));
+            Button tracks = hudButton("Tracks", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 9)) {
+                    FieldTourState.step(activity, 10);
+                    lastFieldTourCoachKey = "";
+                    GuidedTourCoach.clear(activity);
+                }
+                openFieldScreen("tracks");
+            });
             tracks.setTag("rockmap-track-list");
             row.addView(tracks, weight());
             hud.addView(row);
@@ -1240,7 +1246,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (FieldUiNames.TRACK.equals(tool)) return 17;
         if (FieldUiNames.NAVIGATE.equals(tool)) return 10;
         if (FieldUiNames.MEASURE.equals(tool)) return 20;
-        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 17;
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 15;
         if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return 15;
         if (FieldUiNames.IMPORT.equals(tool)) return 3;
         if (FieldUiNames.IMPORTED_DATA.equals(tool)) return 8;
@@ -1406,12 +1412,18 @@ public final class FieldMapController implements LocationRepository.Listener {
                 target = hudTourTarget("rockmap-track-list");
                 title = "Open Tracks";
                 body = "Tracks opens the list of the active recording and earlier recorded tracks. You can keep recording while you use the map.";
-                action = "Review the “Tracks” button.";
-                primary = "Continue";
-                primaryAction = () -> setMapTourStep(10);
-                skip = primaryAction;
+                action = "Tap “Tracks”.";
+                final View tracksTarget = target;
+                skip = () -> {
+                    if (tracksTarget != null) tracksTarget.performClick();
+                    else {
+                        FieldTourState.step(activity, 10);
+                        GuidedTourCoach.clear(activity);
+                        openFieldScreen("tracks");
+                    }
+                };
                 back = () -> setMapTourStep(8);
-            } else if (step == 10) {
+            } else if (step == 11) {
                 target = hudTourTarget("rockmap-track-stop");
                 title = "Stop recording";
                 body = "Stop ends GPS recording. The recorded track remains saved on this device.";
@@ -1424,7 +1436,12 @@ public final class FieldMapController implements LocationRepository.Listener {
                     GuidedTourCoach.clear(activity);
                     openFieldScreen("tracks");
                 };
-                back = () -> setMapTourStep(9);
+                back = () -> {
+                    FieldTourState.step(activity, 10);
+                    FieldTourState.text(activity, "");
+                    GuidedTourCoach.clear(activity);
+                    openFieldScreen("tracks");
+                };
             } else if (step >= 13 && step <= 17) {
                 String tag;
                 if (step == 13) {
@@ -1741,23 +1758,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private FrameLayout dialogTourRoot(AlertDialog dialog) {
-        if (dialog == null || dialog.getWindow() == null) return null;
-        View content = dialog.getWindow().findViewById(android.R.id.content);
-        if (content instanceof FrameLayout) return (FrameLayout) content;
-        View decor = dialog.getWindow().getDecorView();
-        return findFirstFrameLayout(decor);
-    }
-
-    private FrameLayout findFirstFrameLayout(View view) {
-        if (view instanceof FrameLayout) return (FrameLayout) view;
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                FrameLayout found = findFirstFrameLayout(group.getChildAt(i));
-                if (found != null) return found;
-            }
-        }
-        return null;
+        return GuidedTourCoach.prepareDialogHost(activity, dialog);
     }
 
     private void openFieldScreen(String screen) {
@@ -2914,7 +2915,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                             () -> {
                                 dialog.setOnDismissListener(null);
                                 dialog.dismiss();
-                                FieldTourState.step(activity, 10);
+                                FieldTourState.step(activity, 11);
                                 renderHud();
                             },
                             null, null, stop::performClick,
