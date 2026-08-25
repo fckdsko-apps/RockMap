@@ -646,6 +646,10 @@ public final class FieldMapController implements LocationRepository.Listener {
 
             LinearLayout first = buttonRow();
             Button backtrack = hudButton("Backtrack", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 13)) {
+                    setMapTourStep(14);
+                    return;
+                }
                 if (points.size() < 2) return;
                 FieldMapState.showTrack(activity, selected.id);
                 FieldMapState.clearViewedMapContext(activity);
@@ -654,6 +658,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             backtrack.setTag("rockmap-track-backtrack");
             first.addView(backtrack, weight());
             Button hide = hudButton("Hide", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 14)) {
+                    setMapTourStep(15);
+                    return;
+                }
                 FieldMapState.hideTrack(activity, selected.id);
                 FieldMapState.clearViewedMapContext(activity);
                 refreshFieldSnapshot();
@@ -663,7 +671,12 @@ public final class FieldMapController implements LocationRepository.Listener {
             });
             hide.setTag("rockmap-track-hide");
             first.addView(hide, weight());
-            Button delete = hudButton("Delete", v -> new AlertDialog.Builder(activity)
+            Button delete = hudButton("Delete", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 15)) {
+                    setMapTourStep(16);
+                    return;
+                }
+                new AlertDialog.Builder(activity)
                     .setTitle("Delete track?")
                     .setMessage("Permanently remove “" + selected.name + "” and all of its recorded points?")
                     .setPositiveButton("Delete", (d, w) -> {
@@ -675,13 +688,18 @@ public final class FieldMapController implements LocationRepository.Listener {
                         toast("Track deleted.");
                     })
                     .setNegativeButton("Cancel", null)
-                    .show());
+                    .show();
+            });
             delete.setTag("rockmap-track-delete");
             first.addView(delete, weight());
             hud.addView(first);
 
             LinearLayout second = buttonRow();
             Button allTracks = hudButton("All tracks", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 16)) {
+                    setMapTourStep(17);
+                    return;
+                }
                 FieldMapState.clearViewedMapContext(activity);
                 if (activeTrack == null) setExpandedTool(null);
                 openFieldScreen("tracks");
@@ -689,6 +707,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             allTracks.setTag("rockmap-track-all");
             second.addView(allTracks, weight());
             Button close = hudButton("Close map view", v -> {
+                if (FieldTourState.is(activity, FieldUiNames.TRACK, 17)) {
+                    finishActiveFieldTour();
+                    return;
+                }
                 FieldMapState.clearViewedMapContext(activity);
                 if (activeTrack == null) setExpandedTool(null);
                 else renderHud();
@@ -720,8 +742,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         LinearLayout row = buttonRow();
         Button frame = hudButton("Frame", v -> {
             frameNavigation(target);
-            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 8)) {
-                FieldTourState.step(activity, 9);
+            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 7)) {
+                FieldTourState.step(activity, 8);
                 lastFieldTourCoachKey = "";
                 renderHud();
             }
@@ -729,17 +751,20 @@ public final class FieldMapController implements LocationRepository.Listener {
         frame.setTag("rockmap-nav-frame");
         Button targetButton = hudButton("Target", v -> {
             centerExplicit(target.point, 16d);
-            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 9)) {
-                FieldTourState.step(activity, 10);
+            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 8)) {
+                FieldTourState.step(activity, 9);
                 lastFieldTourCoachKey = "";
                 renderHud();
             }
         });
         targetButton.setTag("rockmap-nav-target");
         Button stop = hudButton("Stop", v -> {
-            boolean touring = FieldTourState.is(activity, FieldUiNames.NAVIGATE, 10);
-            stopNavigation();
-            if (touring) finishActiveFieldTour();
+            boolean touring = FieldTourState.is(activity, FieldUiNames.NAVIGATE, 9);
+            if (touring) {
+                finishActiveFieldTour();
+            } else {
+                stopNavigation();
+            }
         });
         stop.setTag("rockmap-nav-stop");
         row.addView(frame, weight());
@@ -771,47 +796,88 @@ public final class FieldMapController implements LocationRepository.Listener {
         Button tapMap = hudButton(awaitingMapTap ? "Cancel tap" : "Tap map", v -> handleTourAwareTapMap());
         tapMap.setTag(awaitingMapTap ? "rockmap-measure-cancel-tap" : "rockmap-measure-tap-map");
         first.addView(tapMap, weight());
-        Button addGps = hudButton("Add GPS", v -> addGpsMeasurement());
+        Button addGps = hudButton("Add GPS", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 4)) {
+                setMapTourStep(5);
+                return;
+            }
+            addGpsMeasurement();
+        });
         addGps.setTag("rockmap-measure-add-gps");
         addGps.setContentDescription("Add GPS. Get a fresh precise GPS fix and add your current location as the next measurement point.");
         first.addView(addGps, weight());
-        Button saved = hudButton("Saved", v -> chooseSavedMeasurement());
+        Button saved = hudButton("Saved", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 9)) {
+                setMapTourStep(10);
+                return;
+            }
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 5)) {
+                setMapTourStep(6);
+                return;
+            }
+            chooseSavedMeasurement();
+        });
         saved.setTag("rockmap-measure-saved");
         first.addView(saved, weight());
-        Button field = hudButton("Field", v -> chooseFieldRecordMeasurement());
+        Button field = hudButton("Field", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 10)) {
+                setMapTourStep(11);
+                return;
+            }
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 6)) {
+                setMapTourStep(7);
+                return;
+            }
+            chooseFieldRecordMeasurement();
+        });
         field.setTag("rockmap-measure-field");
         first.addView(field, weight());
         hud.addView(first);
 
         LinearLayout second = buttonRow();
-        Button paste = hudButton("Paste", v -> {
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 11)) {
-                FieldTourState.step(activity, 12);
-                lastFieldTourCoachKey = "";
+        Button paste = hudButton("Lat/Lon", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 7)) {
+                setMapTourStep(8);
+                return;
             }
             pasteMeasurement();
         });
         paste.setTag("rockmap-measure-paste");
+        paste.setContentDescription("Enter latitude and longitude as a measurement point");
         second.addView(paste, weight());
         Button undo = hudButton("Undo", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 8)) {
+                setMapTourStep(9);
+                return;
+            }
             undoMeasurement();
             advanceMeasurementTourAfterUndo();
         });
         undo.setTag("rockmap-measure-undo");
         second.addView(undo, weight());
-        Button done = hudButton("Done", v -> finishMeasurement());
+        Button done = hudButton("Done", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 15)) {
+                setMapTourStep(16);
+                return;
+            }
+            if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 9)) {
+                setMapTourStep(10);
+                return;
+            }
+            finishMeasurement();
+        });
         done.setTag("rockmap-measure-done");
         second.addView(done, weight());
         hud.addView(second);
 
         if (measurement.size() >= 3) {
             Button save = hudButton("Save as Prospecting Area", v -> {
-                if (FieldTourState.is(activity, FieldUiNames.MEASURE, 19)) {
-                    FieldTourState.step(activity, 20);
+                if (FieldTourState.is(activity, FieldUiNames.MEASURE, 16)) {
+                    FieldTourState.step(activity, 17);
                     FieldTourState.text(activity, "name");
                     lastFieldTourCoachKey = "";
-                } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 10)) {
-                    FieldTourState.step(activity, 11);
+                } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 14)) {
+                    FieldTourState.step(activity, 15);
                     FieldTourState.text(activity, "name");
                     lastFieldTourCoachKey = "";
                 }
@@ -848,16 +914,15 @@ public final class FieldMapController implements LocationRepository.Listener {
             FieldTourState.text(activity, "map");
             lastFieldTourCoachKey = "";
         } else if (FieldTourState.is(activity, FieldUiNames.MEASURE)
-                && (FieldTourState.step(activity) == 14
-                || FieldTourState.step(activity) == 15
-                || FieldTourState.step(activity) == 16)) {
+                && (FieldTourState.step(activity) == 11
+                || FieldTourState.step(activity) == 12
+                || FieldTourState.step(activity) == 13)) {
             FieldTourState.text(activity, "map");
             lastFieldTourCoachKey = "";
         } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)
-                && (FieldTourState.step(activity) == 4
-                || FieldTourState.step(activity) == 5
-                || FieldTourState.step(activity) == 6
-                || FieldTourState.step(activity) == 9)) {
+                && (FieldTourState.step(activity) == 10
+                || FieldTourState.step(activity) == 11
+                || FieldTourState.step(activity) == 12)) {
             FieldTourState.text(activity, "map");
             lastFieldTourCoachKey = "";
         }
@@ -872,18 +937,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             String phase = FieldTourState.text(activity);
             if (step == 7) {
                 FieldTourState.step(activity, 8);
-            } else if ("undo".equals(phase) && step >= 8 && step <= 10) {
+            } else if ("undo".equals(phase) && step == 8) {
                 FieldTourState.text(activity, "");
-                FieldTourState.step(activity, step + 1);
-            } else if (step == 13 && "undo".equals(phase)) {
-                FieldTourState.text(activity, "");
-                FieldTourState.step(activity, 14);
+                FieldTourState.step(activity, 9);
             }
-            lastFieldTourCoachKey = "";
-            renderHud();
-        } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 8)) {
-            FieldTourState.step(activity, 9);
-            FieldTourState.text(activity, "");
             lastFieldTourCoachKey = "";
             renderHud();
         }
@@ -1137,12 +1194,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         fieldAction.setTag("rockmap-navigate-field");
         box.addView(fieldAction);
         View coordinateAction = dialogAction("Enter coordinates",
-                "Paste or type a latitude/longitude supported by RockMap.", v -> {
-                    if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 4)) {
-                        FieldTourState.step(activity, 5);
-                        lastFieldTourCoachKey = "";
-                        GuidedTourCoach.clear(activity);
-                    }
+                "Enter a latitude/longitude supported by RockMap.", v -> {
                     holder[0].dismiss();
                     enterNavigationCoordinate();
                 });
@@ -1174,27 +1226,31 @@ public final class FieldMapController implements LocationRepository.Listener {
         String title;
         String body;
         String action;
-        String primary = "Continue";
         Runnable next;
         if (step == 2) {
             target = saved;
             title = "Saved Location target";
             body = "Choose Saved Location when the destination is one of your normal saved map points.";
-            action = "Review “Saved Location”.";
-            next = () -> { FieldTourState.step(activity, 3); showNavigateMenuTourCoach(dialog, saved, field, coordinates); };
+            action = "Review “Saved Location”, then Continue.";
+            next = () -> {
+                FieldTourState.step(activity, 3);
+                showNavigateMenuTourCoach(dialog, saved, field, coordinates);
+            };
         } else if (step == 3) {
             target = field;
             title = "Field Record target";
             body = "Choose Field Record when the destination is a saved field observation or sample location.";
-            action = "Review “Field Record”.";
-            next = () -> { FieldTourState.step(activity, 4); showNavigateMenuTourCoach(dialog, saved, field, coordinates); };
+            action = "Review “Field Record”, then Continue.";
+            next = () -> {
+                FieldTourState.step(activity, 4);
+                showNavigateMenuTourCoach(dialog, saved, field, coordinates);
+            };
         } else {
             target = coordinates;
-            title = "Coordinate target";
-            body = "Enter coordinates lets you navigate to a location without first saving it. RockMap provides directional guidance only; it does not calculate a safe, legal, or practical route.";
-            action = "Tap “Enter coordinates”.";
-            primary = null;
-            next = null;
+            title = "Enter coordinates";
+            body = "Enter coordinates lets you navigate to a location without first saving it.";
+            action = "Review “Enter coordinates”, then Continue.";
+            next = () -> beginNavigatePractice(dialog);
         }
         Runnable back = () -> {
             if (step == 2) {
@@ -1207,14 +1263,105 @@ public final class FieldMapController implements LocationRepository.Listener {
                 showNavigateMenuTourCoach(dialog, saved, field, coordinates);
             }
         };
-        Runnable skip = step == 4 ? coordinates::performClick : next;
         GuidedTourCoach.show(activity, host, step, fieldTourTotal(FieldUiNames.NAVIGATE), title,
-                body, action, target, back, primary, next, skip,
+                body, action, target, back, "Continue", next, next,
                 () -> {
                     dialog.setOnDismissListener(null);
                     dialog.dismiss();
                     finishActiveFieldTour();
                 });
+    }
+
+    private void beginNavigatePractice(AlertDialog dialog) {
+        if (dialog != null) {
+            dialog.setOnDismissListener(null);
+            dialog.dismiss();
+        }
+        FieldMapState.NavigationTarget previous = FieldMapState.navigationTarget(activity);
+        FieldTourRuntimeState.beginNavigationPractice(activity, previous,
+                FieldMapState.expandedTool(activity));
+
+        GeoMath.Point practice = navigationPracticePoint();
+        if (practice == null) {
+            main.postDelayed(() -> {
+                if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 4)) {
+                    beginNavigatePractice(null);
+                }
+            }, 80L);
+            return;
+        }
+        FieldTourState.step(activity, 5);
+        FieldTourState.text(activity, "");
+        lastFieldTourCoachKey = "";
+        startPracticeNavigation(practice);
+    }
+
+    private GeoMath.Point navigationPracticePoint() {
+        double lat = Double.NaN;
+        double lon = Double.NaN;
+        if (map != null && map.getCameraPosition() != null
+                && map.getCameraPosition().target != null) {
+            LatLng center = map.getCameraPosition().target;
+            lat = center.getLatitude();
+            lon = center.getLongitude();
+        } else if (latestNavigationLocation != null) {
+            lat = latestNavigationLocation.getLatitude();
+            lon = latestNavigationLocation.getLongitude();
+        } else {
+            FieldMapState.NavigationTarget previous = FieldMapState.navigationTarget(activity);
+            if (previous != null && previous.point != null) {
+                lat = previous.point.lat;
+                lon = previous.point.lon;
+            }
+        }
+        if (!Double.isFinite(lat) || !Double.isFinite(lon)) return null;
+        double latOffset = lat > 89.998d ? -0.0015d : 0.0015d;
+        double lonOffset = lon > 179.998d ? -0.0015d : 0.0015d;
+        double targetLat = Math.max(-90d, Math.min(90d, lat + latOffset));
+        double targetLon = lon + lonOffset;
+        if (targetLon > 180d) targetLon -= 360d;
+        if (targetLon < -180d) targetLon += 360d;
+        return new GeoMath.Point(targetLat, targetLon);
+    }
+
+    private void startPracticeNavigation(GeoMath.Point target) {
+        if (target == null) return;
+        FieldMapState.startNavigation(activity, "Practice target", target);
+        setExpandedToolValue(FieldMapState.TOOL_NAVIGATE);
+        latestNavigationLocation = null;
+        locationRepository.stop();
+        navigationUpdatesStarted = false;
+        ensureNavigationUpdates();
+        locationRepository.requestFreshPrecise(location -> {
+            latestNavigationLocation = location;
+            renderHud();
+            applyCachedSources();
+        }, message -> {
+            renderHud();
+            applyCachedSources();
+        });
+        renderHud();
+        applyCachedSources();
+    }
+
+    private void restoreNavigationAfterPractice() {
+        if (!FieldTourRuntimeState.navigationPracticeActive(activity)) return;
+        FieldMapState.NavigationTarget previous = FieldTourRuntimeState.previousNavigation(activity);
+        String previousExpanded = FieldTourRuntimeState.previousExpandedTool(activity);
+        FieldTourRuntimeState.clearNavigationPractice(activity);
+
+        locationRepository.stop();
+        navigationUpdatesStarted = false;
+        latestNavigationLocation = null;
+        FieldMapState.stopNavigation(activity);
+        if (previous != null && previous.point != null) {
+            FieldMapState.startNavigation(activity, previous.name, previous.point);
+            ensureNavigationUpdates();
+        }
+        FieldMapState.setExpandedTool(activity, previousExpanded);
+        expandedTool = FieldMapState.expandedTool(activity);
+        renderHud();
+        applyCachedSources();
     }
 
     private void showVisibilityMenu() {
@@ -1244,10 +1391,10 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private int fieldTourTotal(String tool) {
         if (FieldUiNames.TRACK.equals(tool)) return 17;
-        if (FieldUiNames.NAVIGATE.equals(tool)) return 10;
-        if (FieldUiNames.MEASURE.equals(tool)) return 20;
+        if (FieldUiNames.NAVIGATE.equals(tool)) return 9;
+        if (FieldUiNames.MEASURE.equals(tool)) return 17;
         if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 15;
-        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return 15;
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return 19;
         if (FieldUiNames.IMPORT.equals(tool)) return 3;
         if (FieldUiNames.IMPORTED_DATA.equals(tool)) return 8;
         if (FieldUiNames.EXPORT.equals(tool)) return 3;
@@ -1291,13 +1438,25 @@ public final class FieldMapController implements LocationRepository.Listener {
                 || !FieldTourState.is(activity, tool, 1)) return;
         FrameLayout host = dialogTourRoot(dialog);
         if (host == null) return;
+        String action = "Tap “" + tool + "”.";
+        Runnable skip = () -> target.performClick();
+        if (FieldUiNames.IMPORT.equals(tool)) {
+            action = "Choose a file to try Import, or Skip step to finish without importing.";
+            skip = () -> {
+                FieldTourState.finish(activity);
+                lastFieldTourCoachKey = "";
+                dialog.setOnDismissListener(null);
+                dialog.dismiss();
+                GuidedTourCoach.clear(activity);
+            };
+        }
         GuidedTourCoach.show(activity, host, 1, fieldTourTotal(tool), tool,
-                fieldTourPurpose(tool), "Tap “" + tool + "”.", target,
-                null, null, null,
-                () -> target.performClick(),
+                fieldTourPurpose(tool), action, target,
+                null, null, null, skip,
                 () -> {
                     FieldTourState.finish(activity);
                     lastFieldTourCoachKey = "";
+                    dialog.setOnDismissListener(null);
                     dialog.dismiss();
                     GuidedTourCoach.clear(activity);
                 });
@@ -1308,9 +1467,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         String tool = FieldTourState.tool(activity);
         int step = FieldTourState.step(activity);
         if (FieldUiNames.TRACK.equals(tool)) return (step >= 5 && step <= 11) || (step >= 13 && step <= 17);
-        if (FieldUiNames.NAVIGATE.equals(tool)) return step >= 7 && step <= 10;
-        if (FieldUiNames.MEASURE.equals(tool)) return step >= 2 && step <= 20;
-        return FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 3 && step <= 11;
+        if (FieldUiNames.NAVIGATE.equals(tool)) return step >= 5 && step <= 9;
+        if (FieldUiNames.MEASURE.equals(tool)) return step >= 2 && step <= 17;
+        return FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 3 && step <= 15;
     }
 
     private void resumeActiveFieldTour() {
@@ -1327,9 +1486,11 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void finishActiveFieldTour() {
+        boolean restorePractice = FieldTourRuntimeState.navigationPracticeActive(activity);
         FieldTourState.finish(activity);
         lastFieldTourCoachKey = "";
         GuidedTourCoach.clear(activity);
+        if (restorePractice) restoreNavigationAfterPractice();
     }
 
     private View hudTourTarget(String tag) {
@@ -1356,6 +1517,127 @@ public final class FieldMapController implements LocationRepository.Listener {
         addMeasurementPoint(new GeoMath.Point(lat, lon), false);
     }
 
+    private void backFromMeasurementPolygon(int currentStep, int firstStep) {
+        removeTapCapture();
+        if (currentStep > firstStep && !measurement.isEmpty()) {
+            measurement.remove(measurement.size() - 1);
+            FieldMapState.saveMeasurement(activity, measurement, true);
+            applyCachedSources();
+        }
+        setMapTourStep(currentStep <= firstStep ? firstStep - 1 : currentStep - 1);
+    }
+
+    private boolean mapTourStepRequiresTarget(String tool, int step) {
+        if (FieldUiNames.TRACK.equals(tool)) {
+            return (step >= 5 && step <= 9) || step == 11 || (step >= 13 && step <= 17);
+        }
+        if (FieldUiNames.NAVIGATE.equals(tool)) return step >= 5 && step <= 9;
+        if (FieldUiNames.MEASURE.equals(tool)) {
+            if (step == 5) return false; // The live map is the target while one-shot tapping is armed.
+            if (step >= 11 && step <= 13) {
+                return !("map".equals(FieldTourState.text(activity)) || awaitingMapTap);
+            }
+            return step >= 2 && step <= 16;
+        }
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+            if (step >= 10 && step <= 12) {
+                return !("map".equals(FieldTourState.text(activity)) || awaitingMapTap);
+            }
+            return step >= 3 && step <= 14;
+        }
+        return false;
+    }
+
+    /**
+     * A target-specific tour card is never allowed to appear against the wrong HUD. Re-establish
+     * the exact tour-owned context first, or retreat to a safe earlier screen if that context is
+     * gone. This is deliberately state restoration rather than a blind delayed retry.
+     */
+    private void recoverMissingMapTourTarget(String tool, int step) {
+        GuidedTourCoach.clear(activity);
+        lastFieldTourCoachKey = "";
+
+        if (FieldUiNames.TRACK.equals(tool)) {
+            if (step >= 13 && step <= 17) {
+                long trackId = FieldTourState.entityId(activity);
+                FieldDatabase.Track track = trackId > 0L ? db.getTrack(trackId) : null;
+                if (track == null) {
+                    FieldTourState.step(activity, 12);
+                    FieldTourState.text(activity, "");
+                    openFieldScreen("tracks");
+                    return;
+                }
+                FieldMapState.showTrack(activity, track.id);
+                FieldMapState.selectTrackDetail(activity, track.id);
+                setExpandedToolValue(FieldMapState.TOOL_TRACK);
+                renderHud();
+                applyCachedSources();
+                return;
+            }
+            FieldDatabase.Track active = db.getActiveTrack();
+            if (active != null) {
+                setExpandedToolValue(FieldMapState.TOOL_TRACK);
+                renderHud();
+                return;
+            }
+            FieldTourState.step(activity, 2);
+            FieldTourState.text(activity, "");
+            openFieldScreen("tracks");
+            return;
+        }
+
+        if (FieldUiNames.NAVIGATE.equals(tool)) {
+            if (FieldTourRuntimeState.navigationPracticeActive(activity)
+                    && FieldMapState.navigationTarget(activity) != null) {
+                setExpandedToolValue(FieldMapState.TOOL_NAVIGATE);
+                renderHud();
+                applyCachedSources();
+                return;
+            }
+            if (FieldTourRuntimeState.navigationPracticeActive(activity)) {
+                restoreNavigationAfterPractice();
+            }
+            FieldTourState.step(activity, 4);
+            FieldTourState.text(activity, "");
+            showNavigateMenu();
+            return;
+        }
+
+        if (FieldUiNames.MEASURE.equals(tool) || FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+            if (!measureActive) {
+                measurement.clear();
+                if (FieldMapState.measurementActive(activity)) {
+                    measurement.addAll(FieldMapState.measurementPoints(activity));
+                }
+                measureActive = true;
+                FieldMapState.saveMeasurement(activity, measurement, true);
+            }
+
+            // Save/summary/drag targets only exist after the geometry they describe exists. If
+            // that geometry disappeared across a lifecycle edge, return to the first missing point
+            // instead of showing a coach for an absent control.
+            if (FieldUiNames.MEASURE.equals(tool)) {
+                if ((step == 14 || step == 16) && measurement.size() < 3) {
+                    FieldTourState.step(activity, 11 + Math.min(2, measurement.size()));
+                    FieldTourState.text(activity, "");
+                } else if (step == 6 && measurement.isEmpty()) {
+                    FieldTourState.step(activity, 5);
+                    FieldTourState.text(activity, "map");
+                    beginOneShotMapTap();
+                    return;
+                }
+            } else {
+                if ((step == 13 || step == 14) && measurement.size() < 3) {
+                    FieldTourState.step(activity, 10 + Math.min(2, measurement.size()));
+                    FieldTourState.text(activity, "");
+                }
+            }
+            setExpandedToolValue(FieldMapState.TOOL_MEASURE);
+            renderHud();
+            applyCachedSources();
+        }
+    }
+
     /**
      * Continue the approved Field-tool walkthrough on the live map. Every actionable step targets
      * the real control; informational steps use Continue while leaving the live feature usable.
@@ -1374,9 +1656,11 @@ public final class FieldMapController implements LocationRepository.Listener {
         Runnable primaryAction = null;
         Runnable skip = null;
         Runnable back = null;
+        boolean suppressDefaultBack = false;
 
         if (FieldUiNames.TRACK.equals(tool)) {
             if (step == 5) {
+                suppressDefaultBack = true;
                 target = hudTourTarget("rockmap-track-status");
                 title = "Track recording";
                 body = "This panel shows whether the track is recording, how many GPS points have been collected, and the distance recorded so far. Recording continues while this panel is collapsed or while you use other RockMap tools.";
@@ -1448,30 +1732,39 @@ public final class FieldMapController implements LocationRepository.Listener {
                     tag = "rockmap-track-backtrack";
                     title = "Backtrack";
                     body = "Backtrack starts directional guidance toward the beginning of this saved track. It does not calculate a safe, legal, or practical route.";
-                    action = "Review “Backtrack”.";
+                    action = "Review “Backtrack”, then Continue.";
                 } else if (step == 14) {
                     tag = "rockmap-track-hide";
                     title = "Hide";
                     body = "Hide removes this track line from the map without deleting the saved track.";
-                    action = "Review “Hide”.";
+                    action = "Review “Hide”, then Continue.";
                 } else if (step == 15) {
                     tag = "rockmap-track-delete";
                     title = "Delete";
-                    body = "Delete permanently removes the track and its recorded points. The tour will not ask you to delete anything.";
-                    action = "Review “Delete”.";
+                    body = "Delete permanently removes the track and its recorded points from this device.";
+                    action = "Review “Delete”, then Continue.";
                 } else if (step == 16) {
                     tag = "rockmap-track-all";
                     title = "All tracks";
                     body = "All tracks returns to the Tracks list so you can open another recording.";
-                    action = "Review “All tracks”.";
+                    action = "Review “All tracks”, then Continue.";
                 } else {
                     tag = "rockmap-track-close-view";
                     title = "Close map view";
                     body = "Close map view stops inspecting this saved track here. It does not hide or delete the track.";
-                    action = "Review “Close map view”.";
+                    action = "Review “Close map view”, then Finish.";
                 }
                 target = hudTourTarget(tag);
-                back = () -> setMapTourStep(Math.max(13, step - 1));
+                if (step == 13) {
+                    back = () -> {
+                        FieldTourState.step(activity, 12);
+                        FieldTourState.text(activity, "");
+                        GuidedTourCoach.clear(activity);
+                        openFieldScreen("tracks");
+                    };
+                } else {
+                    back = () -> setMapTourStep(step - 1);
+                }
                 if (step < 17) {
                     primary = "Continue";
                     primaryAction = () -> setMapTourStep(step + 1);
@@ -1483,37 +1776,52 @@ public final class FieldMapController implements LocationRepository.Listener {
                 }
             } else return;
         } else if (FieldUiNames.NAVIGATE.equals(tool)) {
-            if (step == 7) {
+            if (step == 5) {
+                target = hudTourTarget("rockmap-nav-status");
+                title = "Practice target";
+                body = "RockMap has placed a temporary practice target so you can try directional guidance without creating or saving a destination.";
+                action = "Continue to view the navigation controls.";
+                primary = "Continue";
+                primaryAction = () -> setMapTourStep(6);
+                skip = primaryAction;
+                back = () -> {
+                    restoreNavigationAfterPractice();
+                    FieldTourState.step(activity, 4);
+                    lastFieldTourCoachKey = "";
+                    showNavigateMenu();
+                };
+            } else if (step == 6) {
                 target = hudTourTarget("rockmap-nav-status");
                 title = "Directional guidance";
                 body = "The line shows direction and distance only. RockMap does not calculate a safe, legal, or practical route. It does not account for terrain, roads, private property, closures, hazards, or whether the route is passable.";
-                action = "Review the distance, bearing, and guidance line.";
+                action = "Review the distance, bearing, and guidance line, then Continue.";
                 primary = "Continue";
-                primaryAction = () -> setMapTourStep(8);
+                primaryAction = () -> setMapTourStep(7);
                 skip = primaryAction;
-            } else if (step == 8) {
+                back = () -> setMapTourStep(5);
+            } else if (step == 7) {
                 target = hudTourTarget("rockmap-nav-frame");
                 title = "Frame the navigation";
                 body = "Frame adjusts the map so your GPS position and the destination can be viewed together.";
                 action = "Tap “Frame”.";
                 final View frame = target;
-                skip = () -> { if (frame != null) frame.performClick(); else setMapTourStep(9); };
-                back = () -> setMapTourStep(7);
-            } else if (step == 9) {
+                skip = () -> { if (frame != null) frame.performClick(); else setMapTourStep(8); };
+                back = () -> setMapTourStep(6);
+            } else if (step == 8) {
                 target = hudTourTarget("rockmap-nav-target");
                 title = "Center the target";
                 body = "Target centers the map directly on the destination.";
                 action = "Tap “Target”.";
                 final View targetButton = target;
-                skip = () -> { if (targetButton != null) targetButton.performClick(); else setMapTourStep(10); };
-                back = () -> setMapTourStep(8);
-            } else if (step == 10) {
+                skip = () -> { if (targetButton != null) targetButton.performClick(); else setMapTourStep(9); };
+                back = () -> setMapTourStep(7);
+            } else if (step == 9) {
                 target = hudTourTarget("rockmap-nav-stop");
                 title = "Stop navigation";
                 body = "Stop removes the active destination and its directional guidance line.";
                 action = "Tap “Stop”.";
                 skip = this::finishActiveFieldTour;
-                back = () -> setMapTourStep(9);
+                back = () -> setMapTourStep(8);
             } else return;
         } else if (FieldUiNames.MEASURE.equals(tool)) {
             String phase = FieldTourState.text(activity);
@@ -1523,6 +1831,14 @@ public final class FieldMapController implements LocationRepository.Listener {
                 body = "Tap map lets you place the next measurement point directly on the map.";
                 action = "Tap “Tap map”.";
                 final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(3); };
+                back = () -> {
+                    removeTapCapture();
+                    FieldTourState.step(activity, 1);
+                    FieldTourState.text(activity, "");
+                    lastFieldTourCoachKey = "";
+                    GuidedTourCoach.clear(activity);
+                    showFieldMenu();
+                };
             } else if (step == 3) {
                 target = hudTourTarget("rockmap-measure-cancel-tap");
                 title = "Cancel a map tap";
@@ -1573,185 +1889,161 @@ public final class FieldMapController implements LocationRepository.Listener {
                 }
                 back = () -> setMapTourStep(7);
             } else if (step == 9) {
-                if ("undo".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-undo");
-                    title = "Remove the Saved Location example";
-                    body = "The selected Saved Location was added as a measurement point. Undo removes this example before continuing.";
-                    action = "Tap “Undo”.";
-                    final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(10); };
-                } else {
-                    target = hudTourTarget("rockmap-measure-saved");
-                    title = "Saved Location point";
-                    body = "Saved adds one of your existing Saved Locations as a measurement point. If you do not have one yet, skip this step and continue.";
-                    action = "Tap “Saved”, or skip if none exist.";
-                    skip = () -> setMapTourStep(10);
-                }
+                target = hudTourTarget("rockmap-measure-saved");
+                title = "Saved Location";
+                body = "Saved adds the location of an existing Saved Location as a measurement point. You do not need to have one to continue this tour.";
+                action = "Review “Saved”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(10); skip = primaryAction;
                 back = () -> setMapTourStep(8);
             } else if (step == 10) {
-                if ("undo".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-undo");
-                    title = "Remove the Field Record example";
-                    body = "The selected Field Record was added as a measurement point. Undo removes this example before continuing.";
-                    action = "Tap “Undo”.";
-                    final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(11); };
-                } else {
-                    target = hudTourTarget("rockmap-measure-field");
-                    title = "Field Record point";
-                    body = "Field adds the location of an existing Field Record as a measurement point. If no Field Records exist yet, skip this step.";
-                    action = "Tap “Field”, or skip if none exist.";
-                    skip = () -> setMapTourStep(11);
-                }
+                target = hudTourTarget("rockmap-measure-field");
+                title = "Field Record";
+                body = "Field adds the location of an existing Field Record as a measurement point. You do not need to have one to continue this tour.";
+                action = "Review “Field”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(11); skip = primaryAction;
                 back = () -> setMapTourStep(9);
-            } else if (step == 11) {
-                target = hudTourTarget("rockmap-measure-paste");
-                title = "Paste coordinates";
-                body = "Paste lets you type or paste coordinates and add that exact location as a measurement point.";
-                action = "Tap “Paste”.";
-                final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(12); };
-                back = () -> setMapTourStep(10);
-            } else if (step == 13 && "undo".equals(phase)) {
-                target = hudTourTarget("rockmap-measure-undo");
-                title = "Remove the coordinate example";
-                body = "Undo removes the coordinate point so you can build a simple polygon next.";
-                action = "Tap “Undo”.";
-                final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(14); };
-                back = () -> setMapTourStep(11);
-            } else if (step >= 14 && step <= 16) {
+            } else if (step >= 11 && step <= 13) {
+                int ordinal = step - 10;
                 if ("map".equals(phase) || awaitingMapTap) {
-                    title = "Place polygon point " + (step - 13);
+                    title = "Polygon point " + ordinal;
                     body = "Choose the next boundary point on the map. Three points are enough to calculate an area and enable saving a Prospecting Area.";
                     action = "Tap a location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
-                    title = "Polygon point " + (step - 13);
+                    title = "Polygon point " + ordinal;
                     body = "Use Tap map for the next polygon vertex.";
                     action = "Tap “Tap map”.";
-                    final View t = target; skip = () -> { if (t != null) t.performClick(); else { FieldTourState.text(activity, "map"); beginOneShotMapTap(); } };
+                    final View t = target; skip = () -> {
+                        if (t != null) t.performClick();
+                        else { FieldTourState.text(activity, "map"); beginOneShotMapTap(); }
+                    };
                 }
-                back = () -> setMapTourStep(Math.max(14, step - 1));
-            } else if (step == 17) {
+                back = () -> backFromMeasurementPolygon(step, 11);
+            } else if (step == 14) {
                 target = hudTourTarget("rockmap-measure-summary");
                 title = "Distance and area";
                 body = "With two or more points RockMap measures the path. With three or more points it also calculates polygon area. Drag any vertex to adjust the shape.";
                 action = "Review the measurements and try moving a vertex.";
-                primary = "Continue"; primaryAction = () -> setMapTourStep(18); skip = primaryAction;
-                back = () -> setMapTourStep(16);
-            } else if (step == 18) {
+                primary = "Continue"; primaryAction = () -> setMapTourStep(15); skip = primaryAction;
+                back = () -> backFromMeasurementPolygon(14, 11);
+            } else if (step == 15) {
                 target = hudTourTarget("rockmap-measure-done");
                 title = "Done";
-                body = "Done finishes a temporary measurement. If it has not been saved as a Prospecting Area, finishing clears the temporary shape.";
-                action = "Tap “Done”.";
-                skip = () -> setMapTourStep(19);
-                back = () -> setMapTourStep(17);
-            } else if (step == 19) {
+                body = "Done finishes a temporary measurement. If you have not saved it as a Prospecting Area, the temporary shape is cleared.";
+                action = "Review “Done”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(16); skip = primaryAction;
+                back = () -> setMapTourStep(14);
+            } else if (step == 16) {
                 target = hudTourTarget("rockmap-measure-save-area");
                 title = "Save as Prospecting Area";
                 body = "Save as Prospecting Area turns the temporary polygon into a saved area that can be reopened and analyzed later.";
                 action = "Tap “Save as Prospecting Area”.";
                 final View t = target; skip = () -> { if (t != null) t.performClick(); else finishActiveFieldTour(); };
-                back = () -> setMapTourStep(18);
+                back = () -> setMapTourStep(15);
             } else return;
         } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
             String phase = FieldTourState.text(activity);
             if (step == 3) {
-                if (phase == null || phase.isEmpty()) {
-                    target = hudTourTarget("rockmap-measure-header");
-                    title = "Define the area with Measure";
-                    body = "Creating a Prospecting Area uses the Measure panel to define its boundary. The same point-source controls are available here so you can build the polygon from the map or from locations you already know.";
-                    action = "Review the Measure panel.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-gps"); renderHud(); };
-                    skip = primaryAction;
-                } else if ("area-gps".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-add-gps");
-                    title = "Add GPS";
-                    body = "Add GPS uses a fresh current GPS fix as the next Prospecting Area boundary point.";
-                    action = "Review “Add GPS”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-saved"); renderHud(); };
-                    skip = primaryAction;
-                } else if ("area-saved".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-saved");
-                    title = "Saved Location";
-                    body = "Saved uses one of your existing Saved Locations as the next boundary point.";
-                    action = "Review “Saved”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-field"); renderHud(); };
-                    skip = primaryAction;
-                } else if ("area-field".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-field");
-                    title = "Field Record";
-                    body = "Field uses the location of an existing Field Record as the next boundary point.";
-                    action = "Review “Field”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-paste"); renderHud(); };
-                    skip = primaryAction;
-                } else if ("area-paste".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-paste");
-                    title = "Paste coordinates";
-                    body = "Paste lets you enter coordinates and use that exact location as the next boundary point.";
-                    action = "Review “Paste”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-undo"); renderHud(); };
-                    skip = primaryAction;
-                } else if ("area-undo".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-undo");
-                    title = "Undo";
-                    body = "Undo removes the most recently added boundary point without clearing the rest of the polygon.";
-                    action = "Review “Undo”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, "area-done"); renderHud(); };
-                    skip = primaryAction;
-                } else {
-                    target = hudTourTarget("rockmap-measure-done");
-                    title = "Done";
-                    body = "Done ends the temporary measurement. For a Prospecting Area, use Save as Prospecting Area once the polygon has at least three points instead of clearing the measurement.";
-                    action = "Review “Done”.";
-                    primary = "Continue";
-                    primaryAction = () -> { FieldTourState.text(activity, ""); setMapTourStep(4); };
-                    skip = primaryAction;
-                }
-            } else if ((step >= 4 && step <= 6) || step == 9) {
-                int ordinal = step == 9 ? 3 : step - 3;
+                target = hudTourTarget("rockmap-measure-header");
+                title = "Define the area with Measure";
+                body = "Measure builds the boundary of a Prospecting Area. Add points from the map, GPS, Saved Locations, Field Records, or coordinates, then save the finished polygon.";
+                action = "Review the Measure panel, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(4); skip = primaryAction;
+                back = () -> {
+                    removeTapCapture();
+                    FieldTourState.step(activity, 2);
+                    FieldTourState.text(activity, "");
+                    lastFieldTourCoachKey = "";
+                    GuidedTourCoach.clear(activity);
+                    openFieldScreen("areas");
+                };
+            } else if (step == 4) {
+                target = hudTourTarget("rockmap-measure-add-gps");
+                title = "Add GPS";
+                body = "Add GPS uses a fresh GPS fix as the next boundary point.";
+                action = "Review “Add GPS”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(5); skip = primaryAction;
+                back = () -> setMapTourStep(3);
+            } else if (step == 5) {
+                target = hudTourTarget("rockmap-measure-saved");
+                title = "Saved Location";
+                body = "Saved adds an existing Saved Location as the next boundary point. You do not need a Saved Location to continue this tour.";
+                action = "Review “Saved”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(6); skip = primaryAction;
+                back = () -> setMapTourStep(4);
+            } else if (step == 6) {
+                target = hudTourTarget("rockmap-measure-field");
+                title = "Field Record";
+                body = "Field adds an existing Field Record as the next boundary point. You do not need a Field Record to continue this tour.";
+                action = "Review “Field”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(7); skip = primaryAction;
+                back = () -> setMapTourStep(5);
+            } else if (step == 7) {
+                target = hudTourTarget("rockmap-measure-paste");
+                title = "Coordinates";
+                body = "Lat/Lon lets you enter coordinates and use that location as the next boundary point. You do not need coordinates to continue this tour.";
+                action = "Review “Lat/Lon”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(8); skip = primaryAction;
+                back = () -> setMapTourStep(6);
+            } else if (step == 8) {
+                target = hudTourTarget("rockmap-measure-undo");
+                title = "Undo";
+                body = "Undo removes the most recently added boundary point without clearing the rest of the polygon.";
+                action = "Review “Undo”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(9); skip = primaryAction;
+                back = () -> setMapTourStep(7);
+            } else if (step == 9) {
+                target = hudTourTarget("rockmap-measure-done");
+                title = "Done";
+                body = "Done ends the temporary measurement. Use Save as Prospecting Area instead when you want to keep the polygon.";
+                action = "Review “Done”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(10); skip = primaryAction;
+                back = () -> setMapTourStep(8);
+            } else if (step >= 10 && step <= 12) {
+                int ordinal = step - 9;
                 if ("map".equals(phase) || awaitingMapTap) {
-                    title = step == 9 ? "Replace the third boundary point" : "Boundary point " + ordinal;
+                    title = "Boundary point " + ordinal;
                     body = "Tap the map to place this Prospecting Area boundary point.";
                     action = "Tap a location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
-                    title = step == 9 ? "Replace the third boundary point" : "Boundary point " + ordinal;
+                    title = "Boundary point " + ordinal;
                     body = "Use Tap map to place the next boundary vertex.";
                     action = "Tap “Tap map”.";
-                    final View t = target; skip = () -> { if (t != null) t.performClick(); else { FieldTourState.text(activity, "map"); beginOneShotMapTap(); } };
+                    final View t = target; skip = () -> {
+                        if (t != null) t.performClick();
+                        else { FieldTourState.text(activity, "map"); beginOneShotMapTap(); }
+                    };
                 }
-                back = () -> setMapTourStep(step == 4 ? 3 : step - 1);
-            } else if (step == 7) {
+                back = () -> backFromMeasurementPolygon(step, 10);
+            } else if (step == 13) {
                 target = hudTourTarget("rockmap-measure-drag-note");
                 title = "Adjust the boundary";
-                body = "Each polygon point is draggable. Move a vertex to adjust the Prospecting Area boundary before saving it.";
-                action = "Try dragging a boundary point.";
-                primary = "Continue"; primaryAction = () -> setMapTourStep(8); skip = primaryAction;
-                back = () -> setMapTourStep(6);
-            } else if (step == 8) {
-                target = hudTourTarget("rockmap-measure-undo");
-                title = "Undo a boundary point";
-                body = "Undo removes the most recently added boundary point.";
-                action = "Tap “Undo”.";
-                final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(9); };
-                back = () -> setMapTourStep(7);
-            } else if (step == 10) {
+                body = "Each boundary point is draggable. Move a vertex to change the polygon before saving it.";
+                action = "Try dragging a boundary point, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(14); skip = primaryAction;
+                back = () -> backFromMeasurementPolygon(13, 10);
+            } else if (step == 14) {
                 target = hudTourTarget("rockmap-measure-save-area");
-                title = "Save the Prospecting Area";
-                body = "Once the polygon has at least three points, save it as a Prospecting Area so it can be reopened, mapped, exported, and analyzed with Research.";
+                title = "Save as Prospecting Area";
+                body = "Once the polygon has at least three points, Save as Prospecting Area keeps it on this device so you can reopen it, map it, export it, and analyze it with Research.";
                 action = "Tap “Save as Prospecting Area”.";
                 final View t = target; skip = () -> { if (t != null) t.performClick(); else finishActiveFieldTour(); };
-                back = () -> setMapTourStep(9);
+                back = () -> setMapTourStep(13);
             } else return;
         } else return;
 
-        if (back == null && step > 1) back = () -> setMapTourStep(Math.max(1, step - 1));
+        if (mapTourStepRequiresTarget(tool, step) && target == null) {
+            recoverMissingMapTourTarget(tool, step);
+            return;
+        }
+        if (target != null && (!target.isAttachedToWindow() || !target.isShown()
+                || target.getWidth() <= 0 || target.getHeight() <= 0)) return;
+        if (back == null && step > 1 && !suppressDefaultBack) {
+            back = () -> setMapTourStep(Math.max(1, step - 1));
+        }
         GuidedTourCoach.show(activity, step, total, title, body, action, target,
                 back, primary, primaryAction, skip == null ? primaryAction : skip,
                 this::finishActiveFieldTour);
@@ -2205,87 +2497,17 @@ public final class FieldMapController implements LocationRepository.Listener {
             mapTarget.setOnClickListener(v -> {
                 try {
                     CoordinateParser.Result parsed = CoordinateParser.parse(input.getText().toString());
-                    if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 6)) {
-                        FieldTourState.step(activity, 7);
-                        lastFieldTourCoachKey = "";
-                    }
-                    dialog.setOnDismissListener(null);
                     dialog.dismiss();
-                    GuidedTourCoach.clear(activity);
                     startNavigation("Coordinate target", new GeoMath.Point(parsed.latitude, parsed.longitude));
                 } catch (IllegalArgumentException ex) {
                     input.setError(ex.getMessage());
                 }
             });
-            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 5)) {
-                showNavigationCoordinateTour(dialog, input, mapTarget, 5);
-            } else if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 6)) {
-                showNavigationCoordinateTour(dialog, input, mapTarget, 6);
-            }
-        });
-        dialog.setOnDismissListener(d -> {
-            if (FieldTourState.is(activity, FieldUiNames.NAVIGATE)
-                    && FieldTourState.step(activity) >= 5 && FieldTourState.step(activity) <= 6) {
-                finishActiveFieldTour();
-            }
         });
         dialog.show();
     }
 
-    private void showNavigationCoordinateTour(AlertDialog dialog, EditText input,
-                                              Button mapTarget, int step) {
-        FrameLayout host = dialogTourRoot(dialog);
-        if (host == null || !FieldTourState.is(activity, FieldUiNames.NAVIGATE, step)) return;
-        if (step == 5) {
-            GuidedTourCoach.show(activity, host, 5, fieldTourTotal(FieldUiNames.NAVIGATE),
-                    "Enter the destination",
-                    "Enter the latitude and longitude of the point you want to use as the navigation target.",
-                    "Enter the destination coordinates.", input,
-                    () -> {
-                        dialog.setOnDismissListener(null);
-                        dialog.dismiss();
-                        FieldTourState.step(activity, 4);
-                        showNavigateMenu();
-                    },
-                    "Continue", () -> {
-                        FieldTourState.step(activity, 6);
-                        showNavigationCoordinateTour(dialog, input, mapTarget, 6);
-                    },
-                    () -> {
-                        FieldTourState.step(activity, 6);
-                        showNavigationCoordinateTour(dialog, input, mapTarget, 6);
-                    },
-                    () -> {
-                        dialog.setOnDismissListener(null);
-                        dialog.dismiss();
-                        finishActiveFieldTour();
-                    });
-        } else {
-            Runnable mapTargetAction = () -> {
-                if (input.getText().toString().trim().isEmpty() && map != null
-                        && map.getCameraPosition() != null && map.getCameraPosition().target != null) {
-                    LatLng center = map.getCameraPosition().target;
-                    input.setText(String.format(Locale.US, "%.6f, %.6f",
-                            center.getLatitude(), center.getLongitude()));
-                }
-                mapTarget.performClick();
-            };
-            GuidedTourCoach.show(activity, host, 6, fieldTourTotal(FieldUiNames.NAVIGATE),
-                    "Map the target",
-                    "Map target starts directional guidance to the coordinates you entered. RockMap does not determine whether traveling straight toward that point is safe, legal, practical, or passable.",
-                    "Tap “Map target”.", mapTarget,
-                    () -> {
-                        FieldTourState.step(activity, 5);
-                        showNavigationCoordinateTour(dialog, input, mapTarget, 5);
-                    },
-                    null, null, mapTargetAction,
-                    () -> {
-                        dialog.setOnDismissListener(null);
-                        dialog.dismiss();
-                        finishActiveFieldTour();
-                    });
-        }
-    }
+
 
     private void startMeasurement() {
         if (!measureActive) measurement.clear();
@@ -2295,7 +2517,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         removeTapCapture();
         renderHud();
         applyCachedSources();
-        toast("Measure is active on the map. Add points with Tap map, GPS, Saved, Field, or Paste.");
+        toast("Measure is active on the map. Add points with Tap map, GPS, Saved, Field, or Lat/Lon.");
     }
 
     private void beginOneShotMapTap() {
@@ -2490,10 +2712,6 @@ public final class FieldMapController implements LocationRepository.Listener {
         waypointRepository.getAll(items -> {
             if (items == null || items.isEmpty()) {
                 toast("No Saved Locations yet.");
-                if (FieldTourState.is(activity, FieldUiNames.MEASURE, 9)) {
-                    lastFieldTourCoachKey = "";
-                    renderHud();
-                }
                 return;
             }
             String[] labels = new String[items.size()];
@@ -2501,33 +2719,11 @@ public final class FieldMapController implements LocationRepository.Listener {
                 String name = items.get(i).name;
                 labels[i] = name == null || name.trim().isEmpty() ? "Saved Location" : name.trim();
             }
-            AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Add Saved Location to Measurement")
+            new AlertDialog.Builder(activity).setTitle("Add Saved Location to Measurement")
                     .setItems(labels, (d, which) -> {
                         WaypointEntity w = items.get(which);
-                        if (FieldTourState.is(activity, FieldUiNames.MEASURE, 9)) {
-                            FieldTourState.text(activity, "undo");
-                            lastFieldTourCoachKey = "";
-                        }
                         addMeasurementPoint(new GeoMath.Point(w.latitude, w.longitude), true);
-                    }).setNegativeButton("Cancel", null).create();
-            dialog.show();
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 9)) {
-                dialog.getListView().post(() -> {
-                    View target = dialog.getListView().getChildAt(0);
-                    if (target == null) target = dialog.getListView();
-                    FrameLayout host = dialogTourRoot(dialog);
-                    if (host != null) {
-                        GuidedTourCoach.show(activity, host, 9, fieldTourTotal(FieldUiNames.MEASURE),
-                                "Choose a Saved Location",
-                                "Saved adds one of your existing Saved Locations as the next measurement point.",
-                                "Select a Saved Location.", target,
-                                () -> { dialog.dismiss(); renderHud(); },
-                                null, null,
-                                () -> { dialog.dismiss(); FieldTourState.step(activity, 10); FieldTourState.text(activity, ""); renderHud(); },
-                                () -> { dialog.dismiss(); finishActiveFieldTour(); });
-                    }
-                });
-            }
+                    }).setNegativeButton("Cancel", null).show();
         });
     }
 
@@ -2535,10 +2731,6 @@ public final class FieldMapController implements LocationRepository.Listener {
         List<FieldDatabase.FieldRecord> items = db.listFieldRecords();
         if (items.isEmpty()) {
             toast("No Field Records yet.");
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 10)) {
-                lastFieldTourCoachKey = "";
-                renderHud();
-            }
             return;
         }
         String[] labels = new String[items.size()];
@@ -2546,33 +2738,11 @@ public final class FieldMapController implements LocationRepository.Listener {
             String name = items.get(i).name;
             labels[i] = name == null || name.trim().isEmpty() ? "Field Record" : name.trim();
         }
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Add Field Record to Measurement")
+        new AlertDialog.Builder(activity).setTitle("Add Field Record to Measurement")
                 .setItems(labels, (d, which) -> {
                     FieldDatabase.FieldRecord r = items.get(which);
-                    if (FieldTourState.is(activity, FieldUiNames.MEASURE, 10)) {
-                        FieldTourState.text(activity, "undo");
-                        lastFieldTourCoachKey = "";
-                    }
                     addMeasurementPoint(new GeoMath.Point(r.lat, r.lon), true);
-                }).setNegativeButton("Cancel", null).create();
-        dialog.show();
-        if (FieldTourState.is(activity, FieldUiNames.MEASURE, 10)) {
-            dialog.getListView().post(() -> {
-                View target = dialog.getListView().getChildAt(0);
-                if (target == null) target = dialog.getListView();
-                FrameLayout host = dialogTourRoot(dialog);
-                if (host != null) {
-                    GuidedTourCoach.show(activity, host, 10, fieldTourTotal(FieldUiNames.MEASURE),
-                            "Choose a Field Record",
-                            "Field adds the location of an existing Field Record as the next measurement point.",
-                            "Select a Field Record.", target,
-                            () -> { dialog.dismiss(); renderHud(); },
-                            null, null,
-                            () -> { dialog.dismiss(); FieldTourState.step(activity, 11); FieldTourState.text(activity, ""); renderHud(); },
-                            () -> { dialog.dismiss(); finishActiveFieldTour(); });
-                }
-            });
-        }
+                }).setNegativeButton("Cancel", null).show();
     }
 
     private void pasteMeasurement() {
@@ -2586,60 +2756,17 @@ public final class FieldMapController implements LocationRepository.Listener {
             add.setOnClickListener(v -> {
                 try {
                     CoordinateParser.Result p = CoordinateParser.parse(input.getText().toString());
-                    if (FieldTourState.is(activity, FieldUiNames.MEASURE, 13)) {
-                        FieldTourState.text(activity, "undo");
-                        lastFieldTourCoachKey = "";
-                    }
                     dialog.dismiss();
                     addMeasurementPoint(new GeoMath.Point(p.latitude, p.longitude), true);
-                } catch (IllegalArgumentException ex) { input.setError(ex.getMessage()); }
+                } catch (IllegalArgumentException ex) {
+                    input.setError(ex.getMessage());
+                }
             });
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 12)) {
-                showMeasureCoordinateTour(dialog, input, add, 12);
-            } else if (FieldTourState.is(activity, FieldUiNames.MEASURE, 13)) {
-                showMeasureCoordinateTour(dialog, input, add, 13);
-            }
         });
         dialog.show();
     }
 
-    private void showMeasureCoordinateTour(AlertDialog dialog, EditText input, Button add, int step) {
-        FrameLayout host = dialogTourRoot(dialog);
-        if (host == null) return;
-        if (step == 12) {
-            GuidedTourCoach.show(activity, host, 12, fieldTourTotal(FieldUiNames.MEASURE),
-                    "Paste coordinates",
-                    "Paste lets you type or paste coordinates and use that exact location as a measurement point.",
-                    "Enter latitude and longitude.", input,
-                    () -> { dialog.dismiss(); FieldTourState.step(activity, 11); renderHud(); },
-                    "Continue", () -> {
-                        FieldTourState.step(activity, 13);
-                        showMeasureCoordinateTour(dialog, input, add, 13);
-                    },
-                    () -> {
-                        FieldTourState.step(activity, 13);
-                        showMeasureCoordinateTour(dialog, input, add, 13);
-                    },
-                    () -> { dialog.dismiss(); finishActiveFieldTour(); });
-        } else {
-            GuidedTourCoach.show(activity, host, 13, fieldTourTotal(FieldUiNames.MEASURE),
-                    "Add the coordinate",
-                    "Add converts the entered coordinate into the next measurement point. Afterward, Undo will remove this example point before you build a polygon.",
-                    "Tap “Add”.", add,
-                    () -> {
-                        FieldTourState.step(activity, 12);
-                        showMeasureCoordinateTour(dialog, input, add, 12);
-                    },
-                    null, null,
-                    () -> {
-                        dialog.dismiss();
-                        FieldTourState.text(activity, "");
-                        FieldTourState.step(activity, 14);
-                        renderHud();
-                    },
-                    () -> { dialog.dismiss(); finishActiveFieldTour(); });
-        }
-    }
+
 
     private void addMeasurementPoint(GeoMath.Point point, boolean centerIfFirst) {
         if (point == null) return;
@@ -2664,7 +2791,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, 6);
                 lastFieldTourCoachKey = "";
-            } else if ((step == 14 || step == 15 || step == 16)
+            } else if (step >= 11 && step <= 13
                     && "map".equals(FieldTourState.text(activity))) {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, step + 1);
@@ -2672,14 +2799,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             }
         } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)) {
             int step = FieldTourState.step(activity);
-            if ((step == 4 || step == 5 || step == 6)
+            if (step >= 10 && step <= 12
                     && "map".equals(FieldTourState.text(activity))) {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, step + 1);
-                lastFieldTourCoachKey = "";
-            } else if (step == 9 && "map".equals(FieldTourState.text(activity))) {
-                FieldTourState.text(activity, "");
-                FieldTourState.step(activity, 10);
                 lastFieldTourCoachKey = "";
             }
         }
@@ -2709,8 +2832,8 @@ public final class FieldMapController implements LocationRepository.Listener {
             Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             save.setOnClickListener(v -> {
                 try {
-                    final boolean measureTour = FieldTourState.is(activity, FieldUiNames.MEASURE, 20);
-                    final boolean areaTour = FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 11);
+                    final boolean measureTour = FieldTourState.is(activity, FieldUiNames.MEASURE, 17);
+                    final boolean areaTour = FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15);
                     ArrayList<GeoMath.Point> pointsToSave = new ArrayList<>(measurement);
                     long areaId = ProspectingAreaCreator.saveNamedPolygonAndPrompt(
                             activity, name.getText().toString().trim(),
@@ -2718,9 +2841,11 @@ public final class FieldMapController implements LocationRepository.Listener {
                             (savedId, savedName) -> {
                                 if (areaTour) {
                                     FieldTourState.entityId(activity, savedId);
-                                    FieldTourState.step(activity, 12);
+                                    FieldTourState.step(activity, 16);
+                                    FieldTourState.text(activity, "");
                                     lastFieldTourCoachKey = "";
-                                    main.postDelayed(() -> openFieldArea(savedId), 220L);
+                                    ProspectingAreaCreator.dismissSavedResearchPrompt(activity);
+                                    main.postDelayed(() -> openFieldArea(savedId), 160L);
                                 } else if (measureTour) {
                                     finishActiveFieldTour();
                                 }
@@ -2740,8 +2865,8 @@ public final class FieldMapController implements LocationRepository.Listener {
                 }
             });
 
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 20)
-                    || FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 11)) {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 17)
+                    || FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15)) {
                 showSaveAreaTour(dialog, name, save);
             }
         });
@@ -2758,15 +2883,14 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (!"save".equals(phase)) {
             GuidedTourCoach.show(activity, host, step, total,
                     "Name the Prospecting Area",
-                    "Give the saved polygon a name you will recognize later in Prospecting Areas.",
+                    FieldUiNames.PROSPECTING_AREAS.equals(tool)
+                            ? "Give the saved polygon a name you will recognize later in Prospecting Areas."
+                            : "Give the saved polygon a name you will recognize later.",
                     "Enter an area name.", name,
                     () -> {
                         dialog.dismiss();
-                        if (FieldUiNames.MEASURE.equals(tool)) {
-                            FieldTourState.step(activity, 19);
-                        } else {
-                            FieldTourState.step(activity, 10);
-                        }
+                        FieldTourState.step(activity,
+                                FieldUiNames.MEASURE.equals(tool) ? 16 : 14);
                         FieldTourState.text(activity, "");
                         renderHud();
                     },
@@ -2790,7 +2914,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                     "Save keeps this polygon on the device so it can be reopened, mapped, exported, and analyzed with Research.",
                     "Tap “Save”.", save,
                     () -> {
-                        FieldTourState.text(activity, "");
+                        FieldTourState.text(activity, "name");
                         showSaveAreaTour(dialog, name, save);
                     },
                     null, null,
@@ -2823,7 +2947,6 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setNegativeButton("Keep measuring", null).create();
         dialog.setOnShowListener(ignored -> {
             Button clear = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            Button keep = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
             clear.setOnClickListener(v -> {
                 measurement.clear();
                 measureActive = false;
@@ -2833,28 +2956,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 applyCachedSources();
                 renderHud();
                 dialog.dismiss();
-                if (FieldTourState.is(activity, FieldUiNames.MEASURE, 18)) finishActiveFieldTour();
             });
-            keep.setOnClickListener(v -> {
-                dialog.dismiss();
-                if (FieldTourState.is(activity, FieldUiNames.MEASURE, 18)) {
-                    FieldTourState.step(activity, 19);
-                    lastFieldTourCoachKey = "";
-                    renderHud();
-                }
-            });
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 18)) {
-                FrameLayout host = dialogTourRoot(dialog);
-                if (host != null) {
-                    GuidedTourCoach.show(activity, host, 18, fieldTourTotal(FieldUiNames.MEASURE),
-                            "Done",
-                            "Done finishes a temporary measurement. Clearing it removes the temporary shape, so keep measuring for this walkthrough and save it as a Prospecting Area next.",
-                            "Tap “Keep measuring”.", keep,
-                            () -> { dialog.dismiss(); FieldTourState.step(activity, 17); renderHud(); },
-                            null, null, keep::performClick,
-                            () -> { dialog.dismiss(); finishActiveFieldTour(); });
-                }
-            }
         });
         dialog.show();
     }
@@ -2928,7 +3030,11 @@ public final class FieldMapController implements LocationRepository.Listener {
             }
         });
         dialog.setOnDismissListener(d -> {
-            if (FieldTourState.is(activity, FieldUiNames.TRACK, 11)) finishActiveFieldTour();
+            if (FieldTourState.is(activity, FieldUiNames.TRACK, 11)) {
+                GuidedTourCoach.clear(activity);
+                lastFieldTourCoachKey = "";
+                main.post(this::renderHud);
+            }
         });
         dialog.show();
     }

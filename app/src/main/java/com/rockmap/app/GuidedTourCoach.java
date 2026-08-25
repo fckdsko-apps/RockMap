@@ -40,7 +40,9 @@ public final class GuidedTourCoach {
     private static WeakReference<View> highlightedView = new WeakReference<>(null);
     private static Drawable highlightedDrawable;
     private static WeakReference<ViewGroup> activeCoachRoot = new WeakReference<>(null);
+    private static WeakReference<View> activeTargetInterceptor = new WeakReference<>(null);
     private static long highlightGeneration;
+    private static long coachGeneration;
 
     private GuidedTourCoach() {}
 
@@ -58,19 +60,25 @@ public final class GuidedTourCoach {
         FrameLayout decorRoot = (FrameLayout) decor;
         View existing = decorRoot.findViewWithTag(DIALOG_HOST_TAG);
         if (existing instanceof FrameLayout) {
+            existing.setElevation(dp(activity, 80));
             existing.bringToFront();
             return (FrameLayout) existing;
         }
 
-        final View dialogPanel = decorRoot.getChildCount() > 0 ? decorRoot.getChildAt(0) : null;
-        final int originalWidth = Math.max(dp(activity, 240), decorRoot.getWidth());
-        final int originalHeight = Math.max(dp(activity, 120), decorRoot.getHeight());
-        final Drawable panelBackground = dialogPanel == null ? null : dialogPanel.getBackground();
-
-        // The dialog window becomes the screen-sized coordinate space used by the tour, but its
-        // original alert panel is immediately constrained back to its original measured size.
-        window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT);
+        // Capture the real, already-rendered alert panel before turning the dialog window into the
+        // full-screen coordinate space used by the coach. The previous implementation captured the
+        // decor size too early and could lock a dialog to a tiny fallback height, clipping its rows.
+        View content = decorRoot.findViewById(android.R.id.content);
+        View dialogPanel = content;
+        if (dialogPanel != null) {
+            ViewParent parent = dialogPanel.getParent();
+            while (parent instanceof View && parent != decorRoot) {
+                dialogPanel = (View) parent;
+                parent = dialogPanel.getParent();
+            }
+        }
+        if (dialogPanel == null && decorRoot.getChildCount() > 0) dialogPanel = decorRoot.getChildAt(0);
+        final View panel = dialogPanel;
 
         FrameLayout host = new FrameLayout(activity);
         host.setTag(DIALOG_HOST_TAG);
@@ -78,44 +86,73 @@ public final class GuidedTourCoach {
         host.setFocusable(false);
         host.setClipChildren(false);
         host.setClipToPadding(false);
+        host.setElevation(dp(activity, 80));
         FrameLayout.LayoutParams hostParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                 Gravity.TOP | Gravity.START);
         decorRoot.addView(host, hostParams);
-        host.bringToFront();
 
-        decorRoot.post(() -> {
-            if (dialogPanel != null && dialogPanel.getParent() == decorRoot) {
-                ViewGroup.LayoutParams raw = dialogPanel.getLayoutParams();
-                raw.width = Math.min(originalWidth,
-                        Math.max(dp(activity, 240), activity.getResources().getDisplayMetrics().widthPixels - dp(activity, 20)));
-                raw.height = Math.min(originalHeight,
-                        Math.max(dp(activity, 120), activity.getResources().getDisplayMetrics().heightPixels - dp(activity, 32)));
-                if (raw instanceof FrameLayout.LayoutParams) {
-                    ((FrameLayout.LayoutParams) raw).gravity = Gravity.CENTER;
+        final Runnable expandWhenMeasured = new Runnable() {
+            int attempts;
+            @Override public void run() {
+                if (dialog.getWindow() == null || !dialog.isShowing()) return;
+                int measuredWidth = panel == null ? 0 : Math.max(panel.getWidth(), panel.getMeasuredWidth());
+                int measuredHeight = panel == null ? 0 : Math.max(panel.getHeight(), panel.getMeasuredHeight());
+                if ((measuredWidth <= 0 || measuredHeight <= 0) && attempts++ < 12) {
+                    decorRoot.postDelayed(this, 32L);
+                    return;
                 }
-                dialogPanel.setLayoutParams(raw);
-                if (panelBackground != null) dialogPanel.setBackground(panelBackground);
-                else {
-                    GradientDrawable background = new GradientDrawable();
-                    background.setColor(Color.WHITE);
-                    background.setCornerRadius(dp(activity, 10));
-                    dialogPanel.setBackground(background);
-                }
-                dialogPanel.setElevation(dp(activity, 16));
+                // Only now expand the window. Preserve the alert panel's measured dimensions exactly;
+                // changing the window must not change the menu/dialog that the user is being taught.
+                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                window.setLayout(WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.MATCH_PARENT);
+                final int panelWidth = measuredWidth;
+                final int panelHeight = measuredHeight;
+                decorRoot.post(() -> {
+                    if (panel != null && panel.getParent() == decorRoot
+                            && panelWidth > 0 && panelHeight > 0) {
+                        ViewGroup.LayoutParams raw = panel.getLayoutParams();
+                        raw.width = panelWidth;
+                        raw.height = panelHeight;
+                        if (raw instanceof FrameLayout.LayoutParams) {
+                            ((FrameLayout.LayoutParams) raw).gravity = Gravity.CENTER;
+                        }
+                        panel.setLayoutParams(raw);
+                        panel.setElevation(dp(activity, 16));
+                    }
+                    host.setElevation(dp(activity, 80));
+                    host.bringToFront();
+                    host.post(() -> {
+                        host.setElevation(dp(activity, 80));
+                        host.bringToFront();
+                        View coach = host.findViewWithTag(TAG);
+                        if (coach != null) {
+                            coach.setElevation(dp(activity, 96));
+                            coach.bringToFront();
+                        }
+                    });
+                });
             }
-            host.bringToFront();
-        });
+        };
+        decorRoot.post(expandWhenMeasured);
+        host.bringToFront();
         return host;
     }
 
     public static void clear(Activity activity) {
+        coachGeneration++;
         clearHighlight();
         ViewGroup activeRoot = activeCoachRoot.get();
         if (activeRoot != null) {
             View old = activeRoot.findViewWithTag(TAG);
             if (old != null) activeRoot.removeView(old);
         }
+        View interceptor = activeTargetInterceptor.get();
+        if (interceptor != null && interceptor.getParent() instanceof ViewGroup) {
+            ((ViewGroup) interceptor.getParent()).removeView(interceptor);
+        }
+        activeTargetInterceptor = new WeakReference<>(null);
         activeCoachRoot = new WeakReference<>(null);
         if (activity == null) return;
         ViewGroup activityRoot = activity.findViewById(android.R.id.content);
@@ -143,6 +180,12 @@ public final class GuidedTourCoach {
                             Runnable skipAction, Runnable exitAction) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         clear(activity);
+        if (target != null && !targetReady(target)) {
+            waitForTargetAndShow(activity, hostRoot, step, total, title, message, requiredAction,
+                    target, backAction, primaryLabel, primaryAction, skipAction, exitAction,
+                    coachGeneration, 0);
+            return;
+        }
         FrameLayout root = hostRoot;
         if (root == null) {
             ViewGroup content = activity.findViewById(android.R.id.content);
@@ -155,7 +198,7 @@ public final class GuidedTourCoach {
         card.setTag(TAG);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(activity, 12), dp(activity, 9), dp(activity, 12), dp(activity, 9));
-        card.setElevation(dp(activity, 10));
+        card.setElevation(dp(activity, 96));
         card.setClickable(true);
         card.setFocusable(true);
         // Guided-tour UI uses a warm instructional surface so it cannot be mistaken for one of
@@ -392,6 +435,8 @@ public final class GuidedTourCoach {
                 width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
         params.setMargins(dp(activity, 8), dp(activity, 8), 0, 0);
         root.addView(card, params);
+        installInformationalTargetInterceptor(activity, root, target, requiredAction, primaryAction);
+        card.setElevation(dp(activity, 96));
         card.bringToFront();
         card.placeForCurrentStep();
         highlight(target);
@@ -402,6 +447,59 @@ public final class GuidedTourCoach {
                         ? "Guided tour target" : requiredAction);
             });
         }
+    }
+
+    private static void waitForTargetAndShow(Activity activity, FrameLayout hostRoot,
+                                                 int step, int total, String title, String message,
+                                                 String requiredAction, View target,
+                                                 Runnable backAction, String primaryLabel,
+                                                 Runnable primaryAction, Runnable skipAction,
+                                                 Runnable exitAction, long generation, int attempt) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()
+                || target == null || generation != coachGeneration || attempt >= 14) return;
+        target.postDelayed(() -> {
+            if (generation != coachGeneration) return;
+            if (targetReady(target)) {
+                show(activity, hostRoot, step, total, title, message, requiredAction, target,
+                        backAction, primaryLabel, primaryAction, skipAction, exitAction);
+            } else {
+                waitForTargetAndShow(activity, hostRoot, step, total, title, message,
+                        requiredAction, target, backAction, primaryLabel, primaryAction,
+                        skipAction, exitAction, generation, attempt + 1);
+            }
+        }, 40L);
+    }
+
+    private static boolean targetReady(View target) {
+        if (target == null || !target.isAttachedToWindow() || !target.isShown()
+                || target.getWidth() <= 0 || target.getHeight() <= 0) return false;
+        Rect visible = new Rect();
+        return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
+    }
+
+    private static void installInformationalTargetInterceptor(Activity activity, FrameLayout root,
+                                                               View target, String requiredAction,
+                                                               Runnable primaryAction) {
+        if (activity == null || root == null || target == null || primaryAction == null
+                || requiredAction == null
+                || !requiredAction.trim().toLowerCase().startsWith("review")) return;
+        Rect screen = new Rect();
+        if (!target.getGlobalVisibleRect(screen) || screen.width() <= 0 || screen.height() <= 0) return;
+        int[] rootLocation = new int[2];
+        root.getLocationOnScreen(rootLocation);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                screen.width(), screen.height(), Gravity.TOP | Gravity.START);
+        params.leftMargin = screen.left - rootLocation[0];
+        params.topMargin = screen.top - rootLocation[1];
+        View intercept = new View(activity);
+        intercept.setTag("rockmap-guided-tour-informational-target");
+        intercept.setBackgroundColor(Color.TRANSPARENT);
+        intercept.setClickable(true);
+        intercept.setFocusable(false);
+        intercept.setElevation(dp(activity, 88));
+        intercept.setOnClickListener(v -> primaryAction.run());
+        root.addView(intercept, params);
+        activeTargetInterceptor = new WeakReference<>(intercept);
     }
 
     private static void highlight(View target) {
