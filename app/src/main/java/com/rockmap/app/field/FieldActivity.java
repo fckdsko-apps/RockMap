@@ -216,9 +216,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showFieldTourPicker() {
         final String[] tools = new String[]{
-                FieldUiNames.TRACK, FieldUiNames.FIELD_RECORDS, FieldUiNames.SAVED_LOCATIONS,
-                FieldUiNames.PROSPECTING_AREAS, FieldUiNames.MEASURE, FieldUiNames.IMPORT,
-                FieldUiNames.IMPORTED_DATA, "Research", FieldUiNames.EXPORT, FieldUiNames.COORDINATES
+                FieldUiNames.TRACK, FieldUiNames.NAVIGATE, FieldUiNames.MEASURE,
+                FieldUiNames.FIELD_RECORDS, FieldUiNames.PROSPECTING_AREAS,
+                FieldUiNames.IMPORT, FieldUiNames.IMPORTED_DATA,
+                FieldUiNames.EXPORT, FieldUiNames.COORDINATES,
+                FieldUiNames.SAVED_LOCATIONS, "Research"
         };
         new AlertDialog.Builder(this)
                 .setTitle("Field Tools guided tours")
@@ -228,31 +230,39 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     private void startFieldTourByName(String tool) {
-        if (FieldUiNames.TRACK.equals(tool)) {
-            startFieldToolTour(tool, "Start, pause, resume, stop, reopen, and export GPS tracks from the map.", this::showTracks, true);
-        } else if (FieldUiNames.FIELD_RECORDS.equals(tool)) {
-            startFieldToolTour(tool, "Create richer field observations with notes, sample information, photos, GPS accuracy, elevation, and Research actions.", this::showFieldRecords, true);
-        } else if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) {
-            startFieldToolTour(tool, "Open lightweight saved points, map them, navigate to them, edit them, or copy them into Field Records.", this::showLegacyWaypoints, true);
-        } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
-            startFieldToolTour(tool, "Open saved polygons, show them on the map, and analyze them with Research.", this::showProspectingAreas, true);
-        } else if (FieldUiNames.MEASURE.equals(tool)) {
-            startFieldToolTour(tool, "Start a temporary map measurement and save it as a Prospecting Area when you want it to persist.", () -> { FieldMapState.requestMeasurement(this); returnToMap(); }, false);
-        } else if (FieldUiNames.IMPORT.equals(tool)) {
-            startFieldToolTour(tool, "Choose a GPX, KML, or GeoJSON file. RockMap tracks imported objects by batch so removal stays scoped.", this::beginImport, false);
-        } else if (FieldUiNames.IMPORTED_DATA.equals(tool)) {
-            startFieldToolTour(tool, "Review imported batches and their objects, show them on the map, or remove one batch safely.", this::showImports, true);
-        } else if ("Research".equals(tool)) {
-            startFieldToolTour(tool, "Open RockMap Research from Field without rebuilding the same geographic context.", () -> startResearch(new Intent(this, ResearchActivity.class)), false);
-        } else if (FieldUiNames.EXPORT.equals(tool)) {
-            startFieldToolTour(tool, "Choose what to export and the format without changing the original local records.", this::showExportHub, true);
-        } else if (FieldUiNames.COORDINATES.equals(tool)) {
-            startFieldToolTour(tool, "Convert one location among decimal, DDM, DMS, UTM, and MGRS formats.", this::showCoordinates, true);
+        if (tool == null || tool.trim().isEmpty()) return;
+        if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) {
+            startLegacyTwoStepTour(tool,
+                    "Saved Locations are quick saved points. Open one to map it, navigate to it, edit it, or copy it into a richer Field Record.",
+                    this::showLegacyWaypoints, true);
+            return;
         }
+        if ("Research".equals(tool)) {
+            startLegacyTwoStepTour(tool,
+                    "Research connects field locations and areas to geology, Mineral Evidence, historic activity, and spatial analysis.",
+                    () -> startResearch(new Intent(this, ResearchActivity.class)), false);
+            return;
+        }
+        FieldTourState.start(this, tool);
+        GuidedTourCoach.clear(this);
+        returnToMap();
     }
 
     private void startFieldToolTour(String tool, String explainer,
                                     Runnable openAction, boolean staysInField) {
+        // All actual Field Tools now enter the same map-first interactive tour engine used by the
+        // main Field menu. Saved Locations and Research retain their small local walkthroughs.
+        if (!FieldUiNames.SAVED_LOCATIONS.equals(tool) && !"Research".equals(tool)) {
+            FieldTourState.start(this, tool);
+            GuidedTourCoach.clear(this);
+            returnToMap();
+            return;
+        }
+        startLegacyTwoStepTour(tool, explainer, openAction, staysInField);
+    }
+
+    private void startLegacyTwoStepTour(String tool, String explainer,
+                                        Runnable openAction, boolean staysInField) {
         showHub();
         getWindow().getDecorView().post(() -> {
             View target = findViewById(android.R.id.content).findViewWithTag(fieldToolTag(tool));
@@ -263,7 +273,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 openAction.run();
                 if (tourActive[0] && staysInField) {
                     getWindow().getDecorView().postDelayed(() ->
-                            showFieldToolScreenTour(tool, explainer, openAction, staysInField), 260L);
+                            showLegacyToolScreenTour(tool, explainer, openAction, staysInField), 260L);
                 }
             });
             GuidedTourCoach.show(this, 1, staysInField ? 2 : 1,
@@ -275,7 +285,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         GuidedTourCoach.clear(FieldActivity.this);
                         openAction.run();
                         if (staysInField) getWindow().getDecorView().postDelayed(() ->
-                                showFieldToolScreenTour(tool, explainer, openAction, staysInField), 260L);
+                                showLegacyToolScreenTour(tool, explainer, openAction, staysInField), 260L);
                     },
                     () -> {
                         tourActive[0] = false;
@@ -284,62 +294,75 @@ public final class FieldActivity extends Activity implements LocationRepository.
         });
     }
 
-    private void showFieldToolScreenTour(String tool, String explainer,
-                                         Runnable openAction, boolean staysInField) {
-        View target = fieldToolScreenTarget(tool);
-        String action = fieldToolScreenAction(tool, target);
-        String body = fieldToolScreenPurpose(tool, explainer);
-        GuidedTourCoach.show(this, 2, 2, tool, body, action, target,
-                () -> startFieldToolTour(tool, explainer, openAction, staysInField),
+    private void showLegacyToolScreenTour(String tool, String explainer,
+                                          Runnable openAction, boolean staysInField) {
+        View target = findFirstFeatureAction(findViewById(android.R.id.content));
+        GuidedTourCoach.show(this, 2, 2, tool, explainer,
+                target == null ? "Review the available actions." : "Try the highlighted control.", target,
+                () -> startLegacyTwoStepTour(tool, explainer, openAction, staysInField),
                 "Finish", () -> GuidedTourCoach.clear(FieldActivity.this),
                 () -> GuidedTourCoach.clear(FieldActivity.this),
                 () -> GuidedTourCoach.clear(FieldActivity.this));
     }
 
-    private View fieldToolScreenTarget(String tool) {
-        View content = findViewById(android.R.id.content);
-        if (content == null) return null;
-        if (FieldUiNames.TRACK.equals(tool)) {
-            View target = findClickableByText(content, "Start new track");
-            if (target == null) target = findClickableByText(content, "Resume");
-            if (target == null) target = findClickableByText(content, "Pause");
-            if (target == null) target = findClickableByText(content, "Open active track on map");
-            return target;
-        }
-        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return findClickableByText(content, "New at GPS");
-        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return findClickableByText(content, "Create Prospecting Area");
-        if (FieldUiNames.IMPORTED_DATA.equals(tool)) {
-            View target = findClickableByText(content, "Import File");
-            return target == null ? findClickableByText(content, "Import Another File") : target;
-        }
-        if (FieldUiNames.COORDINATES.equals(tool)) return findClickableByText(content, "Convert");
-        if (FieldUiNames.SAVED_LOCATIONS.equals(tool) || FieldUiNames.EXPORT.equals(tool)) {
-            return findFirstFeatureAction(content);
-        }
-        return findFirstFeatureAction(content);
+    private int fieldTourTotal(String tool) {
+        if (FieldUiNames.TRACK.equals(tool)) return 17;
+        if (FieldUiNames.NAVIGATE.equals(tool)) return 10;
+        if (FieldUiNames.MEASURE.equals(tool)) return 20;
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return 17;
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return 15;
+        if (FieldUiNames.IMPORT.equals(tool)) return 3;
+        if (FieldUiNames.IMPORTED_DATA.equals(tool)) return 8;
+        if (FieldUiNames.EXPORT.equals(tool)) return 3;
+        if (FieldUiNames.COORDINATES.equals(tool)) return 5;
+        return 2;
     }
 
-    private String fieldToolScreenAction(String tool, View target) {
-        if (target == null) return "Use the visible controls when you have data to work with.";
-        if (FieldUiNames.TRACK.equals(tool)) return "Try the highlighted Track control.";
-        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return "Tap “New at GPS” to see how a Field Record starts.";
-        if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) return "Tap a Saved Location to open its map, navigation, and record actions.";
-        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return "Tap “Create Prospecting Area” to start drawing a saved area on the map.";
-        if (FieldUiNames.IMPORTED_DATA.equals(tool)) return "Tap the highlighted import control to choose another supported file.";
-        if (FieldUiNames.EXPORT.equals(tool)) return "Tap an available export option to choose what RockMap should export.";
-        if (FieldUiNames.COORDINATES.equals(tool)) return "Enter coordinates, then tap “Convert”.";
-        return "Try the highlighted control.";
+    private void finishFieldTour() {
+        FieldTourState.finish(this);
+        GuidedTourCoach.clear(this);
     }
 
-    private String fieldToolScreenPurpose(String tool, String fallback) {
-        if (FieldUiNames.TRACK.equals(tool)) return "Tracks record and manage GPS lines. The controls here start or manage recording and reopen saved tracks on the map.";
-        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return "Field Records store richer observations. Start one from GPS or coordinates, then add the details you want to keep.";
-        if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) return "Saved Locations are quick points you kept on the device. Open one to map it, navigate to it, edit it, or copy it into a Field Record.";
-        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return "Prospecting Areas are saved polygons. Create one from a map measurement, then reopen it for mapping and Research.";
-        if (FieldUiNames.IMPORTED_DATA.equals(tool)) return "Imported Data keeps each supported file and its created objects grouped so you can review or remove that import deliberately.";
-        if (FieldUiNames.EXPORT.equals(tool)) return "Export creates a copy of selected RockMap data for use elsewhere without deleting the original local records.";
-        if (FieldUiNames.COORDINATES.equals(tool)) return "Coordinates converts one location among the supported coordinate formats.";
-        return fallback;
+    private void exitFieldTour() {
+        finishFieldTour();
+    }
+
+    private void showFieldCoach(int step, String tool, String title, String body, String action,
+                                View target, Runnable back, String primaryLabel,
+                                Runnable primary, Runnable skip) {
+        GuidedTourCoach.show(this, step, fieldTourTotal(tool), title, body, action, target,
+                back, primaryLabel, primary, skip, this::exitFieldTour);
+    }
+
+    private FrameLayout dialogTourRoot(AlertDialog dialog) {
+        if (dialog == null || dialog.getWindow() == null) return null;
+        View content = dialog.getWindow().findViewById(android.R.id.content);
+        if (content instanceof FrameLayout) return (FrameLayout) content;
+        return findFirstFrameLayout(dialog.getWindow().getDecorView());
+    }
+
+    private FrameLayout findFirstFrameLayout(View view) {
+        if (view instanceof FrameLayout) return (FrameLayout) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                FrameLayout found = findFirstFrameLayout(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private void showDialogCoach(AlertDialog dialog, int step, String tool, String title,
+                                 String body, String action, View target, Runnable back,
+                                 String primaryLabel, Runnable primary, Runnable skip) {
+        FrameLayout host = dialogTourRoot(dialog);
+        if (host == null) return;
+        GuidedTourCoach.show(this, host, step, fieldTourTotal(tool), title, body, action, target,
+                back, primaryLabel, primary, skip, () -> {
+                    finishFieldTour();
+                    if (dialog.isShowing()) dialog.dismiss();
+                });
     }
 
     private View findClickableByText(View root, String wanted) {
@@ -402,7 +425,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
         FieldDatabase.Track active = db.getActiveTrack();
         if (active == null) {
             root.addView(help("Track recording uses the GPS provider and an Android foreground service. RockMap does not request background-location permission."));
-            root.addView(action("Start new track", "Begins recording after a precise-location check.", v -> startNewTrack()));
+            View startTrack = action("Start new track", "Begins recording after a precise-location check.", v -> {
+                if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) FieldTourState.step(this, 3);
+                startNewTrack();
+            });
+            root.addView(startTrack);
         } else {
             List<GeoMath.Point> points = db.getTrackPoints(active.id);
             root.addView(help(active.name + "\n" + trackStatus(active, points)));
@@ -427,13 +454,24 @@ public final class FieldActivity extends Activity implements LocationRepository.
             for (FieldDatabase.Track track : tracks) {
                 List<GeoMath.Point> pts = db.getTrackPoints(track.id);
                 String visibility = FieldMapState.isTrackHidden(this, track.id) ? "hidden on map" : "visible on map";
-                root.addView(action(track.name,
+                View trackAction = action(track.name,
                         trackStatus(track, pts) + " · " + visibility + "\nTap to open the map view.",
-                        v -> showTrackOnMap(track.id)));
+                        v -> {
+                            if (FieldTourState.is(this, FieldUiNames.TRACK, 12)
+                                    && (FieldTourState.entityId(this) <= 0L
+                                    || FieldTourState.entityId(this) == track.id)) {
+                                FieldTourState.entityId(this, track.id);
+                                FieldTourState.step(this, 13);
+                            }
+                            showTrackOnMap(track.id);
+                        });
+                trackAction.setTag("rockmap-track-row:" + track.id);
+                root.addView(trackAction);
             }
         }
         root.addView(back());
         setContentView(scroll(root));
+        getWindow().getDecorView().post(this::showTracksTourCoach);
     }
 
     private void startNewTrack() {
@@ -442,30 +480,162 @@ public final class FieldActivity extends Activity implements LocationRepository.
             input.setHint("Track name");
             input.setText("Field track — " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date()));
             input.setSingleLine(true);
-            new AlertDialog.Builder(this)
+            AlertDialog dialog = new AlertDialog.Builder(this)
                     .setTitle("Start track recording")
                     .setMessage("Recording can continue while you use the RockMap map or lock the screen. Android keeps a foreground-service indicator active until you stop the track.")
                     .setView(input)
-                    .setPositiveButton("Start", (d, w) -> {
-                        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                            toast("Precise location is required to start track recording.");
-                            return;
-                        }
-                        long id = db.createTrack(input.getText().toString().trim(), System.currentTimeMillis());
-                        Intent service = new Intent(this, TrackRecordingService.class)
-                                .setAction(TrackRecordingService.ACTION_START)
-                                .putExtra(TrackRecordingService.EXTRA_TRACK_ID, id);
-                        FieldMapState.showTrack(this, id);
-                        FieldMapState.requestTrackFocus(this, id);
-                        FieldMapState.clearViewedMapContext(this);
-                        FieldMapState.setExpandedTool(this, FieldMapState.TOOL_TRACK);
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
-                        else startService(service);
-                        returnToMap();
-                    })
+                    .setPositiveButton("Start", null)
                     .setNegativeButton("Cancel", null)
-                    .show();
+                    .create();
+            dialog.setOnShowListener(ignored -> {
+                Button startButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+                startButton.setOnClickListener(v -> {
+                    if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                        toast("Precise location is required to start track recording.");
+                        return;
+                    }
+                    long id = db.createTrack(input.getText().toString().trim(), System.currentTimeMillis());
+                    if (FieldTourState.is(this, FieldUiNames.TRACK)) {
+                        FieldTourState.entityId(this, id);
+                        FieldTourState.step(this, 5);
+                    }
+                    Intent service = new Intent(this, TrackRecordingService.class)
+                            .setAction(TrackRecordingService.ACTION_START)
+                            .putExtra(TrackRecordingService.EXTRA_TRACK_ID, id);
+                    FieldMapState.showTrack(this, id);
+                    FieldMapState.requestTrackFocus(this, id);
+                    FieldMapState.clearViewedMapContext(this);
+                    FieldMapState.setExpandedTool(this, FieldMapState.TOOL_TRACK);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
+                    else startService(service);
+                    dialog.dismiss();
+                    GuidedTourCoach.clear(this);
+                    returnToMap();
+                });
+                if (FieldTourState.is(this, FieldUiNames.TRACK, 3)) {
+                    showDialogCoach(dialog, 3, FieldUiNames.TRACK, "Name the track",
+                            "Give the recording a useful name. RockMap provides a default name if you do not change it.",
+                            "Enter or review the track name.", input,
+                            () -> {
+                                dialog.dismiss();
+                                FieldTourState.step(this, 2);
+                                showTracks();
+                            },
+                            "Continue", () -> {
+                                FieldTourState.step(this, 4);
+                                showTrackStartButtonTour(dialog, input, startButton);
+                            },
+                            () -> {
+                                FieldTourState.step(this, 4);
+                                showTrackStartButtonTour(dialog, input, startButton);
+                            });
+                } else if (FieldTourState.is(this, FieldUiNames.TRACK, 4)) {
+                    showTrackStartButtonTour(dialog, input, startButton);
+                }
+            });
+            dialog.setOnDismissListener(d -> {
+                if (FieldTourState.is(this, FieldUiNames.TRACK, 3)
+                        || FieldTourState.is(this, FieldUiNames.TRACK, 4)) {
+                    GuidedTourCoach.clear(this);
+                }
+            });
+            dialog.show();
         });
+    }
+
+    private void showTrackStartButtonTour(AlertDialog dialog, EditText input, Button startButton) {
+        showDialogCoach(dialog, 4, FieldUiNames.TRACK, "Start recording",
+                "Start begins GPS recording and saves the new track. Recording can continue while you use other RockMap tools or collapse the Track panel.",
+                "Tap “Start”.", startButton,
+                () -> {
+                    FieldTourState.step(this, 3);
+                    showDialogCoach(dialog, 3, FieldUiNames.TRACK, "Name the track",
+                            "Give the recording a useful name. RockMap provides a default name if you do not change it.",
+                            "Enter or review the track name.", input,
+                            () -> {
+                                dialog.dismiss();
+                                FieldTourState.step(this, 2);
+                                showTracks();
+                            },
+                            "Continue", () -> {
+                                FieldTourState.step(this, 4);
+                                showTrackStartButtonTour(dialog, input, startButton);
+                            },
+                            () -> {
+                                FieldTourState.step(this, 4);
+                                showTrackStartButtonTour(dialog, input, startButton);
+                            });
+                },
+                null, null,
+                () -> {
+                    FieldDatabase.Track recent = null;
+                    List<FieldDatabase.Track> tracks = db.listTracks(1);
+                    if (!tracks.isEmpty()) recent = tracks.get(0);
+                    dialog.dismiss();
+                    if (recent != null) {
+                        FieldTourState.entityId(this, recent.id);
+                        FieldTourState.step(this, 12);
+                        showTracks();
+                    } else {
+                        finishFieldTour();
+                        toast("Start a track when you want to continue the recording walkthrough.");
+                    }
+                });
+    }
+
+    private void showTracksTourCoach() {
+        if (!FieldTourState.is(this, FieldUiNames.TRACK)) return;
+        int step = FieldTourState.step(this);
+        if (step == 2) {
+            View target = findClickableByText(findViewById(android.R.id.content), "Start new track");
+            if (target == null) {
+                FieldDatabase.Track active = db.getActiveTrack();
+                if (active != null) {
+                    FieldTourState.entityId(this, active.id);
+                    FieldTourState.step(this, 5);
+                    showTrackOnMap(active.id);
+                }
+                return;
+            }
+            showFieldCoach(2, FieldUiNames.TRACK, "Start a track",
+                    "Tracks record your movement as a GPS line that you can view, reopen, navigate, and export later.",
+                    "Tap “Start new track”.", target,
+                    () -> {
+                        FieldTourState.step(this, 1);
+                        returnToMap();
+                    }, null, null,
+                    target::performClick);
+            return;
+        }
+        if (step == 12) {
+            long id = FieldTourState.entityId(this);
+            FieldDatabase.Track track = id > 0L ? db.getTrack(id) : null;
+            if (track == null) {
+                List<FieldDatabase.Track> tracks = db.listTracks(1);
+                if (!tracks.isEmpty()) {
+                    track = tracks.get(0);
+                    FieldTourState.entityId(this, track.id);
+                }
+            }
+            if (track == null) {
+                finishFieldTour();
+                return;
+            }
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-track-row:" + track.id);
+            if (target == null) target = findClickableByText(findViewById(android.R.id.content), track.name);
+            final FieldDatabase.Track selected = track;
+            showFieldCoach(12, FieldUiNames.TRACK, "Reopen a saved track",
+                    "Completed tracks stay under Recent tracks. Opening one returns to its recorded line and map controls.",
+                    "Tap “" + selected.name + "”.", target,
+                    () -> {
+                        FieldTourState.step(this, 11);
+                        returnToMap();
+                    }, null, null,
+                    () -> {
+                        FieldTourState.step(this, 13);
+                        showTrackOnMap(selected.id);
+                    });
+        }
     }
 
     private void trackCommand(String action, long id) {
@@ -523,8 +693,17 @@ public final class FieldActivity extends Activity implements LocationRepository.
         LinearLayout root = page();
         root.addView(title(FieldUiNames.FIELD_RECORDS));
         LinearLayout add = row();
-        add.addView(small("New at GPS", v -> newFieldAtGps()), weight());
-        add.addView(small("New at coordinates", v -> newFieldAtCoordinates()), weight());
+        Button newGps = small("New at GPS", v -> {
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 4);
+            newFieldAtGps();
+        });
+        Button newCoords = small("New at coordinates", v -> {
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 3);
+            newFieldAtCoordinates();
+        });
+        add.addView(newGps, weight());
+        add.addView(newCoords, weight());
+        add.setTag("rockmap-field-record-create-choice");
         root.addView(add);
 
         List<FieldDatabase.FieldRecord> records = db.listFieldRecords();
@@ -536,11 +715,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         + (r.mineral == null || r.mineral.isEmpty() ? "" : " · " + r.mineral)
                         + (r.sampleId == null || r.sampleId.isEmpty() ? "" : " · Sample " + r.sampleId)
                         + "\n" + CoordinateFormats.decimal(r.lat, r.lon);
-                root.addView(action(r.name, detail, v -> showFieldRecord(r.id)));
+                View recordAction = action(r.name, detail, v -> showFieldRecord(r.id));
+                recordAction.setTag("rockmap-field-record-row:" + r.id);
+                root.addView(recordAction);
             }
         }
         root.addView(back());
         setContentView(scroll(root));
+        getWindow().getDecorView().post(this::showFieldRecordsTourCoach);
     }
 
     private void newFieldAtGps() {
@@ -564,18 +746,70 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setPositiveButton("Continue", null)
                 .setNegativeButton("Cancel", null)
                 .create();
-        dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            try {
-                CoordinateParser.Result r = CoordinateParser.parse(input.getText().toString());
-                dialog.dismiss();
-                editFieldRecord(new FieldDatabase.FieldRecord(
-                        0, "", "", "", "", "", r.latitude, r.longitude,
-                        Double.NaN, -1f, "", System.currentTimeMillis(), System.currentTimeMillis()));
-            } catch (IllegalArgumentException ex) {
-                input.setError(ex.getMessage());
+        dialog.setOnShowListener(x -> {
+            Button cont = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            cont.setOnClickListener(v -> {
+                try {
+                    CoordinateParser.Result r = CoordinateParser.parse(input.getText().toString());
+                    dialog.dismiss();
+                    if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) {
+                        FieldTourState.text(this, "");
+                        FieldTourState.step(this, 4);
+                    }
+                    editFieldRecord(new FieldDatabase.FieldRecord(
+                            0, "", "", "", "", "", r.latitude, r.longitude,
+                            Double.NaN, -1f, "", System.currentTimeMillis(), System.currentTimeMillis()));
+                } catch (IllegalArgumentException ex) {
+                    input.setError(ex.getMessage());
+                }
+            });
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) {
+                showFieldRecordCoordinateTour(dialog, input, cont);
             }
-        }));
+        });
         dialog.show();
+    }
+
+    private void showFieldRecordCoordinateTour(AlertDialog dialog, EditText input, Button cont) {
+        if (dialog == null || input == null || cont == null
+                || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) return;
+        boolean readyForContinue = "field-coordinate-continue".equals(FieldTourState.text(this));
+        if (!readyForContinue) {
+            showDialogCoach(dialog, 3, FieldUiNames.FIELD_RECORDS, "Enter a location",
+                    "Use coordinates when the observation is somewhere other than your current GPS position.",
+                    "Enter latitude and longitude.", input,
+                    () -> {
+                        dialog.dismiss();
+                        FieldTourState.text(this, "");
+                        FieldTourState.step(this, 2);
+                        showFieldRecords();
+                    }, "Continue", () -> {
+                        FieldTourState.text(this, "field-coordinate-continue");
+                        showFieldRecordCoordinateTour(dialog, input, cont);
+                    }, () -> {
+                        dialog.dismiss();
+                        FieldTourState.text(this, "");
+                        FieldTourState.step(this, 4);
+                        newFieldAtGps();
+                    });
+        } else {
+            showDialogCoach(dialog, 3, FieldUiNames.FIELD_RECORDS, "Use these coordinates",
+                    "Continue creates the new Field Record at the coordinates you entered.",
+                    "Tap “Continue”.", cont,
+                    () -> {
+                        FieldTourState.text(this, "");
+                        showFieldRecordCoordinateTour(dialog, input, cont);
+                    }, null, null,
+                    () -> {
+                        if (input.getText().toString().trim().isEmpty()) {
+                            input.setError("Enter coordinates before continuing.");
+                            FieldTourState.text(this, "");
+                            showFieldRecordCoordinateTour(dialog, input, cont);
+                        } else {
+                            cont.performClick();
+                        }
+                    });
+        }
     }
 
     private void editFieldRecord(FieldDatabase.FieldRecord record) {
@@ -609,26 +843,106 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setPositiveButton("Save", null)
                 .setNegativeButton("Cancel", null)
                 .create();
-        dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-            String label = name.getText().toString().trim();
-            if (label.isEmpty()) {
-                name.setError("Enter a name.");
-                return;
+        dialog.setOnShowListener(x -> {
+            Button save = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            save.setOnClickListener(v -> {
+                String label = name.getText().toString().trim();
+                if (label.isEmpty()) {
+                    name.setError("Enter a name.");
+                    return;
+                }
+                record.name = bounded(label, 500);
+                record.category = bounded(category.getText().toString().trim(), 300);
+                record.mineral = bounded(mineral.getText().toString().trim(), 500);
+                record.sampleId = bounded(sample.getText().toString().trim(), 200);
+                record.notes = bounded(notes.getText().toString().trim(), 20000);
+                record.photoUri = pendingPhotoUri;
+                record.updatedAt = System.currentTimeMillis();
+                if (record.createdAt <= 0) record.createdAt = record.updatedAt;
+                if (record.id > 0) db.updateFieldRecord(record);
+                else record.id = db.insertFieldRecord(record);
+                if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)) {
+                    FieldTourState.entityId(this, record.id);
+                    FieldTourState.step(this, 12);
+                }
+                dialog.dismiss();
+                GuidedTourCoach.clear(this);
+                showFieldRecord(record.id);
+            });
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)
+                    && FieldTourState.step(this) >= 4 && FieldTourState.step(this) <= 11) {
+                showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save);
             }
-            record.name = bounded(label, 500);
-            record.category = bounded(category.getText().toString().trim(), 300);
-            record.mineral = bounded(mineral.getText().toString().trim(), 500);
-            record.sampleId = bounded(sample.getText().toString().trim(), 200);
-            record.notes = bounded(notes.getText().toString().trim(), 20000);
-            record.photoUri = pendingPhotoUri;
-            record.updatedAt = System.currentTimeMillis();
-            if (record.createdAt <= 0) record.createdAt = record.updatedAt;
-            if (record.id > 0) db.updateFieldRecord(record);
-            else record.id = db.insertFieldRecord(record);
-            dialog.dismiss();
-            showFieldRecord(record.id);
-        }));
+        });
         dialog.show();
+    }
+
+    private void showFieldRecordEditorTour(AlertDialog dialog, FieldDatabase.FieldRecord record,
+                                           EditText name, EditText category, EditText mineral,
+                                           EditText sample, EditText notes, TextView coords,
+                                           Button photo, Button save) {
+        int step = FieldTourState.step(this);
+        View target;
+        String title;
+        String body;
+        String action;
+        String primary = "Continue";
+        Runnable next;
+        if (step == 4) {
+            target = name; title = "Name";
+            body = "Name is the required label for this Field Record. Use something you will recognize later in the field list and on the map.";
+            action = "Enter a name for the observation.";
+            next = () -> { FieldTourState.step(this, 5); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 5) {
+            target = category; title = "Category";
+            body = "Category describes the kind of observation, such as an outcrop, float, mine, dump, or vein.";
+            action = "Add a category if it is useful for this observation.";
+            next = () -> { FieldTourState.step(this, 6); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 6) {
+            target = mineral; title = "Mineral / material";
+            body = "Record the mineral, rock, or material you observed. This is your field observation, separate from RockMap's mapped Mineral Evidence datasets.";
+            action = "Add a mineral or material if known.";
+            next = () -> { FieldTourState.step(this, 7); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 7) {
+            target = sample; title = "Sample ID";
+            body = "Use Sample ID when you want this record to correspond to a physical sample, bag, specimen, or your own catalog number.";
+            action = "Add a sample ID if you use one.";
+            next = () -> { FieldTourState.step(this, 8); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 8) {
+            target = notes; title = "Notes";
+            body = "Notes are for the details you want to remember later: texture, alteration, structure, access observations, sample context, or anything else useful in the field.";
+            action = "Add any notes you want to keep.";
+            next = () -> { FieldTourState.step(this, 9); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 9) {
+            target = coords; title = "Location details";
+            body = "The record keeps its coordinates and, when available, GPS accuracy and elevation so you can judge the quality and context of the saved location.";
+            action = "Review the saved location details.";
+            next = () -> { FieldTourState.step(this, 10); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else if (step == 10) {
+            target = photo; title = "Photo";
+            body = "Attach a photo when a visual reference will help. The tour does not require you to choose a photo.";
+            action = "Use “Attach photo” if you want one, or continue.";
+            next = () -> { FieldTourState.step(this, 11); showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save); };
+        } else {
+            target = save; title = "Save the Field Record";
+            body = "Save keeps the observation on this device and opens the actions you can use with the saved location.";
+            action = "Tap “Save”.";
+            primary = null;
+            next = null;
+        }
+        Runnable back = () -> {
+            if (step <= 4) {
+                dialog.dismiss();
+                FieldTourState.step(this, 2);
+                showFieldRecords();
+            } else {
+                FieldTourState.step(this, step - 1);
+                showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save);
+            }
+        };
+        Runnable skip = step >= 11 ? save::performClick : next;
+        showDialogCoach(dialog, step, FieldUiNames.FIELD_RECORDS, title, body, action, target,
+                back, primary, next, skip);
     }
 
     private void showFieldRecord(long id) {
@@ -654,30 +968,38 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (r.photoUri != null && !r.photoUri.isEmpty()) {
             root.addView(action("Open attached photo", r.photoUri, v -> openPhoto(r.photoUri)));
         }
-        root.addView(action("Show on Map",
+        View showMapAction = action("Show on Map",
                 "Center this Field Record on the main map without starting navigation.",
                 v -> {
                     FieldMapState.clearViewedMapContext(this);
                     FieldMapState.requestFocusBounds(this, new FieldMapState.Bounds(r.lat, r.lon, r.lat, r.lon));
                     returnToMap();
-                }));
-        root.addView(action("Research this location",
+                });
+        showMapAction.setTag("rockmap-field-record-show-map");
+        root.addView(showMapAction);
+        View researchAction = action("Research this location",
                 "Choose a radius, then inspect mapped geology and continue into Mineral Evidence or Historic Mines & Workings.",
                 v -> startResearch(new Intent(this, ResearchActivity.class)
                         .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
-                        .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name))));
+                        .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name)));
+        researchAction.setTag("rockmap-field-record-research");
+        root.addView(researchAction);
         View createAreaAction = action("Create Prospecting Area Around Here",
                 "Choose a radius around this Field Record and save it as a Prospecting Area.",
                 v -> ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
                         "Created from Field Record: " + r.name));
-        root.addView(action("Navigate to this point",
+        createAreaAction.setTag("rockmap-field-record-create-area");
+        View navigateAction = action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
-                v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon))));
+                v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon)));
+        navigateAction.setTag("rockmap-field-record-navigate");
+        root.addView(navigateAction);
 
         LinearLayout row = row();
-        row.addView(small("Edit", v -> editFieldRecord(r)), weight());
-        row.addView(small("Delete", v -> new AlertDialog.Builder(this)
+        Button editButton = small("Edit", v -> editFieldRecord(r));
+        editButton.setTag("rockmap-field-record-edit");
+        Button deleteButton = small("Delete", v -> new AlertDialog.Builder(this)
                 .setTitle("Delete field record?")
                 .setMessage(r.name + " will be removed from this device.")
                 .setPositiveButton("Delete", (d, w) -> {
@@ -685,10 +1007,89 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     showFieldRecords();
                 })
                 .setNegativeButton("Cancel", null)
-                .show()), weight());
+                .show());
+        deleteButton.setTag("rockmap-field-record-delete");
+        row.addView(editButton, weight());
+        row.addView(deleteButton, weight());
         root.addView(row);
         root.addView(nav("Back to Field Records", v -> showFieldRecords()));
         setContentView(pageWithPinnedAction(root, createAreaAction));
+        getWindow().getDecorView().post(() -> showSavedFieldRecordTourCoach(r));
+    }
+
+    private void showFieldRecordsTourCoach() {
+        if (!FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) return;
+        View target = findViewById(android.R.id.content).findViewWithTag("rockmap-field-record-create-choice");
+        showFieldCoach(2, FieldUiNames.FIELD_RECORDS, "Create a Field Record",
+                "Field Records save detailed observations at a location. Start one from your current GPS position or from coordinates you enter.",
+                "Choose “New at GPS” or “New at coordinates”.", target,
+                () -> {
+                    FieldTourState.step(this, 1);
+                    returnToMap();
+                }, null, null,
+                () -> {
+                    View gps = findClickableByText(findViewById(android.R.id.content), "New at GPS");
+                    if (gps != null) gps.performClick();
+                });
+    }
+
+    private void showSavedFieldRecordTourCoach(FieldDatabase.FieldRecord record) {
+        if (record == null || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)) return;
+        int step = FieldTourState.step(this);
+        if (step < 12 || step > 17) return;
+        View root = findViewById(android.R.id.content);
+        View target;
+        String title;
+        String body;
+        if (step == 12) {
+            target = root.findViewWithTag("rockmap-field-record-show-map");
+            title = "Show on Map";
+            body = "Show on Map centers this saved observation without starting navigation.";
+        } else if (step == 13) {
+            target = root.findViewWithTag("rockmap-field-record-research");
+            title = "Research this location";
+            body = "Research this location opens location-based Research around the Field Record so you can inspect geology, Mineral Evidence, and historic activity nearby.";
+        } else if (step == 14) {
+            target = root.findViewWithTag("rockmap-field-record-create-area");
+            title = "Create a Prospecting Area";
+            body = "Create Prospecting Area Around Here builds a saved area around this point using a radius you choose.";
+        } else if (step == 15) {
+            target = root.findViewWithTag("rockmap-field-record-navigate");
+            title = "Navigate to this point";
+            body = "Navigate to this point uses the record as a directional target on the map. Navigation is directional guidance, not a calculated route.";
+        } else if (step == 16) {
+            target = root.findViewWithTag("rockmap-field-record-edit");
+            title = "Edit";
+            body = "Edit lets you change the saved observation, including its descriptive fields and attached photo.";
+        } else {
+            target = root.findViewWithTag("rockmap-field-record-delete");
+            title = "Delete";
+            body = "Delete permanently removes this Field Record from the device. The tour will not press it.";
+        }
+        Runnable back = () -> {
+            if (step == 12) {
+                FieldTourState.step(this, 11);
+                editFieldRecord(record);
+            } else {
+                FieldTourState.step(this, step - 1);
+                showSavedFieldRecordTourCoach(record);
+            }
+        };
+        if (step == 17) {
+            showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
+                    "Review what this action does.", target, back,
+                    "Finish", this::finishFieldTour, this::finishFieldTour);
+        } else {
+            showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
+                    "Review the highlighted action.", target, back,
+                    "Continue", () -> {
+                        FieldTourState.step(this, step + 1);
+                        showSavedFieldRecordTourCoach(record);
+                    }, () -> {
+                        FieldTourState.step(this, step + 1);
+                        showSavedFieldRecordTourCoach(record);
+                    });
+        }
     }
 
     private void beginPhotoPick() {
@@ -768,25 +1169,33 @@ public final class FieldActivity extends Activity implements LocationRepository.
         LinearLayout root = page();
         root.addView(title(FieldUiNames.PROSPECTING_AREAS));
         root.addView(help("Saved polygons live here. Create one on the map, then reopen it for map view, analysis, export or deletion."));
-        root.addView(action("Create Prospecting Area",
+        View createArea = action("Create Prospecting Area",
                 "Draw the boundary on the map, then save it as a Prospecting Area.",
                 v -> {
+                    if (FieldTourState.is(this, FieldUiNames.PROSPECTING_AREAS, 2)) {
+                        FieldTourState.step(this, 3);
+                    }
                     FieldMapState.requestMeasurement(this);
                     returnToMap();
-                }));
+                });
+        createArea.setTag("rockmap-create-prospecting-area");
+        root.addView(createArea);
         List<FieldDatabase.Area> areas = db.listAreas();
         root.addView(section("Saved Prospecting Areas"));
         if (areas.isEmpty()) {
             root.addView(help("No saved Prospecting Areas yet."));
         } else {
             for (FieldDatabase.Area a : areas) {
-                root.addView(action(a.name,
+                View areaAction = action(a.name,
                         GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points)) + " · " + a.points.size() + " vertices",
-                        v -> showArea(a)));
+                        v -> showArea(a));
+                areaAction.setTag("rockmap-area-row:" + a.id);
+                root.addView(areaAction);
             }
         }
         root.addView(nav("Back to Field", v -> showHub()));
         setContentView(scroll(root));
+        getWindow().getDecorView().post(this::showProspectingAreasTourCoach);
     }
 
     private String measurementText(List<GeoMath.Point> pts) {
@@ -810,15 +1219,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 ProspectingAreaResearchStore.list(this, a.id);
         if (!research.isEmpty()) {
             ProspectingAreaResearchStore.Snapshot latest = research.get(0);
-            root.addView(action("Saved Research (" + research.size() + ")",
+            View savedResearchCard = action("Saved Research (" + research.size() + ")",
                     latest.compactLabel() + " · "
                             + DateFormat.getDateTimeInstance().format(new Date(latest.savedAt)),
-                    v -> showAreaResearch(a)));
+                    v -> showAreaResearch(a));
+            savedResearchCard.setTag("rockmap-area-saved-research-card");
+            root.addView(savedResearchCard);
         } else {
             root.addView(help("No Research snapshots are saved with this area yet. Use Save Research from the Research Area panel when you want to keep one."));
         }
 
         Button del = button("Delete Area");
+        del.setTag("rockmap-area-delete");
         del.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle("Delete Area?")
                 .setMessage("Delete this Prospecting Area and its saved Research snapshots from this device?")
@@ -834,19 +1246,90 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(nav("Back to Prospecting Areas", v -> showProspectingAreas()));
 
         LinearLayout primary = row();
-        primary.addView(small("Research", v -> startResearch(new Intent(this, ResearchActivity.class)
-                .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id))), weight());
-        primary.addView(small("Show on Map", v -> {
+        Button researchButton = small("Research", v -> startResearch(new Intent(this, ResearchActivity.class)
+                .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id)));
+        researchButton.setTag("rockmap-area-research");
+        Button showMapButton = small("Show on Map", v -> {
             ProspectingAreaVisibility.showOnly(this, a.id);
             FieldMapState.setAreasVisible(this, true);
             FieldMapState.clearViewedMapContext(this);
             FieldMapState.Bounds bounds = FieldMapState.Bounds.fromPoints(a.points);
             if (bounds != null) FieldMapState.requestFocusBounds(this, bounds);
             returnToMap();
-        }), weight());
-        primary.addView(small(research.isEmpty() ? "Saved Research" : "Research (" + research.size() + ")",
-                v -> showAreaResearch(a)), weight());
+        });
+        showMapButton.setTag("rockmap-area-show-map");
+        Button savedResearchButton = small(research.isEmpty() ? "Saved Research" : "Research (" + research.size() + ")",
+                v -> showAreaResearch(a));
+        savedResearchButton.setTag("rockmap-area-saved-research");
+        primary.addView(researchButton, weight());
+        primary.addView(showMapButton, weight());
+        primary.addView(savedResearchButton, weight());
         setContentView(pageWithPinnedAction(root, primary));
+        getWindow().getDecorView().post(() -> showSavedAreaTourCoach(a));
+    }
+
+    private void showProspectingAreasTourCoach() {
+        if (!FieldTourState.is(this, FieldUiNames.PROSPECTING_AREAS, 2)) return;
+        View target = findViewById(android.R.id.content).findViewWithTag("rockmap-create-prospecting-area");
+        showFieldCoach(2, FieldUiNames.PROSPECTING_AREAS, "Create a Prospecting Area",
+                "Prospecting Areas are saved polygons you can keep on the map and analyze with Research. Creating one opens Measure so you can define its boundary.",
+                "Tap “Create Prospecting Area”.", target,
+                () -> {
+                    FieldTourState.step(this, 1);
+                    returnToMap();
+                }, null, null,
+                target == null ? null : target::performClick);
+    }
+
+    private void showSavedAreaTourCoach(FieldDatabase.Area area) {
+        if (area == null || !FieldTourState.is(this, FieldUiNames.PROSPECTING_AREAS)) return;
+        int step = FieldTourState.step(this);
+        if (step < 12 || step > 15) return;
+        View root = findViewById(android.R.id.content);
+        View target;
+        String title;
+        String body;
+        if (step == 12) {
+            target = root.findViewWithTag("rockmap-area-research");
+            title = "Research";
+            body = "Research analyzes the exact saved polygon using RockMap's mapped geology and evidence sources. Spatial overlap is research context, not a mineral prediction or collecting permission.";
+        } else if (step == 13) {
+            target = root.findViewWithTag("rockmap-area-show-map");
+            title = "Show on Map";
+            body = "Show on Map displays and frames this saved polygon without starting Research.";
+        } else if (step == 14) {
+            target = root.findViewWithTag("rockmap-area-saved-research");
+            title = "Saved Research";
+            body = "Saved Research keeps analysis snapshots you explicitly chose to save with this Prospecting Area.";
+        } else {
+            target = root.findViewWithTag("rockmap-area-delete");
+            title = "Delete Area";
+            body = "Delete Area permanently removes this Prospecting Area and its saved Research snapshots. The tour will not press it.";
+        }
+        Runnable back = () -> {
+            if (step == 12) {
+                FieldTourState.step(this, 11);
+                returnToMap();
+            } else {
+                FieldTourState.step(this, step - 1);
+                showSavedAreaTourCoach(area);
+            }
+        };
+        if (step == 15) {
+            showFieldCoach(step, FieldUiNames.PROSPECTING_AREAS, title, body,
+                    "Review what this action does.", target, back,
+                    "Finish", this::finishFieldTour, this::finishFieldTour);
+        } else {
+            showFieldCoach(step, FieldUiNames.PROSPECTING_AREAS, title, body,
+                    "Review the highlighted action.", target, back,
+                    "Continue", () -> {
+                        FieldTourState.step(this, step + 1);
+                        showSavedAreaTourCoach(area);
+                    }, () -> {
+                        FieldTourState.step(this, step + 1);
+                        showSavedAreaTourCoach(area);
+                    });
+        }
     }
 
     private void showAreaResearch(FieldDatabase.Area area) {
@@ -973,13 +1456,35 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 + result.tracks.size() + " tracks\n"
                 + result.areas.size() + " Prospecting Areas\n"
                 + result.pointCount + " total geometry points\n\n"
+                + "Point/waypoint geometry can become Saved Locations, line/track geometry can become Tracks, and polygon geometry can become Prospecting Areas. "
                 + "RockMap will track this file as one removable import. Existing unrelated RockMap data will not be replaced.";
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Import " + name + "?")
                 .setMessage(summary)
-                .setPositiveButton("Import", (d, w) -> applyImport(result, name, sha))
+                .setPositiveButton("Import", null)
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            Button importButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            importButton.setOnClickListener(v -> {
+                if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) FieldTourState.step(this, 3);
+                dialog.dismiss();
+                GuidedTourCoach.clear(this);
+                applyImport(result, name, sha);
+            });
+            if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) {
+                showDialogCoach(dialog, 2, FieldUiNames.IMPORT, "Review the import",
+                        "RockMap reads GPX, KML, and GeoJSON geometry before anything is added. Points may become Saved Locations, lines may become Tracks, and polygons may become Prospecting Areas. Review the counts before importing.",
+                        "Tap “Import”.", importButton,
+                        () -> {
+                            dialog.dismiss();
+                            FieldTourState.step(this, 1);
+                            returnToMap();
+                        }, null, null,
+                        importButton::performClick);
+            }
+        });
+        dialog.show();
     }
 
     private void applyImport(FieldImport.Result r, String displayName, String sha) {
@@ -1087,6 +1592,47 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setNegativeButton("Done", (d, w) -> showHub())
                 .create();
         holder[0].show();
+        if (FieldTourState.is(this, FieldUiNames.IMPORT, 3)) {
+            FieldTourState.entityId(this, batchId);
+            View target = findClickableByText(box, "Show Import on Map");
+            showDialogCoach(holder[0], 3, FieldUiNames.IMPORT, "Import complete",
+                    "The file is now grouped as one import batch. Depending on its geometry, you can review imported Saved Locations, Tracks, and Prospecting Areas, show the whole import on the map, manage it later, or remove only this import.",
+                    "Review the available actions for this imported file.", target,
+                    () -> {
+                        FieldTourState.step(this, 2);
+                        View reviewTarget = findClickableByText(box, "Manage This Import");
+                        showDialogCoach(holder[0], 2, FieldUiNames.IMPORT, "What RockMap loaded",
+                                "Imported point/waypoint geometry becomes Saved Locations, line/track geometry becomes Tracks, and polygon geometry becomes Prospecting Areas. The exact buttons shown here depend on what this file contained.",
+                                "Review the imported categories.", reviewTarget,
+                                null, "Continue", () -> {
+                                    FieldTourState.step(this, 3);
+                                    View showTarget = findClickableByText(box, "Show Import on Map");
+                                    showDialogCoach(holder[0], 3, FieldUiNames.IMPORT, "Import complete",
+                                            "The file is now grouped as one import batch. You can show, review, manage, or remove this import without affecting unrelated RockMap data.",
+                                            "Review the available actions for this imported file.", showTarget,
+                                            null, "Finish", () -> {
+                                                finishFieldTour();
+                                                holder[0].dismiss();
+                                                showHub();
+                                            }, () -> {
+                                                finishFieldTour();
+                                                holder[0].dismiss();
+                                                showHub();
+                                            });
+                                }, () -> {
+                                    FieldTourState.step(this, 3);
+                                });
+                    },
+                    "Finish", () -> {
+                        finishFieldTour();
+                        holder[0].dismiss();
+                        showHub();
+                    }, () -> {
+                        finishFieldTour();
+                        holder[0].dismiss();
+                        showHub();
+                    });
+        }
     }
 
     private void showImports() {
@@ -1098,28 +1644,43 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(section("Imported Files"));
         if (batches.isEmpty()) {
             root.addView(help("No imported files yet."));
-            root.addView(action("Import File",
+            View importFile = action("Import File",
                     "Choose a GPX, KML, or GeoJSON file.",
-                    v -> beginImport()));
+                    v -> beginImport());
+            importFile.setTag("rockmap-import-file");
+            root.addView(importFile);
         } else {
-            root.addView(action("Import Another File",
+            View importAnother = action("Import Another File",
                     "Choose another GPX, KML, or GeoJSON file.",
-                    v -> beginImport()));
+                    v -> beginImport());
+            importAnother.setTag("rockmap-import-file");
+            root.addView(importAnother);
             for (FieldDatabase.ImportBatch batch : batches) {
                 String detail = DateFormat.getDateTimeInstance().format(new Date(batch.importedAt))
                         + "\n" + batch.waypointCount + " Saved Locations · "
                         + batch.trackCount + " Tracks · " + batch.areaCount + " Prospecting Areas";
-                root.addView(action(batch.sourceName, detail, v -> showImportBatch(batch.id)));
+                View batchAction = action(batch.sourceName, detail, v -> {
+                    if (FieldTourState.is(this, FieldUiNames.IMPORTED_DATA, 2)) {
+                        FieldTourState.entityId(this, batch.id);
+                        FieldTourState.step(this, 3);
+                    }
+                    showImportBatch(batch.id);
+                });
+                batchAction.setTag("rockmap-import-batch:" + batch.id);
+                root.addView(batchAction);
             }
         }
 
-        root.addView(section("Older Imports"));
+        View olderImports = section("Older Imports");
+        olderImports.setTag("rockmap-older-imports");
+        root.addView(olderImports);
         root.addView(help("Some imported items are not grouped under a source file, so they cannot be safely removed as one batch. Manage those items from Saved Locations, Tracks, or Prospecting Areas."));
         root.addView(action("Review Saved Locations", "Review or delete imported Saved Locations that are not grouped under an import file.", v -> showLegacyWaypoints()));
         root.addView(action("Review Tracks", "Open or remove imported tracks that are not grouped under an import file.", v -> showTracks()));
         root.addView(action("Review Prospecting Areas", "Open or remove imported Prospecting Areas that are not grouped under an import file.", v -> showMeasure()));
         root.addView(nav("Back to Field", v -> showHub()));
         setContentView(scroll(root));
+        getWindow().getDecorView().post(() -> showImportsTourCoach(batches));
     }
 
     private void showImportBatch(long batchId) {
@@ -1140,32 +1701,172 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 + "\nFile fingerprint: " + fingerprint
                 + "\n\nIf an item was already deleted individually, removing this import simply removes the remaining items."));
 
-        root.addView(action("Show Import on Map",
+        View showMap = action("Show Import on Map",
                 "Zoom to all remaining geometry that belongs to this import.",
-                v -> focusImportBatch(batchId)));
+                v -> focusImportBatch(batchId));
+        showMap.setTag("rockmap-import-show-map");
+        root.addView(showMap);
 
         List<Long> waypointIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_WAYPOINT);
         List<Long> trackIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_TRACK);
         List<Long> areaIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_AREA);
 
         if (!waypointIds.isEmpty()) {
-            root.addView(action("Saved Locations from This File", waypointIds.size() + " Saved Location" + (waypointIds.size() == 1 ? "" : "s") + ".",
-                    v -> showImportedWaypointsByIds(waypointIds)));
+            View saved = action("Saved Locations from This File", waypointIds.size() + " Saved Location" + (waypointIds.size() == 1 ? "" : "s") + ".",
+                    v -> showImportedWaypointsByIds(waypointIds));
+            saved.setTag("rockmap-import-saved");
+            root.addView(saved);
         }
         if (!trackIds.isEmpty()) {
-            root.addView(action("Tracks from This File", trackIds.size() + " track" + (trackIds.size() == 1 ? "" : "s") + ".",
-                    v -> showImportedTracks(trackIds)));
+            View tracksAction = action("Tracks from This File", trackIds.size() + " track" + (trackIds.size() == 1 ? "" : "s") + ".",
+                    v -> showImportedTracks(trackIds));
+            tracksAction.setTag("rockmap-import-tracks");
+            root.addView(tracksAction);
         }
         if (!areaIds.isEmpty()) {
-            root.addView(action("Prospecting Areas from This File", areaIds.size() + " Prospecting Area" + (areaIds.size() == 1 ? "" : "s") + ".",
-                    v -> showImportedAreas(areaIds)));
+            View areasAction = action("Prospecting Areas from This File", areaIds.size() + " Prospecting Area" + (areaIds.size() == 1 ? "" : "s") + ".",
+                    v -> showImportedAreas(areaIds));
+            areasAction.setTag("rockmap-import-areas");
+            root.addView(areasAction);
         }
 
         Button delete = button("Remove This Import");
+        delete.setTag("rockmap-import-remove");
         delete.setOnClickListener(v -> confirmDeleteImportBatch(batchId));
         root.addView(delete);
-        root.addView(nav("Back to Manage Imports", v -> showImports()));
+        View back = nav("Back to Manage Imports", v -> showImports());
+        back.setTag("rockmap-import-back");
+        root.addView(back);
         setContentView(scroll(root));
+        getWindow().getDecorView().post(() -> showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds));
+    }
+
+    private void showImportsTourCoach(List<FieldDatabase.ImportBatch> batches) {
+        if (!FieldTourState.is(this, FieldUiNames.IMPORTED_DATA)) return;
+        int step = FieldTourState.step(this);
+        if (step == 2) {
+            if (batches == null || batches.isEmpty()) {
+                View target = findViewById(android.R.id.content).findViewWithTag("rockmap-import-file");
+                showFieldCoach(2, FieldUiNames.IMPORTED_DATA, "Imported Data needs a file",
+                        "This walkthrough needs an imported file so there is something real to select and manage. Import a GPX, KML, or GeoJSON file first.",
+                        "Start with “Import File”.", target,
+                        () -> {
+                            FieldTourState.step(this, 1);
+                            returnToMap();
+                        },
+                        "Start Import Files tour", () -> {
+                            FieldTourState.start(this, FieldUiNames.IMPORT);
+                            returnToMap();
+                        },
+                        () -> {
+                            FieldTourState.start(this, FieldUiNames.IMPORT);
+                            returnToMap();
+                        });
+                return;
+            }
+            FieldDatabase.ImportBatch batch = batches.get(0);
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-import-batch:" + batch.id);
+            showFieldCoach(2, FieldUiNames.IMPORTED_DATA, "Choose an imported file",
+                    "Each imported file is tracked as its own batch. Open one to see the RockMap objects created from that file and the actions that apply only to that import.",
+                    "Tap an imported file to manage it.", target,
+                    () -> {
+                        FieldTourState.step(this, 1);
+                        returnToMap();
+                    }, null, null,
+                    () -> {
+                        FieldTourState.entityId(this, batch.id);
+                        FieldTourState.step(this, 3);
+                        showImportBatch(batch.id);
+                    });
+            return;
+        }
+        if (step == 8) {
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-older-imports");
+            showFieldCoach(8, FieldUiNames.IMPORTED_DATA, "Older Imports",
+                    "Some older imported objects are not grouped under a source file. Manage those individually through Saved Locations, Tracks, or Prospecting Areas rather than removing them as a batch.",
+                    "Review the Older Imports section.", target,
+                    () -> {
+                        long id = FieldTourState.entityId(this);
+                        if (id > 0L) {
+                            FieldTourState.step(this, 7);
+                            showImportBatch(id);
+                        }
+                    },
+                    "Finish", this::finishFieldTour, this::finishFieldTour);
+        }
+    }
+
+    private void showImportBatchTourCoach(FieldDatabase.ImportBatch batch,
+                                          List<Long> waypointIds,
+                                          List<Long> trackIds,
+                                          List<Long> areaIds) {
+        if (batch == null || !FieldTourState.is(this, FieldUiNames.IMPORTED_DATA)) return;
+        int step = FieldTourState.step(this);
+        View root = findViewById(android.R.id.content);
+
+        // Skip category steps that do not exist for this particular file. The tour never points at
+        // a button that is absent from the selected import.
+        if (step == 4 && (waypointIds == null || waypointIds.isEmpty())) {
+            FieldTourState.step(this, 5); getWindow().getDecorView().post(() -> showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds)); return;
+        }
+        if (step == 5 && (trackIds == null || trackIds.isEmpty())) {
+            FieldTourState.step(this, 6); getWindow().getDecorView().post(() -> showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds)); return;
+        }
+        if (step == 6 && (areaIds == null || areaIds.isEmpty())) {
+            FieldTourState.step(this, 7); getWindow().getDecorView().post(() -> showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds)); return;
+        }
+        if (step < 3 || step > 7) return;
+
+        View target;
+        String title;
+        String body;
+        if (step == 3) {
+            target = root.findViewWithTag("rockmap-import-show-map");
+            title = "Show Import on Map";
+            body = "Show Import on Map frames all remaining geometry that belongs to this file. It does not change or delete the imported objects.";
+        } else if (step == 4) {
+            target = root.findViewWithTag("rockmap-import-saved");
+            title = "Saved Locations from This File";
+            body = "Open the point and waypoint locations created by this import.";
+        } else if (step == 5) {
+            target = root.findViewWithTag("rockmap-import-tracks");
+            title = "Tracks from This File";
+            body = "Open the line or track geometry created by this import.";
+        } else if (step == 6) {
+            target = root.findViewWithTag("rockmap-import-areas");
+            title = "Prospecting Areas from This File";
+            body = "Open the polygon geometry created by this import as saved Prospecting Areas.";
+        } else {
+            target = root.findViewWithTag("rockmap-import-remove");
+            title = "Remove This Import";
+            body = "Remove This Import deletes the remaining RockMap objects created by this file. It does not delete unrelated Saved Locations, recorded Tracks, Prospecting Areas, or Field Records. The tour will not press it.";
+        }
+
+        Runnable back = () -> {
+            if (step == 3) {
+                FieldTourState.step(this, 2);
+                showImports();
+                return;
+            }
+            int prior = step - 1;
+            if (prior == 6 && (areaIds == null || areaIds.isEmpty())) prior--;
+            if (prior == 5 && (trackIds == null || trackIds.isEmpty())) prior--;
+            if (prior == 4 && (waypointIds == null || waypointIds.isEmpty())) prior--;
+            FieldTourState.step(this, Math.max(3, prior));
+            showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds);
+        };
+        Runnable next = () -> {
+            if (step == 7) {
+                FieldTourState.step(this, 8);
+                showImports();
+            } else {
+                FieldTourState.step(this, step + 1);
+                showImportBatchTourCoach(batch, waypointIds, trackIds, areaIds);
+            }
+        };
+        showFieldCoach(step, FieldUiNames.IMPORTED_DATA, title, body,
+                step == 7 ? "Review this destructive action; do not press it for the tour." : "Review the highlighted action.",
+                target, back, "Continue", next, next);
     }
 
     private void confirmDeleteImportBatch(long batchId) {
@@ -1388,7 +2089,29 @@ public final class FieldActivity extends Activity implements LocationRepository.
             root.addView(help("Exporting never removes or uploads RockMap data. Temporary unsaved measurements are not exported. Photos are referenced by Field Record exports but are not embedded. All field map data is a GIS export, not a full restore backup."));
             root.addView(nav("Back to Field", v -> showHub()));
             setContentView(scroll(root));
+            getWindow().getDecorView().post(this::showExportTourCoach);
         });
+    }
+
+    private void showExportTourCoach() {
+        if (!FieldTourState.is(this, FieldUiNames.EXPORT)) return;
+        int step = FieldTourState.step(this);
+        if (step < 2 || step > 3) return;
+        View target = findFirstFeatureAction(findViewById(android.R.id.content));
+        if (step == 2) {
+            showFieldCoach(2, FieldUiNames.EXPORT, "Choose what to export",
+                    "Export creates a copy of selected RockMap data for use elsewhere. Saved Locations, Tracks, Field Records, Prospecting Areas, imported files, the last saved analysis, and combined field data appear here when available.",
+                    "Review the available export categories.", target,
+                    () -> { FieldTourState.step(this, 1); returnToMap(); },
+                    "Continue", () -> { FieldTourState.step(this, 3); showExportTourCoach(); },
+                    () -> { FieldTourState.step(this, 3); showExportTourCoach(); });
+        } else {
+            showFieldCoach(3, FieldUiNames.EXPORT, "Choose a format",
+                    "Tap an available export category to choose its applicable output format, such as GPX, GeoJSON, CSV, or KML. Android then asks where to save the copy. Export does not remove the original RockMap data.",
+                    "Review an available export option.", target,
+                    () -> { FieldTourState.step(this, 2); showExportTourCoach(); },
+                    "Finish", this::finishFieldTour, this::finishFieldTour);
+        }
     }
 
     private void showSavedLocationExportFormats(int count) {
@@ -1860,16 +2583,72 @@ public final class FieldActivity extends Activity implements LocationRepository.
         output.setTextIsSelectable(true);
         root.addView(output);
 
+        final Button[] useGpsRef = new Button[1];
+        final Button[] convertRef = new Button[1];
         LinearLayout row = row();
-        row.addView(small("Use GPS", v -> runWithPreciseLocation(() ->
+        Button useGps = small("Use GPS", v -> runWithPreciseLocation(() ->
                 locationRepository.requestFreshPrecise(l -> {
                     input.setText(CoordinateFormats.decimal(l.getLatitude(), l.getLongitude()));
                     renderFormats(input, output);
-                }, this::toast))), weight());
-        row.addView(small("Convert", v -> renderFormats(input, output)), weight());
+                    if (FieldTourState.is(this, FieldUiNames.COORDINATES, 3)) {
+                        FieldTourState.step(this, 4);
+                        getWindow().getDecorView().post(() -> showCoordinatesTourCoach(input, output, useGpsRef[0], convertRef[0]));
+                    }
+                }, this::toast)));
+        Button convert = small("Convert", v -> {
+            renderFormats(input, output);
+            if (FieldTourState.is(this, FieldUiNames.COORDINATES, 4)
+                    && input.getError() == null) {
+                FieldTourState.step(this, 5);
+                getWindow().getDecorView().post(() -> showCoordinatesTourCoach(input, output, useGpsRef[0], convertRef[0]));
+            }
+        });
+        // Stable references are used by the asynchronous GPS callback above.
+        useGpsRef[0] = useGps;
+        convertRef[0] = convert;
+        row.addView(useGps, weight());
+        row.addView(convert, weight());
         root.addView(row);
         root.addView(back());
         setContentView(scroll(root));
+        getWindow().getDecorView().post(() -> showCoordinatesTourCoach(input, output, useGps, convert));
+    }
+
+    private void showCoordinatesTourCoach(EditText input, TextView output, Button useGps, Button convert) {
+        if (!FieldTourState.is(this, FieldUiNames.COORDINATES)) return;
+        int step = FieldTourState.step(this);
+        if (step == 2) {
+            showFieldCoach(2, FieldUiNames.COORDINATES, "Coordinate input",
+                    "Enter latitude and longitude in decimal, DDM, or DMS format. RockMap converts the same location into its other supported coordinate formats.",
+                    "Enter coordinates, or continue to see the GPS shortcut.", input,
+                    () -> { FieldTourState.step(this, 1); returnToMap(); },
+                    "Continue", () -> { FieldTourState.step(this, 3); showCoordinatesTourCoach(input, output, useGps, convert); },
+                    () -> { FieldTourState.step(this, 3); showCoordinatesTourCoach(input, output, useGps, convert); });
+        } else if (step == 3) {
+            showFieldCoach(3, FieldUiNames.COORDINATES, "Use GPS",
+                    "Use GPS fills the input with a fresh current GPS location instead of making you type coordinates. It does not improve or change the accuracy of the GPS fix itself.",
+                    "Tap “Use GPS”, or continue if you entered coordinates manually.", useGps,
+                    () -> { FieldTourState.step(this, 2); showCoordinatesTourCoach(input, output, useGps, convert); },
+                    "Continue", () -> { FieldTourState.step(this, 4); showCoordinatesTourCoach(input, output, useGps, convert); },
+                    () -> { FieldTourState.step(this, 4); showCoordinatesTourCoach(input, output, useGps, convert); });
+        } else if (step == 4) {
+            showFieldCoach(4, FieldUiNames.COORDINATES, "Convert",
+                    "Convert reads the entered location and shows the same point in each supported coordinate system.",
+                    "Tap “Convert”.", convert,
+                    () -> { FieldTourState.step(this, 3); showCoordinatesTourCoach(input, output, useGps, convert); },
+                    null, null,
+                    () -> {
+                        if (input.getText().toString().trim().isEmpty()) {
+                            input.setError("Enter coordinates or use GPS before converting.");
+                        } else convert.performClick();
+                    });
+        } else if (step == 5) {
+            showFieldCoach(5, FieldUiNames.COORDINATES, "Coordinate formats",
+                    "The result shows Decimal, DDM, DMS, WGS84 UTM, and MGRS representations of the same location.",
+                    "Review the converted coordinate formats.", output,
+                    () -> { FieldTourState.step(this, 4); showCoordinatesTourCoach(input, output, useGps, convert); },
+                    "Finish", this::finishFieldTour, this::finishFieldTour);
+        }
     }
 
     private void renderFormats(EditText input, TextView output) {
@@ -1947,6 +2726,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (requestCode == REQ_EXPORT) clearPendingExport();
+            if (requestCode == REQ_IMPORT && FieldTourState.is(this, FieldUiNames.IMPORT, 2)) {
+                finishFieldTour();
+            }
             return;
         }
         Uri uri = data.getData();
