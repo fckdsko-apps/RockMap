@@ -34,16 +34,24 @@ public final class GuidedTourCoach {
     private static final String TAG = "rockmap-guided-tour-coach";
     private static WeakReference<View> highlightedView = new WeakReference<>(null);
     private static Drawable highlightedDrawable;
+    private static WeakReference<ViewGroup> activeCoachRoot = new WeakReference<>(null);
 
     private GuidedTourCoach() {}
 
     public static void clear(Activity activity) {
         clearHighlight();
+        ViewGroup activeRoot = activeCoachRoot.get();
+        if (activeRoot != null) {
+            View old = activeRoot.findViewWithTag(TAG);
+            if (old != null) activeRoot.removeView(old);
+        }
+        activeCoachRoot = new WeakReference<>(null);
         if (activity == null) return;
-        ViewGroup root = activity.findViewById(android.R.id.content);
-        if (root == null) return;
-        View old = root.findViewWithTag(TAG);
-        if (old != null) root.removeView(old);
+        ViewGroup activityRoot = activity.findViewById(android.R.id.content);
+        if (activityRoot != null && activityRoot != activeRoot) {
+            View old = activityRoot.findViewWithTag(TAG);
+            if (old != null) activityRoot.removeView(old);
+        }
     }
 
     public static void show(Activity activity, int step, int total, String title, String message,
@@ -51,11 +59,26 @@ public final class GuidedTourCoach {
                             Runnable backAction,
                             String primaryLabel, Runnable primaryAction,
                             Runnable skipAction, Runnable exitAction) {
+        show(activity, null, step, total, title, message, requiredAction, target,
+                backAction, primaryLabel, primaryAction, skipAction, exitAction);
+    }
+
+    /** Same coach UI inside an alternate window root such as an AlertDialog. */
+    public static void show(Activity activity, FrameLayout hostRoot,
+                            int step, int total, String title, String message,
+                            String requiredAction, View target,
+                            Runnable backAction,
+                            String primaryLabel, Runnable primaryAction,
+                            Runnable skipAction, Runnable exitAction) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         clear(activity);
-        ViewGroup content = activity.findViewById(android.R.id.content);
-        if (!(content instanceof FrameLayout)) return;
-        FrameLayout root = (FrameLayout) content;
+        FrameLayout root = hostRoot;
+        if (root == null) {
+            ViewGroup content = activity.findViewById(android.R.id.content);
+            if (!(content instanceof FrameLayout)) return;
+            root = (FrameLayout) content;
+        }
+        activeCoachRoot = new WeakReference<>(root);
 
         DraggableCard card = new DraggableCard(activity, root, target);
         card.setTag(TAG);
@@ -89,13 +112,10 @@ public final class GuidedTourCoach {
         header.addView(progress, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView drag = new TextView(activity);
-        drag.setText("DRAG  ↕");
-        drag.setTextSize(10.5f);
-        drag.setTextColor(Color.rgb(104, 75, 25));
-        drag.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        drag.setContentDescription("Drag guided tour card");
-        header.addView(drag);
+        View drag = RockMapDragHandle.labeled(activity, Color.rgb(104, 75, 25),
+                card::handleDrag, "Drag guided tour card");
+        header.addView(drag, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 40)));
         card.addView(header);
         card.addNormalView(header);
 
@@ -202,18 +222,28 @@ public final class GuidedTourCoach {
             compactTop.setGravity(Gravity.CENTER_VERTICAL);
             compactTop.setMinimumHeight(dp(activity, 52));
 
-            TextView compactDrag = new TextView(activity);
-            compactDrag.setText(Math.max(1, step) + "/" + Math.max(step, total) + "\n↕");
-            compactDrag.setTextSize(10f);
-            compactDrag.setTextColor(Color.rgb(126, 78, 0));
-            compactDrag.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            compactDrag.setGravity(Gravity.CENTER);
-            compactDrag.setClickable(true);
-            compactDrag.setFocusable(true);
-            compactDrag.setContentDescription("Drag guided tour card");
-            compactDrag.setOnTouchListener(card::handleDrag);
-            compactTop.addView(compactDrag, new LinearLayout.LayoutParams(
-                    dp(activity, 48), dp(activity, 52)));
+            LinearLayout compactLead = new LinearLayout(activity);
+            compactLead.setOrientation(LinearLayout.HORIZONTAL);
+            compactLead.setGravity(Gravity.CENTER_VERTICAL);
+            compactLead.setClickable(true);
+            compactLead.setFocusable(true);
+            compactLead.setContentDescription("Drag guided tour card");
+            compactLead.setOnTouchListener(card::handleDrag);
+
+            TextView compactProgress = new TextView(activity);
+            compactProgress.setText(Math.max(1, step) + "/" + Math.max(step, total));
+            compactProgress.setTextSize(10f);
+            compactProgress.setTextColor(Color.rgb(126, 78, 0));
+            compactProgress.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            compactProgress.setGravity(Gravity.CENTER);
+            compactLead.addView(compactProgress, new LinearLayout.LayoutParams(
+                    dp(activity, 34), dp(activity, 52)));
+            View compactDrag = RockMapDragHandle.compact(activity, Color.rgb(104, 75, 25),
+                    card::handleDrag, "Drag guided tour card");
+            compactLead.addView(compactDrag, new LinearLayout.LayoutParams(
+                    dp(activity, 36), dp(activity, 52)));
+            compactTop.addView(compactLead, new LinearLayout.LayoutParams(
+                    dp(activity, 70), dp(activity, 52)));
 
             TextView compactNext = new TextView(activity);
             String compactAction = requiredAction == null || requiredAction.trim().isEmpty()
@@ -523,6 +553,14 @@ public final class GuidedTourCoach {
                 for (Rect candidate : candidates) {
                     Rect bounded = clampRect(candidate, safe);
                     double score = placementScore(bounded, targetRect, avoidRegion, obstacles);
+                    // Hard visual priority: if any candidate leaves both the required control and
+                    // its containing UI clear, that candidate always wins over one that obstructs
+                    // either. This keeps tour copy from competing with the interface it teaches.
+                    if (targetRect != null && intersectsExpanded(bounded, targetRect, dp(this, 12))) {
+                        score += 1.0e18d;
+                    } else if (avoidRegion != null && Rect.intersects(bounded, avoidRegion)) {
+                        score += 1.0e15d;
+                    }
                     if (savedRect != null && candidate != savedRect) {
                         score += Math.hypot(bounded.left - savedRect.left,
                                 bounded.top - savedRect.top) * 0.15d;
@@ -534,10 +572,52 @@ public final class GuidedTourCoach {
                 }
                 if (best == null) best = new Rect(safe.left, safe.top,
                         safe.left + getWidth(), safe.top + getHeight());
+                if (targetRect != null && intersectsExpanded(best, targetRect, dp(this, 12))) {
+                    if (!denseMode && compactView != null) {
+                        denseMode = true;
+                        setPadding(dp(this, 6), dp(this, 4), dp(this, 6), dp(this, 4));
+                        for (View normal : normalViews) normal.setVisibility(View.GONE);
+                        compactView.setVisibility(View.VISIBLE);
+                        FrameLayout.LayoutParams compactParams = (FrameLayout.LayoutParams) getLayoutParams();
+                        compactParams.width = Math.min(dp(this, 330), Math.max(dp(this, 236), root.getWidth() - dp(this, 16)));
+                        setLayoutParams(compactParams);
+                        requestLayout();
+                        postDelayed(() -> chooseSafePosition(false), 40L);
+                        return;
+                    }
+                    Rect forced = forcedTargetSafePosition(safe, targetRect);
+                    if (forced != null) best = forced;
+                }
                 moveTo(best.left, best.top, false);
             } finally {
                 placementRunning = false;
             }
+        }
+
+        private Rect forcedTargetSafePosition(Rect safe, Rect targetRect) {
+            if (safe == null || targetRect == null) return null;
+            int gap = dp(this, 12);
+            int aboveSpace = targetRect.top - safe.top - gap;
+            int belowSpace = safe.bottom - targetRect.bottom - gap;
+            int leftSpace = targetRect.left - safe.left - gap;
+            int rightSpace = safe.right - targetRect.right - gap;
+            if (aboveSpace >= getHeight()) {
+                return clampRect(rectAt(targetRect.centerX() - getWidth() / 2,
+                        targetRect.top - getHeight() - gap), safe);
+            }
+            if (belowSpace >= getHeight()) {
+                return clampRect(rectAt(targetRect.centerX() - getWidth() / 2,
+                        targetRect.bottom + gap), safe);
+            }
+            if (leftSpace >= getWidth()) {
+                return clampRect(rectAt(targetRect.left - getWidth() - gap,
+                        targetRect.centerY() - getHeight() / 2), safe);
+            }
+            if (rightSpace >= getWidth()) {
+                return clampRect(rectAt(targetRect.right + gap,
+                        targetRect.centerY() - getHeight() / 2), safe);
+            }
+            return null;
         }
 
         private void addGridCandidates(List<Rect> out, Rect safe) {
@@ -602,7 +682,7 @@ public final class GuidedTourCoach {
             }
             if (avoidRegion != null) {
                 // Panel/background overlap is preferable to covering a real tappable control.
-                score += overlapArea(cardRect, avoidRegion) * 100d;
+                score += overlapArea(cardRect, avoidRegion) * 10000000d;
             }
             if (obstacles != null) {
                 for (Rect obstacle : obstacles) {

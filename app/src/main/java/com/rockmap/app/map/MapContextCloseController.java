@@ -11,11 +11,13 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.rockmap.app.RockMapDragHandle;
 import com.rockmap.app.field.FieldActivity;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.FieldMapController;
@@ -76,7 +78,10 @@ public final class MapContextCloseController {
     private final FieldDatabase fieldDb;
     private FrameLayout root;
     private LinearLayout menu;
-    private TextView collapsedTab;
+    private LinearLayout collapsedTab;
+    private View menuCollapseControl;
+    private View menuDragControl;
+    private final ArrayList<View> collapsedDots = new ArrayList<>();
     private MapLibreMap map;
     private Target geology;
     private Target mineral;
@@ -85,6 +90,7 @@ public final class MapContextCloseController {
     private Runnable mineralOpenAction;
     private Runnable historicOpenAction;
     private Runnable contextStateChangedAction;
+    private Runnable presentationStateChangedAction;
     private boolean listenersInstalled;
     private boolean menuUserPositioned;
     private int menuUserLeft;
@@ -207,6 +213,33 @@ public final class MapContextCloseController {
         contextStateChangedAction = action;
     }
 
+    public void setOnPresentationStateChanged(Runnable action) {
+        presentationStateChangedAction = action;
+    }
+
+    public boolean isCollapsed() { return menuCollapsed; }
+
+    public View getDragControl() {
+        ensureViews();
+        if (map != null) refreshNow();
+        return menuDragControl;
+    }
+
+    public View getCollapseControl() {
+        ensureViews();
+        if (map != null) refreshNow();
+        return menuCollapseControl;
+    }
+
+    public View getCollapsedControl() {
+        ensureViews();
+        if (map != null) refreshNow();
+        return collapsedTab;
+    }
+
+    public void collapseControls() { collapseMenu(); }
+    public void expandControls() { expandMenu(); }
+
     public void clearHistoricTarget() {
         historic = null;
         refresh();
@@ -262,27 +295,44 @@ public final class MapContextCloseController {
                     Gravity.TOP | Gravity.START));
         }
         if (collapsedTab == null) {
-            collapsedTab = new TextView(activity);
-            collapsedTab.setTextSize(10f);
-            collapsedTab.setTextColor(Color.rgb(45, 65, 85));
-            collapsedTab.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-            collapsedTab.setGravity(Gravity.CENTER);
-            collapsedTab.setPadding(dp(6), 0, dp(6), 0);
+            collapsedTab = new LinearLayout(activity);
+            collapsedTab.setOrientation(LinearLayout.HORIZONTAL);
+            collapsedTab.setGravity(Gravity.CENTER_VERTICAL);
+            collapsedTab.setPadding(dp(7), 0, dp(3), 0);
             collapsedTab.setClickable(true);
             collapsedTab.setFocusable(true);
             collapsedTab.setElevation(dp(7));
             collapsedTab.setVisibility(View.GONE);
-            collapsedTab.setContentDescription("Show active mapped item controls. Drag this tab to move it along the screen edge.");
+            collapsedTab.setContentDescription("Open mapped research controls. Drag to move this control.");
             GradientDrawable tabBg = new GradientDrawable();
             tabBg.setColor(Color.argb(244, 255, 255, 255));
             tabBg.setStroke(dp(1), Color.rgb(145, 155, 165));
             tabBg.setCornerRadius(dp(8));
             collapsedTab.setBackground(tabBg);
+
+            LinearLayout dots = new LinearLayout(activity);
+            dots.setOrientation(LinearLayout.HORIZONTAL);
+            dots.setGravity(Gravity.CENTER);
+            for (int i = 0; i < 3; i++) {
+                View dot = new View(activity);
+                GradientDrawable dotBg = new GradientDrawable();
+                dotBg.setShape(GradientDrawable.OVAL);
+                dotBg.setColor(Color.rgb(175, 185, 190));
+                dot.setBackground(dotBg);
+                LinearLayout.LayoutParams dp = new LinearLayout.LayoutParams(this.dp(9), this.dp(9));
+                if (i > 0) dp.setMargins(this.dp(5), 0, 0, 0);
+                dots.addView(dot, dp);
+                collapsedDots.add(dot);
+            }
+            collapsedTab.addView(dots, new LinearLayout.LayoutParams(0, dp(42), 1f));
+            View move = RockMapDragHandle.compact(activity, Color.rgb(70, 82, 88),
+                    (v, event) -> handleCollapsedTabDrag(v, event),
+                    "Drag mapped research controls");
+            collapsedTab.addView(move, new LinearLayout.LayoutParams(dp(34), dp(42)));
             collapsedTab.setOnClickListener(v -> expandMenu());
             collapsedTab.setOnTouchListener((v, event) -> handleCollapsedTabDrag(v, event));
-            root.addView(collapsedTab, new FrameLayout.LayoutParams(dp(64), dp(42),
+            root.addView(collapsedTab, new FrameLayout.LayoutParams(dp(82), dp(42),
                     Gravity.TOP | Gravity.START));
-            updateCollapsedTabLabel();
         }
     }
 
@@ -319,9 +369,10 @@ public final class MapContextCloseController {
     private void showMenu(List<ContextItem> items) {
         menu.removeAllViews();
         addDragAffordance();
+        updateCollapsedDots(items);
         for (ContextItem item : items) addMenuRow(item);
         int width = dp(180);
-        int estimatedHeight = dp(34 + 48 * items.size());
+        int estimatedHeight = dp(46 + 48 * items.size());
 
         if (menuCollapsed) {
             menu.setVisibility(View.GONE);
@@ -354,43 +405,45 @@ public final class MapContextCloseController {
         menu.bringToFront();
     }
 
-    /** Compact header: Collapse on the left, the existing drag affordance on the right. */
+    /** One header language everywhere: boxed collapse arrow left, four-way drag handle right. */
     private void addDragAffordance() {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setMinimumHeight(dp(28));
+        header.setMinimumHeight(dp(40));
 
-        TextView collapse = new TextView(activity);
-        collapse.setText("COLLAPSE");
-        collapse.setTextSize(9f);
-        collapse.setTextColor(Color.rgb(55, 80, 105));
-        collapse.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        collapse.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        collapse.setPadding(dp(7), 0, dp(4), 0);
-        collapse.setClickable(true);
-        collapse.setFocusable(true);
-        collapse.setContentDescription("Collapse active mapped item controls to a draggable side tab");
+        Button collapse = new Button(activity);
+        menuCollapseControl = collapse;
+        collapse.setText("›");
+        collapse.setAllCaps(false);
+        collapse.setTextSize(20f);
+        collapse.setMinWidth(dp(40));
+        collapse.setMinimumWidth(dp(40));
+        collapse.setMinHeight(dp(40));
+        collapse.setMinimumHeight(dp(40));
+        collapse.setPadding(0, 0, 0, 0);
+        collapse.setTextColor(Color.rgb(30, 85, 145));
+        GradientDrawable collapseBg = new GradientDrawable();
+        collapseBg.setColor(Color.rgb(255, 255, 255));
+        collapseBg.setStroke(dp(1), Color.rgb(165, 175, 180));
+        collapseBg.setCornerRadius(dp(7));
+        collapse.setBackground(collapseBg);
+        collapse.setContentDescription("Collapse mapped research controls");
         collapse.setOnClickListener(v -> collapseMenu());
-        header.addView(collapse, new LinearLayout.LayoutParams(dp(78), dp(28)));
+        header.addView(collapse, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
-        TextView drag = new TextView(activity);
-        drag.setText("DRAG  ↕");
-        drag.setTextSize(9.5f);
-        drag.setTextColor(Color.rgb(92, 92, 92));
-        drag.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        drag.setPadding(dp(4), 0, dp(7), 0);
-        drag.setMinHeight(dp(28));
-        drag.setMinimumHeight(dp(28));
-        drag.setClickable(true);
-        drag.setFocusable(true);
-        drag.setContentDescription("Drag active mapped item controls");
-        // Use the same proven touch-slop drag path as the labeled context rows.
-        drag.setOnTouchListener((v, event) -> handleMenuDrag(v, event));
-        header.addView(drag, new LinearLayout.LayoutParams(0, dp(28), 1f));
+        View drag = RockMapDragHandle.labeled(activity, Color.rgb(82, 88, 90),
+                (v, event) -> handleMenuDrag(v, event),
+                "Drag mapped research controls");
+        menuDragControl = drag;
+        LinearLayout.LayoutParams dragParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40));
+        dragParams.gravity = Gravity.END;
+        header.addView(new View(activity), new LinearLayout.LayoutParams(0, dp(40), 1f));
+        header.addView(drag, dragParams);
 
         menu.addView(header, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
     }
 
     private void collapseMenu() {
@@ -408,6 +461,7 @@ public final class MapContextCloseController {
         collapsedTop = params.topMargin;
         menu.setVisibility(View.GONE);
         showCollapsedTab();
+        if (presentationStateChangedAction != null) presentationStateChangedAction.run();
     }
 
     private void expandMenu() {
@@ -426,25 +480,32 @@ public final class MapContextCloseController {
             menuUserTop = collapsedTop;
         }
         refresh();
+        if (presentationStateChangedAction != null) presentationStateChangedAction.run();
     }
 
     private void showCollapsedTab() {
         if (collapsedTab == null || root == null) return;
         int rootWidth = Math.max(root.getWidth(), mapView.getWidth());
-        int width = dp(64);
+        int width = dp(82);
         int margin = dp(4);
         int left = collapsedOnLeft ? margin : Math.max(margin, rootWidth - width - margin);
         positionCollapsedTab(left, collapsedTop);
-        updateCollapsedTabLabel();
         collapsedTab.setVisibility(View.VISIBLE);
         collapsedTab.requestLayout();
         collapsedTab.invalidate();
         collapsedTab.bringToFront();
     }
 
-    private void updateCollapsedTabLabel() {
-        if (collapsedTab == null) return;
-        collapsedTab.setText(collapsedOnLeft ? "ITEMS  ›" : "‹  ITEMS");
+    private void updateCollapsedDots(List<ContextItem> items) {
+        if (collapsedDots.isEmpty()) return;
+        final int muted = Color.rgb(175, 185, 190);
+        for (int i = 0; i < collapsedDots.size(); i++) {
+            int color = items != null && i < items.size() ? items.get(i).color : muted;
+            GradientDrawable dotBg = new GradientDrawable();
+            dotBg.setShape(GradientDrawable.OVAL);
+            dotBg.setColor(color);
+            collapsedDots.get(i).setBackground(dotBg);
+        }
     }
 
     private boolean handleCollapsedTabDrag(View touched, MotionEvent event) {
@@ -495,7 +556,7 @@ public final class MapContextCloseController {
         if (collapsedTab == null || root == null) return;
         int rootWidth = Math.max(root.getWidth(), mapView.getWidth());
         int rootHeight = Math.max(root.getHeight(), mapView.getHeight());
-        int width = collapsedTab.getWidth() > 0 ? collapsedTab.getWidth() : dp(64);
+        int width = collapsedTab.getWidth() > 0 ? collapsedTab.getWidth() : dp(82);
         int height = collapsedTab.getHeight() > 0 ? collapsedTab.getHeight() : dp(42);
         int margin = dp(4);
         int bottomGuard = dp(118);
@@ -505,7 +566,7 @@ public final class MapContextCloseController {
         params.gravity = Gravity.TOP | Gravity.START;
         params.leftMargin = left;
         params.topMargin = top;
-        params.width = dp(64);
+        params.width = dp(82);
         params.height = dp(42);
         collapsedTab.setLayoutParams(params);
         collapsedTop = top;

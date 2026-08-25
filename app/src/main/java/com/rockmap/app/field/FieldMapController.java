@@ -12,7 +12,9 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -23,6 +25,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.rockmap.app.MainActivity;
+import com.rockmap.app.GuidedTourCoach;
+import com.rockmap.app.RockMapDragHandle;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -112,6 +116,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private static final String TRACK_TAB_TAG = "rockmap-collapsed-active-track";
     private static final String NAV_TAB_TAG = "rockmap-collapsed-navigation";
     private static final String MEASURE_TAB_TAG = "rockmap-collapsed-measure";
+    private static final String COLLAPSED_DRAG_TAG = "rockmap-collapsed-drag-handle";
     private static final String TAP_CAPTURE_TAG = "rockmap-field-tap-capture";
 
     private static final String TRACK_SOURCE = "rockmap-field-track-source";
@@ -172,6 +177,20 @@ public final class FieldMapController implements LocationRepository.Listener {
     private String areaJson = emptyCollection();
     private String fieldRecordJson = emptyCollection();
     private String waypointLabelJson = emptyCollection();
+    private final int floatingTouchSlop;
+    private float floatingDragDownRawX;
+    private float floatingDragDownRawY;
+    private int floatingDragStartLeft;
+    private int floatingDragStartTop;
+    private boolean floatingDragging;
+    private boolean hudUserPositioned;
+    private int hudUserLeft;
+    private int hudUserTop;
+    private boolean collapsedTabsUserPositioned;
+    private int collapsedTabsUserLeft;
+    private int collapsedTabsUserTop;
+    private String activeFieldMenuTourTool;
+    private int activeFieldMenuTourStep;
 
     private final Runnable refreshLoop = new Runnable() {
         @Override public void run() {
@@ -187,6 +206,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         this.db = FieldDatabase.get(activity);
         this.waypointRepository = new WaypointRepository(activity);
         this.locationRepository = new LocationRepository(activity, this);
+        this.floatingTouchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
         this.expandedTool = FieldMapState.expandedTool(activity);
         this.measureActive = FieldMapState.measurementActive(activity);
         if (measureActive) measurement.addAll(FieldMapState.measurementPoints(activity));
@@ -384,12 +404,18 @@ public final class FieldMapController implements LocationRepository.Listener {
         hud.setTag(HUD_TAG);
         hud.setOrientation(LinearLayout.VERTICAL);
         hud.setPadding(dp(10), dp(8), dp(10), dp(8));
-        hud.setBackgroundColor(Color.argb(238, 255, 255, 255));
+        GradientDrawable hudBg = new GradientDrawable();
+        hudBg.setColor(Color.argb(244, 255, 255, 255));
+        hudBg.setStroke(dp(1), Color.rgb(165, 175, 180));
+        hudBg.setCornerRadius(dp(8));
+        hud.setBackground(hudBg);
         hud.setVisibility(View.GONE);
+        int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
+        int width = Math.max(dp(280), Math.min(dp(520), screenWidth - dp(24)));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        params.setMargins(dp(8), statusBarHeight() + dp(8), dp(8), 0);
+                width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        params.leftMargin = Math.max(dp(8), (screenWidth - width) / 2);
+        params.topMargin = statusBarHeight() + dp(8);
         root.addView(hud, params);
         bringFieldUiToFront();
     }
@@ -405,11 +431,27 @@ public final class FieldMapController implements LocationRepository.Listener {
         collapsedTabs.setTag(COLLAPSED_TABS_TAG);
         collapsedTabs.setOrientation(LinearLayout.VERTICAL);
         collapsedTabs.setGravity(Gravity.END);
-        collapsedTabs.setPadding(0, dp(2), 0, dp(2));
+        collapsedTabs.setPadding(dp(3), dp(3), dp(3), dp(3));
         collapsedTabs.setVisibility(View.GONE);
+        GradientDrawable tabsBg = new GradientDrawable();
+        tabsBg.setColor(Color.argb(244, 255, 255, 255));
+        tabsBg.setStroke(dp(1), Color.rgb(165, 175, 180));
+        tabsBg.setCornerRadius(dp(8));
+        collapsedTabs.setBackground(tabsBg);
+
+        View dragHandle = RockMapDragHandle.labeled(activity, Color.rgb(82, 88, 90),
+                (v, event) -> handleFloatingDrag(collapsedTabs, v, event),
+                "Drag collapsed Field tool controls");
+        dragHandle.setTag(COLLAPSED_DRAG_TAG);
+        collapsedTabs.addView(dragHandle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
+
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER_VERTICAL | Gravity.END);
+                Gravity.TOP | Gravity.START);
+        params.leftMargin = Math.max(dp(6), activity.getResources().getDisplayMetrics().widthPixels - dp(104));
+        params.topMargin = Math.max(statusBarHeight() + dp(70),
+                activity.getResources().getDisplayMetrics().heightPixels / 2 - dp(90));
         root.addView(collapsedTabs, params);
     }
 
@@ -429,7 +471,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (map == null) return;
         try {
             int top = statusBarHeight() + dp(8);
-            if (hud != null && hud.getVisibility() == View.VISIBLE && hud.getHeight() > 0) {
+            if (hud != null && hud.getVisibility() == View.VISIBLE && hud.getHeight() > 0
+                    && hud.getTop() <= top + dp(24)) {
                 top = Math.max(top, hud.getBottom() + dp(8));
             }
             map.getUiSettings().setCompassMargins(dp(8), top, dp(8), dp(8));
@@ -509,7 +552,8 @@ public final class FieldMapController implements LocationRepository.Listener {
 
         hud.setVisibility(expanded ? View.VISIBLE : View.GONE);
         if (collapsedTabs != null) {
-            collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+            collapsedTabs.setVisibility(collapsedToolCount() > 0 ? View.VISIBLE : View.GONE);
+            if (collapsedTabs.getVisibility() == View.VISIBLE) positionCollapsedTabsIfNeeded();
         }
         bringFieldUiToFront();
         positionFieldButton();
@@ -675,9 +719,14 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldUiNames.NAVIGATE,
                 "Choose a Saved Location, Field Record, or coordinate and follow a live map line.",
                 "Navigate lets you choose a Saved Location, Field Record, or entered coordinate as a target. RockMap draws a live line from your current position to that target until you stop navigation.",
-                null,
+                FieldUiNames.NAVIGATE,
                 holder,
-                v -> { holder[0].dismiss(); showNavigateMenu(); }));
+                v -> {
+                    boolean touring = isMapFieldTour(FieldUiNames.NAVIGATE, 1);
+                    holder[0].dismiss();
+                    if (touring) activeFieldMenuTourStep = 2;
+                    showNavigateMenu();
+                }));
         box.addView(dialogActionWithHelp(
                 FieldUiNames.MEASURE,
                 "Tap map points or use GPS/saved records; see distance and area directly here.",
@@ -731,15 +780,32 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldUiNames.VISIBILITY,
                 "Choose which Tracks, Prospecting Areas, Field Records, and Saved Location labels appear on the map.",
                 "Field Visibility controls which Field objects are drawn on the map. Hiding an item type changes display only; it does not delete the underlying saved records.",
-                null,
+                FieldUiNames.VISIBILITY,
                 holder,
-                v -> { holder[0].dismiss(); showVisibilityMenu(); }));
+                v -> {
+                    boolean touring = isMapFieldTour(FieldUiNames.VISIBILITY, 1);
+                    holder[0].dismiss();
+                    if (touring) activeFieldMenuTourStep = 2;
+                    showVisibilityMenu();
+                }));
         holder[0] = new AlertDialog.Builder(activity)
                 .setTitle("Field tools")
                 .setView(scrollDialog(box))
                 .setNegativeButton("Close", null)
                 .create();
+        holder[0].setOnDismissListener(d -> {
+            if (activeFieldMenuTourStep == 1) finishMapFieldToolTour();
+        });
         holder[0].show();
+        if (activeFieldMenuTourStep == 1 && activeFieldMenuTourTool != null) {
+            View target = box.findViewWithTag(fieldMenuTourTag(activeFieldMenuTourTool));
+            if (target != null) {
+                target.post(() -> {
+                    target.requestFocus();
+                    showMapFieldMenuTourCoach(holder[0], target);
+                });
+            }
+        }
     }
 
     private View dialogActionWithHelp(String title, String detail, String helpText,
@@ -779,6 +845,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         card.addView(d);
         card.setClickable(true);
         card.setFocusable(true);
+        card.setTag(fieldMenuTourTag(title));
         card.setOnClickListener(listener);
         return card;
     }
@@ -816,9 +883,14 @@ public final class FieldMapController implements LocationRepository.Listener {
                 if (fieldDialog != null && fieldDialog.length > 0 && fieldDialog[0] != null) {
                     fieldDialog[0].dismiss();
                 }
-                Intent field = new Intent(activity, FieldActivity.class);
-                field.putExtra(FieldActivity.EXTRA_START_HELP_TOOL, guidedTourTool);
-                activity.startActivity(field);
+                if (FieldUiNames.NAVIGATE.equals(guidedTourTool)
+                        || FieldUiNames.VISIBILITY.equals(guidedTourTool)) {
+                    startMapFieldToolTour(guidedTourTool);
+                } else {
+                    Intent field = new Intent(activity, FieldActivity.class);
+                    field.putExtra(FieldActivity.EXTRA_START_HELP_TOOL, guidedTourTool);
+                    activity.startActivity(field);
+                }
             });
         }
         builder.show();
@@ -838,12 +910,26 @@ public final class FieldMapController implements LocationRepository.Listener {
         box.addView(dialogAction("Field Record", "Choose a field observation or sample record.", v -> {
             holder[0].dismiss(); chooseFieldRecordNavigation();
         }));
-        box.addView(dialogAction("Enter coordinates", "Paste or type a latitude/longitude supported by RockMap.", v -> {
-            holder[0].dismiss(); enterNavigationCoordinate();
-        }));
+        View coordinateAction = dialogAction("Enter coordinates",
+                "Paste or type a latitude/longitude supported by RockMap.", v -> {
+                    boolean touring = isMapFieldTour(FieldUiNames.NAVIGATE, 2);
+                    holder[0].dismiss();
+                    if (touring) finishMapFieldToolTour();
+                    enterNavigationCoordinate();
+                });
+        box.addView(coordinateAction);
         holder[0] = new AlertDialog.Builder(activity).setTitle("Navigate on map").setView(box)
                 .setNegativeButton("Close", null).create();
+        holder[0].setOnDismissListener(d -> {
+            if (isMapFieldTour(FieldUiNames.NAVIGATE, 2)) finishMapFieldToolTour();
+        });
         holder[0].show();
+        if (isMapFieldTour(FieldUiNames.NAVIGATE, 2)) {
+            showMapFieldSubmenuTourCoach(holder[0], coordinateAction,
+                    "Navigate",
+                    "Choose a target, then RockMap draws a live line from your current GPS position to that location until you stop navigation.",
+                    "Tap “Enter coordinates” to choose a navigation target.");
+        }
     }
 
     private void showVisibilityMenu() {
@@ -857,7 +943,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         CheckBox labels = check("Saved Location Labels", FieldMapState.labelsVisible(activity),
                 "Names for saved/imported RockMap markers. Labels also hide when the normal marker layer is hidden.");
         box.addView(tracks); box.addView(areas); box.addView(records); box.addView(labels);
-        new AlertDialog.Builder(activity)
+        AlertDialog dialog = new AlertDialog.Builder(activity)
                 .setTitle(FieldUiNames.VISIBILITY)
                 .setView(box)
                 .setPositiveButton("Apply", (d, w) -> {
@@ -866,9 +952,103 @@ public final class FieldMapController implements LocationRepository.Listener {
                     FieldMapState.setFieldRecordsVisible(activity, records.isChecked());
                     FieldMapState.setLabelsVisible(activity, labels.isChecked());
                     applyCachedSources();
+                    if (FieldUiNames.VISIBILITY.equals(activeFieldMenuTourTool)) finishMapFieldToolTour();
                 })
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        dialog.setOnDismissListener(d -> {
+            if (isMapFieldTour(FieldUiNames.VISIBILITY, 2)) finishMapFieldToolTour();
+        });
+        dialog.show();
+        if (isMapFieldTour(FieldUiNames.VISIBILITY, 2)) {
+            showMapFieldSubmenuTourCoach(dialog, tracks,
+                    "Visibility",
+                    "Visibility controls which Field objects are drawn on the map. Hiding a type changes the display only; it does not delete its saved records.",
+                    "Toggle “" + FieldUiNames.TRACK + "”, then tap Apply.");
+            tracks.setOnCheckedChangeListener((buttonView, isChecked) ->
+                    showMapFieldSubmenuTourCoach(dialog,
+                            dialog.getButton(AlertDialog.BUTTON_POSITIVE),
+                            "Visibility",
+                            "The map will update when you apply the visibility choices.",
+                            "Tap “Apply”."));
+        }
+    }
+
+    private void startMapFieldToolTour(String tool) {
+        GuidedTourCoach.clear(activity);
+        activeFieldMenuTourTool = tool;
+        activeFieldMenuTourStep = 1;
+        showFieldMenu();
+    }
+
+    private boolean isMapFieldTour(String tool, int step) {
+        return tool != null && tool.equals(activeFieldMenuTourTool)
+                && activeFieldMenuTourStep == step;
+    }
+
+    private void finishMapFieldToolTour() {
+        activeFieldMenuTourTool = null;
+        activeFieldMenuTourStep = 0;
+        GuidedTourCoach.clear(activity);
+    }
+
+    private String fieldMenuTourTag(String tool) {
+        return "rockmap-field-menu-tour:" + (tool == null ? "" : tool);
+    }
+
+    private void showMapFieldMenuTourCoach(AlertDialog dialog, View target) {
+        if (dialog == null || target == null || activeFieldMenuTourTool == null) return;
+        FrameLayout host = dialogTourRoot(dialog);
+        if (host == null) return;
+        String tool = activeFieldMenuTourTool;
+        String body = FieldUiNames.NAVIGATE.equals(tool)
+                ? "Navigate follows a Saved Location, Field Record, or entered coordinate with a live line from your current GPS position."
+                : "Visibility controls which Field objects are drawn on the map without deleting their saved records.";
+        GuidedTourCoach.show(activity, host, 1, 2, tool, body,
+                "Tap “" + tool + "”.", target, null, null, null,
+                () -> {
+                    activeFieldMenuTourStep = 2;
+                    dialog.dismiss();
+                    if (FieldUiNames.NAVIGATE.equals(tool)) showNavigateMenu();
+                    else showVisibilityMenu();
+                },
+                () -> { dialog.dismiss(); finishMapFieldToolTour(); });
+    }
+
+    private void showMapFieldSubmenuTourCoach(AlertDialog dialog, View target,
+                                               String title, String body, String action) {
+        if (dialog == null || target == null) return;
+        FrameLayout host = dialogTourRoot(dialog);
+        if (host == null) return;
+        GuidedTourCoach.show(activity, host, 2, 2, title, body, action, target,
+                () -> {
+                    activeFieldMenuTourStep = 1;
+                    dialog.dismiss();
+                    showFieldMenu();
+                },
+                null, null,
+                () -> { dialog.dismiss(); finishMapFieldToolTour(); },
+                () -> { dialog.dismiss(); finishMapFieldToolTour(); });
+    }
+
+    private FrameLayout dialogTourRoot(AlertDialog dialog) {
+        if (dialog == null || dialog.getWindow() == null) return null;
+        View content = dialog.getWindow().findViewById(android.R.id.content);
+        if (content instanceof FrameLayout) return (FrameLayout) content;
+        View decor = dialog.getWindow().getDecorView();
+        return findFirstFrameLayout(decor);
+    }
+
+    private FrameLayout findFirstFrameLayout(View view) {
+        if (view instanceof FrameLayout) return (FrameLayout) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                FrameLayout found = findFirstFrameLayout(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private void openFieldScreen(String screen) {
@@ -1843,9 +2023,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         LinearLayout row = new LinearLayout(activity);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView title = hudTitle(titleText);
-        row.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.setOnTouchListener((v, event) -> handleFloatingDrag(hud, v, event));
 
         Button arrow = new Button(activity);
         arrow.setText("›");
@@ -1856,9 +2034,25 @@ public final class FieldMapController implements LocationRepository.Listener {
         arrow.setMinHeight(dp(40));
         arrow.setMinimumHeight(dp(40));
         arrow.setPadding(0, 0, 0, 0);
-        arrow.setContentDescription("Collapse " + shortLabel + " toolbar to the right edge");
+        arrow.setTextColor(Color.rgb(30, 85, 145));
+        GradientDrawable collapseBg = new GradientDrawable();
+        collapseBg.setColor(Color.rgb(255, 255, 255));
+        collapseBg.setStroke(dp(1), Color.rgb(165, 175, 180));
+        collapseBg.setCornerRadius(dp(7));
+        arrow.setBackground(collapseBg);
+        arrow.setContentDescription("Collapse " + shortLabel + " toolbar");
         arrow.setOnClickListener(collapse);
-        row.addView(arrow, new LinearLayout.LayoutParams(dp(44), ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(arrow, new LinearLayout.LayoutParams(dp(44), dp(40)));
+
+        TextView title = hudTitle(titleText);
+        title.setPadding(dp(6), 0, dp(4), 0);
+        row.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        View dragHandle = RockMapDragHandle.labeled(activity, Color.rgb(82, 88, 90),
+                (v, event) -> handleFloatingDrag(hud, v, event),
+                "Drag " + shortLabel + " toolbar");
+        row.addView(dragHandle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)));
         return row;
     }
 
@@ -1877,9 +2071,17 @@ public final class FieldMapController implements LocationRepository.Listener {
         tab.setPadding(dp(5), 0, dp(5), 0);
         tab.setContentDescription("Expand " + label + " map toolbar");
         tab.setOnClickListener(expand);
-        collapsedTabs.addView(tab, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        GradientDrawable tabBg = new GradientDrawable();
+        tabBg.setColor(Color.rgb(255, 255, 255));
+        tabBg.setStroke(dp(1), Color.rgb(165, 175, 180));
+        tabBg.setCornerRadius(dp(7));
+        tab.setBackground(tabBg);
+        LinearLayout.LayoutParams tabParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        tabParams.setMargins(0, dp(2), 0, 0);
+        collapsedTabs.addView(tab, tabParams);
         collapsedTabs.setVisibility(View.VISIBLE);
+        positionCollapsedTabsIfNeeded();
         bringFieldUiToFront();
     }
 
@@ -1887,7 +2089,107 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (collapsedTabs == null) return;
         View tab = collapsedTabs.findViewWithTag(tag);
         if (tab != null) collapsedTabs.removeView(tab);
-        collapsedTabs.setVisibility(collapsedTabs.getChildCount() > 0 ? View.VISIBLE : View.GONE);
+        collapsedTabs.setVisibility(collapsedToolCount() > 0 ? View.VISIBLE : View.GONE);
+    }
+
+    private int collapsedToolCount() {
+        if (collapsedTabs == null) return 0;
+        int count = 0;
+        for (int i = 0; i < collapsedTabs.getChildCount(); i++) {
+            View child = collapsedTabs.getChildAt(i);
+            if (child != null && child.getTag() != null
+                    && !COLLAPSED_DRAG_TAG.equals(child.getTag())) count++;
+        }
+        return count;
+    }
+
+    private boolean handleFloatingDrag(View movingView, View touched, MotionEvent event) {
+        if (movingView == null || root == null || event == null
+                || !(movingView.getLayoutParams() instanceof FrameLayout.LayoutParams)) return false;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) movingView.getLayoutParams();
+                floatingDragDownRawX = event.getRawX();
+                floatingDragDownRawY = event.getRawY();
+                floatingDragStartLeft = start.leftMargin;
+                floatingDragStartTop = start.topMargin;
+                floatingDragging = false;
+                return false;
+            case MotionEvent.ACTION_MOVE:
+                float dx = event.getRawX() - floatingDragDownRawX;
+                float dy = event.getRawY() - floatingDragDownRawY;
+                if (!floatingDragging && Math.hypot(dx, dy) >= Math.max(1, floatingTouchSlop)) {
+                    floatingDragging = true;
+                    touched.setPressed(false);
+                    ViewParent parent = touched.getParent();
+                    if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
+                }
+                if (floatingDragging) {
+                    positionFloatingView(movingView, floatingDragStartLeft + Math.round(dx),
+                            floatingDragStartTop + Math.round(dy), true);
+                    return true;
+                }
+                return false;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (floatingDragging) {
+                    float upDx = event.getRawX() - floatingDragDownRawX;
+                    float upDy = event.getRawY() - floatingDragDownRawY;
+                    positionFloatingView(movingView, floatingDragStartLeft + Math.round(upDx),
+                            floatingDragStartTop + Math.round(upDy), true);
+                    touched.setPressed(false);
+                    floatingDragging = false;
+                    return true;
+                }
+                return false;
+            default:
+                return floatingDragging;
+        }
+    }
+
+    private void positionFloatingView(View view, int left, int top, boolean remember) {
+        if (view == null || root == null || !(view.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
+        int rootWidth = root.getWidth() > 0 ? root.getWidth() : activity.getResources().getDisplayMetrics().widthPixels;
+        int rootHeight = root.getHeight() > 0 ? root.getHeight() : activity.getResources().getDisplayMetrics().heightPixels;
+        int width = view.getWidth() > 0 ? view.getWidth() : Math.max(dp(82), ((FrameLayout.LayoutParams) view.getLayoutParams()).width);
+        int height = view.getHeight() > 0 ? view.getHeight() : dp(80);
+        int margin = dp(6);
+        int bottomGuard = dp(118);
+        left = Math.max(margin, Math.min(left, Math.max(margin, rootWidth - width - margin)));
+        int minTop = Math.max(margin, statusBarHeight() + dp(2));
+        top = Math.max(minTop, Math.min(top, Math.max(minTop, rootHeight - height - bottomGuard)));
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.leftMargin = left;
+        params.topMargin = top;
+        params.rightMargin = 0;
+        params.bottomMargin = 0;
+        view.setLayoutParams(params);
+        if (view == hud) updateMapUiInsets();
+        if (remember) {
+            if (view == hud) {
+                hudUserPositioned = true; hudUserLeft = left; hudUserTop = top;
+            } else if (view == collapsedTabs) {
+                collapsedTabsUserPositioned = true; collapsedTabsUserLeft = left; collapsedTabsUserTop = top;
+            }
+        }
+    }
+
+    private void positionCollapsedTabsIfNeeded() {
+        if (collapsedTabs == null || root == null) return;
+        collapsedTabs.post(() -> {
+            if (collapsedTabs == null || collapsedTabs.getVisibility() != View.VISIBLE) return;
+            if (collapsedTabsUserPositioned) {
+                positionFloatingView(collapsedTabs, collapsedTabsUserLeft, collapsedTabsUserTop, false);
+                return;
+            }
+            int rootWidth = root.getWidth() > 0 ? root.getWidth() : activity.getResources().getDisplayMetrics().widthPixels;
+            int rootHeight = root.getHeight() > 0 ? root.getHeight() : activity.getResources().getDisplayMetrics().heightPixels;
+            int width = collapsedTabs.getWidth() > 0 ? collapsedTabs.getWidth() : dp(94);
+            int height = collapsedTabs.getHeight() > 0 ? collapsedTabs.getHeight() : dp(90);
+            positionFloatingView(collapsedTabs, rootWidth - width - dp(6),
+                    Math.max(statusBarHeight() + dp(70), (rootHeight - height) / 2), false);
+        });
     }
 
     private Button hudButton(String text, View.OnClickListener listener) {

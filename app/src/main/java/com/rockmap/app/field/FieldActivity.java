@@ -256,27 +256,135 @@ public final class FieldActivity extends Activity implements LocationRepository.
         showHub();
         getWindow().getDecorView().post(() -> {
             View target = findViewById(android.R.id.content).findViewWithTag(fieldToolTag(tool));
+            if (target == null) return;
+            final boolean[] tourActive = new boolean[]{true};
+            target.setOnClickListener(v -> {
+                GuidedTourCoach.clear(FieldActivity.this);
+                openAction.run();
+                if (tourActive[0] && staysInField) {
+                    getWindow().getDecorView().postDelayed(() ->
+                            showFieldToolScreenTour(tool, explainer, openAction, staysInField), 260L);
+                }
+            });
             GuidedTourCoach.show(this, 1, staysInField ? 2 : 1,
                     tool,
                     explainer,
-                    "Use the highlighted “" + tool + "” control.", target,
-                    null,
-                    "Open " + tool, () -> {
+                    "Tap “" + tool + "”.", target,
+                    null, null, null,
+                    () -> {
                         GuidedTourCoach.clear(FieldActivity.this);
                         openAction.run();
                         if (staysInField) getWindow().getDecorView().postDelayed(() ->
-                                GuidedTourCoach.show(FieldActivity.this, 2, 2,
-                                        tool + " screen",
-                                        "Explore the visible " + tool + " controls. The ? explainer remains available from Field Tools whenever you need a refresher.",
-                                        "Try the controls that are useful to you, then finish when you're ready.", null,
-                                        () -> startFieldToolTour(tool, explainer, openAction, staysInField),
-                                        "Finish", () -> GuidedTourCoach.clear(FieldActivity.this),
-                                        () -> GuidedTourCoach.clear(FieldActivity.this),
-                                        () -> GuidedTourCoach.clear(FieldActivity.this)), 120L);
+                                showFieldToolScreenTour(tool, explainer, openAction, staysInField), 260L);
                     },
-                    () -> GuidedTourCoach.clear(FieldActivity.this),
-                    () -> GuidedTourCoach.clear(FieldActivity.this));
+                    () -> {
+                        tourActive[0] = false;
+                        GuidedTourCoach.clear(FieldActivity.this);
+                    });
         });
+    }
+
+    private void showFieldToolScreenTour(String tool, String explainer,
+                                         Runnable openAction, boolean staysInField) {
+        View target = fieldToolScreenTarget(tool);
+        String action = fieldToolScreenAction(tool, target);
+        String body = fieldToolScreenPurpose(tool, explainer);
+        GuidedTourCoach.show(this, 2, 2, tool, body, action, target,
+                () -> startFieldToolTour(tool, explainer, openAction, staysInField),
+                "Finish", () -> GuidedTourCoach.clear(FieldActivity.this),
+                () -> GuidedTourCoach.clear(FieldActivity.this),
+                () -> GuidedTourCoach.clear(FieldActivity.this));
+    }
+
+    private View fieldToolScreenTarget(String tool) {
+        View content = findViewById(android.R.id.content);
+        if (content == null) return null;
+        if (FieldUiNames.TRACK.equals(tool)) {
+            View target = findClickableByText(content, "Start new track");
+            if (target == null) target = findClickableByText(content, "Resume");
+            if (target == null) target = findClickableByText(content, "Pause");
+            if (target == null) target = findClickableByText(content, "Open active track on map");
+            return target;
+        }
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return findClickableByText(content, "New at GPS");
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return findClickableByText(content, "Create Prospecting Area");
+        if (FieldUiNames.IMPORTED_DATA.equals(tool)) {
+            View target = findClickableByText(content, "Import File");
+            return target == null ? findClickableByText(content, "Import Another File") : target;
+        }
+        if (FieldUiNames.COORDINATES.equals(tool)) return findClickableByText(content, "Convert");
+        if (FieldUiNames.SAVED_LOCATIONS.equals(tool) || FieldUiNames.EXPORT.equals(tool)) {
+            return findFirstFeatureAction(content);
+        }
+        return findFirstFeatureAction(content);
+    }
+
+    private String fieldToolScreenAction(String tool, View target) {
+        if (target == null) return "Use the visible controls when you have data to work with.";
+        if (FieldUiNames.TRACK.equals(tool)) return "Try the highlighted Track control.";
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return "Tap “New at GPS” to see how a Field Record starts.";
+        if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) return "Tap a Saved Location to open its map, navigation, and record actions.";
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return "Tap “Create Prospecting Area” to start drawing a saved area on the map.";
+        if (FieldUiNames.IMPORTED_DATA.equals(tool)) return "Tap the highlighted import control to choose another supported file.";
+        if (FieldUiNames.EXPORT.equals(tool)) return "Tap an available export option to choose what RockMap should export.";
+        if (FieldUiNames.COORDINATES.equals(tool)) return "Enter coordinates, then tap “Convert”.";
+        return "Try the highlighted control.";
+    }
+
+    private String fieldToolScreenPurpose(String tool, String fallback) {
+        if (FieldUiNames.TRACK.equals(tool)) return "Tracks record and manage GPS lines. The controls here start or manage recording and reopen saved tracks on the map.";
+        if (FieldUiNames.FIELD_RECORDS.equals(tool)) return "Field Records store richer observations. Start one from GPS or coordinates, then add the details you want to keep.";
+        if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) return "Saved Locations are quick points you kept on the device. Open one to map it, navigate to it, edit it, or copy it into a Field Record.";
+        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) return "Prospecting Areas are saved polygons. Create one from a map measurement, then reopen it for mapping and Research.";
+        if (FieldUiNames.IMPORTED_DATA.equals(tool)) return "Imported Data keeps each supported file and its created objects grouped so you can review or remove that import deliberately.";
+        if (FieldUiNames.EXPORT.equals(tool)) return "Export creates a copy of selected RockMap data for use elsewhere without deleting the original local records.";
+        if (FieldUiNames.COORDINATES.equals(tool)) return "Coordinates converts one location among the supported coordinate formats.";
+        return fallback;
+    }
+
+    private View findClickableByText(View root, String wanted) {
+        if (root == null || wanted == null) return null;
+        if (root instanceof TextView) {
+            CharSequence text = ((TextView) root).getText();
+            if (text != null && wanted.equals(text.toString().trim())) return nearestClickable(root);
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findClickableByText(group.getChildAt(i), wanted);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private View nearestClickable(View view) {
+        View current = view;
+        while (current != null) {
+            if (current.isClickable()) return current;
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return view;
+    }
+
+    private View findFirstFeatureAction(View root) {
+        if (root == null) return null;
+        if (root.isClickable() && root.getVisibility() == View.VISIBLE) {
+            CharSequence description = root.getContentDescription();
+            String text = root instanceof TextView && ((TextView) root).getText() != null
+                    ? ((TextView) root).getText().toString().trim() : "";
+            String combined = (description == null ? "" : description.toString()) + " " + text;
+            if (!combined.toLowerCase(Locale.US).contains("back")) return root;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findFirstFeatureAction(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private String fieldToolTag(String tool) {

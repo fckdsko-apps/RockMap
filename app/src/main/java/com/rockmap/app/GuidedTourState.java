@@ -54,7 +54,9 @@ public final class GuidedTourState {
     public static final int STEP_WORKSPACE_COLLAPSE = 15;
     public static final int STEP_WORKSPACE_REOPEN = 16;
     public static final int STEP_CONTEXT_CONTROLS = 17;
-    public static final int STEP_COMPLETE = 18;
+    public static final int STEP_CONTEXT_COLLAPSE = 18;
+    public static final int STEP_CONTEXT_REOPEN = 19;
+    public static final int STEP_COMPLETE = 20;
 
     private GuidedTourState() {}
 
@@ -103,7 +105,7 @@ public final class GuidedTourState {
 
     public static int endStep(Context context) {
         return Math.max(STEP_CENTER_GPS,
-                prefs(context).getInt(KEY_END_STEP, STEP_CONTEXT_CONTROLS));
+                prefs(context).getInt(KEY_END_STEP, STEP_CONTEXT_REOPEN));
     }
 
     public static int displayStep(Context context) {
@@ -127,12 +129,12 @@ public final class GuidedTourState {
     }
 
     public static void startFull(Context context) {
-        startTopic(context, TOPIC_FULL, STEP_CENTER_GPS, STEP_CONTEXT_CONTROLS);
+        startTopic(context, TOPIC_FULL, STEP_CENTER_GPS, STEP_CONTEXT_REOPEN);
     }
 
     public static void startTopic(Context context, String topic, int startStep, int endStep) {
-        int start = Math.max(STEP_CENTER_GPS, Math.min(STEP_CONTEXT_CONTROLS, startStep));
-        int end = Math.max(start, Math.min(STEP_CONTEXT_CONTROLS, endStep));
+        int start = Math.max(STEP_CENTER_GPS, Math.min(STEP_CONTEXT_REOPEN, startStep));
+        int end = Math.max(start, Math.min(STEP_CONTEXT_REOPEN, endStep));
         prefs(context).edit()
                 .putString(KEY_STATE, IN_PROGRESS)
                 .putString(KEY_TOPIC, topic == null ? TOPIC_FULL : topic)

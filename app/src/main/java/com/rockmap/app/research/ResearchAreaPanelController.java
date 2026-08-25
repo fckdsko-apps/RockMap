@@ -5,14 +5,18 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.rockmap.app.RockMapDragHandle;
 import com.rockmap.app.field.FieldMapController;
 
 /**
@@ -91,10 +95,20 @@ public final class ResearchAreaPanelController {
     private String activeView = "";
     private String areaLabel = "Selected Area";
     private String mode = MODE_EXPANDED;
+    private final int panelTouchSlop;
+    private float panelDragDownRawX;
+    private float panelDragDownRawY;
+    private int panelDragStartLeft;
+    private int panelDragStartTop;
+    private boolean panelDragging;
+    private boolean panelUserPositioned;
+    private int panelUserLeft;
+    private int panelUserTop;
 
     public ResearchAreaPanelController(Activity activity, FrameLayout root) {
         this.activity = activity;
         this.root = root;
+        this.panelTouchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
     }
 
     public void show(String areaLabel, String activeView, String statusText, Listener listener) {
@@ -263,6 +277,11 @@ public final class ResearchAreaPanelController {
         LinearLayout header = new LinearLayout(activity);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setOnTouchListener(this::handlePanelDrag);
+
+        collapseButton = iconButton("›", "Collapse Research workspace");
+        collapseButton.setOnClickListener(v -> collapse());
+        header.addView(collapseButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
         title = new TextView(activity);
         title.setTextSize(13.5f);
@@ -274,18 +293,19 @@ public final class ResearchAreaPanelController {
         title.setPadding(dp(7), 0, dp(5), 0);
         header.addView(title, new LinearLayout.LayoutParams(0, dp(46), 1f));
 
+        View dragHandle = RockMapDragHandle.labeled(activity, COLOR_MUTED,
+                this::handlePanelDrag, "Drag Research workspace");
+        header.addView(dragHandle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(46)));
+
         Button help = iconButton("?", "Open help for the current Research view");
         help.setTextSize(16f);
         help.setOnClickListener(v -> { if (listener != null) listener.onHelp(); });
         header.addView(help, new LinearLayout.LayoutParams(dp(46), dp(46)));
 
-        collapseButton = iconButton("›", "Collapse Research to the right edge");
-        collapseButton.setOnClickListener(v -> collapse());
-        header.addView(collapseButton, new LinearLayout.LayoutParams(dp(46), dp(46)));
-
         closeButton = actionButton("Close");
         closeButton.setTextSize(10.5f);
-        closeButton.setContentDescription("Close Research panel without hiding mapped Research layers");
+        closeButton.setContentDescription("Close Research workspace without hiding mapped Research layers");
         closeButton.setOnClickListener(v -> closePanel());
         header.addView(closeButton, new LinearLayout.LayoutParams(dp(64), dp(46)));
         expandedGroup.addView(header);
@@ -340,22 +360,28 @@ public final class ResearchAreaPanelController {
         detailScroll.setVisibility(View.GONE);
         panel.addView(expandedGroup);
 
-        // Collapsed state mirrors RockMap's Track/Measure side tabs: a compact reopen target plus
-        // an explicit close affordance. It never occupies the bottom navigation area.
+        // Collapsed state stays movable and uses the same visual interaction language as expanded panels.
         collapsedBar = new LinearLayout(activity);
         collapsedBar.setOrientation(LinearLayout.HORIZONTAL);
         collapsedBar.setGravity(Gravity.CENTER_VERTICAL);
         collapsedBar.setPadding(dp(3), dp(3), dp(3), dp(3));
+        collapsedBar.setOnTouchListener(this::handlePanelDrag);
 
         expandButton = actionButton("‹ Research");
         expandButton.setTextSize(11.5f);
-        expandButton.setContentDescription("Expand Research map workspace");
+        expandButton.setContentDescription("Expand Research workspace");
         expandButton.setOnClickListener(v -> expand());
         collapsedBar.addView(expandButton, new LinearLayout.LayoutParams(dp(94), dp(46)));
 
+        View collapsedDrag = RockMapDragHandle.compact(activity, COLOR_MUTED,
+                this::handlePanelDrag, "Drag collapsed Research workspace");
+        LinearLayout.LayoutParams dragParams = new LinearLayout.LayoutParams(dp(40), dp(46));
+        dragParams.setMargins(dp(3), 0, 0, 0);
+        collapsedBar.addView(collapsedDrag, dragParams);
+
         Button collapsedClose = actionButton("Close");
         collapsedClose.setTextSize(10.5f);
-        collapsedClose.setContentDescription("Close Research panel without hiding mapped Research layers");
+        collapsedClose.setContentDescription("Close Research workspace without hiding mapped Research layers");
         collapsedClose.setOnClickListener(v -> closePanel());
         LinearLayout.LayoutParams closeParams = new LinearLayout.LayoutParams(dp(64), dp(46));
         closeParams.setMargins(dp(3), 0, 0, 0);
@@ -395,19 +421,105 @@ public final class ResearchAreaPanelController {
     }
 
     private FrameLayout.LayoutParams expandedLayoutParams() {
+        int rootWidth = Math.max(dp(320), root.getWidth() > 0 ? root.getWidth()
+                : activity.getResources().getDisplayMetrics().widthPixels);
+        int width = Math.max(dp(280), Math.min(dp(520), rootWidth - dp(24)));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
-        params.setMargins(dp(8), statusBarHeight() + dp(8), dp(8), 0);
+                width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        int left = panelUserPositioned ? panelUserLeft : Math.max(dp(8), (rootWidth - width) / 2);
+        int top = panelUserPositioned ? panelUserTop : statusBarHeight() + dp(8);
+        params.leftMargin = clamp(left, dp(6), Math.max(dp(6), rootWidth - width - dp(6)));
+        params.topMargin = clampPanelTop(top, panel == null ? dp(260) : Math.max(dp(120), panel.getHeight()));
         return params;
     }
 
     private FrameLayout.LayoutParams collapsedLayoutParams() {
+        int rootWidth = Math.max(dp(320), root.getWidth() > 0 ? root.getWidth()
+                : activity.getResources().getDisplayMetrics().widthPixels);
+        int width = dp(204);
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.END);
-        params.setMargins(0, statusBarHeight() + dp(82), dp(6), 0);
+                width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+        int left = panelUserPositioned ? panelUserLeft : Math.max(dp(6), rootWidth - width - dp(6));
+        int top = panelUserPositioned ? panelUserTop : statusBarHeight() + dp(82);
+        params.leftMargin = clamp(left, dp(6), Math.max(dp(6), rootWidth - width - dp(6)));
+        params.topMargin = clampPanelTop(top, dp(52));
         return params;
+    }
+
+    private boolean handlePanelDrag(View touched, MotionEvent event) {
+        if (panel == null || root == null || event == null) return false;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+                if (!(panel.getLayoutParams() instanceof FrameLayout.LayoutParams)) return false;
+                FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) panel.getLayoutParams();
+                panelDragDownRawX = event.getRawX();
+                panelDragDownRawY = event.getRawY();
+                panelDragStartLeft = start.leftMargin;
+                panelDragStartTop = start.topMargin;
+                panelDragging = false;
+                return false;
+            case MotionEvent.ACTION_MOVE:
+                float dx = event.getRawX() - panelDragDownRawX;
+                float dy = event.getRawY() - panelDragDownRawY;
+                if (!panelDragging && Math.hypot(dx, dy) >= Math.max(1, panelTouchSlop)) {
+                    panelDragging = true;
+                    touched.setPressed(false);
+                    ViewParent parent = touched.getParent();
+                    if (parent != null) parent.requestDisallowInterceptTouchEvent(true);
+                }
+                if (panelDragging) {
+                    movePanelTo(panelDragStartLeft + Math.round(dx),
+                            panelDragStartTop + Math.round(dy));
+                    return true;
+                }
+                return false;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                if (panelDragging) {
+                    float upDx = event.getRawX() - panelDragDownRawX;
+                    float upDy = event.getRawY() - panelDragDownRawY;
+                    movePanelTo(panelDragStartLeft + Math.round(upDx),
+                            panelDragStartTop + Math.round(upDy));
+                    touched.setPressed(false);
+                    panelDragging = false;
+                    return true;
+                }
+                return false;
+            default:
+                return panelDragging;
+        }
+    }
+
+    private void movePanelTo(int left, int top) {
+        if (panel == null || root == null || !(panel.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) panel.getLayoutParams();
+        int rootWidth = Math.max(root.getWidth(), activity.getResources().getDisplayMetrics().widthPixels);
+        int width = panel.getWidth() > 0 ? panel.getWidth() : params.width;
+        if (width <= 0) width = MODE_COLLAPSED.equals(mode) ? dp(204) : Math.max(dp(280), rootWidth - dp(24));
+        left = clamp(left, dp(6), Math.max(dp(6), rootWidth - width - dp(6)));
+        top = clampPanelTop(top, Math.max(dp(52), panel.getHeight()));
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.leftMargin = left;
+        params.topMargin = top;
+        params.rightMargin = 0;
+        params.bottomMargin = 0;
+        panel.setLayoutParams(params);
+        panelUserPositioned = true;
+        panelUserLeft = left;
+        panelUserTop = top;
+    }
+
+    private int clampPanelTop(int top, int height) {
+        int rootHeight = root.getHeight() > 0 ? root.getHeight()
+                : activity.getResources().getDisplayMetrics().heightPixels;
+        int minTop = Math.max(dp(6), statusBarHeight() + dp(2));
+        int bottomGuard = dp(118);
+        int maxTop = Math.max(minTop, rootHeight - Math.max(dp(52), height) - bottomGuard);
+        return clamp(top, minTop, maxTop);
+    }
+
+    private int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private void updateTabs() {

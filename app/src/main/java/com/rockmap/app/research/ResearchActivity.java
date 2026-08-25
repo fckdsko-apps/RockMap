@@ -995,7 +995,7 @@ public final class ResearchActivity extends Activity {
         }
         GuidedTourState.startTopic(this, GuidedTourState.TOPIC_RESEARCH,
                 GuidedTourState.STEP_COMBINED_ANALYSIS,
-                GuidedTourState.STEP_CONTEXT_CONTROLS);
+                GuidedTourState.STEP_CONTEXT_REOPEN);
         showHub();
     }
 
