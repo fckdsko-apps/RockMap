@@ -2,6 +2,7 @@ package com.rockmap.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.widget.Button;
 
 /** Short contextual reference help that remains available after onboarding. */
 public final class RockMapHelp {
@@ -24,13 +25,14 @@ public final class RockMapHelp {
         AlertDialog dialog = builder.create();
         dialog.setOnShowListener(ignored -> {
             if (startTour == null) return;
-            android.widget.Button start = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            Button start = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (start == null) return;
             start.setOnClickListener(v -> {
-                dialog.setOnDismissListener(null);
+                dialog.setOnDismissListener(d -> {
+                    if (activity.isFinishing() || activity.isDestroyed()) return;
+                    activity.getWindow().getDecorView().post(startTour);
+                });
                 dialog.dismiss();
-                android.view.View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-                if (decor != null) decor.post(startTour);
-                else startTour.run();
             });
         });
         dialog.show();
@@ -46,7 +48,20 @@ public final class RockMapHelp {
                 .setTitle("Offline Maps & Data help")
                 .setMessage(message)
                 .setPositiveButton("Close", null);
-        if (startTour != null) builder.setNeutralButton("Start guided tour", (d, w) -> startTour.run());
-        builder.show();
+        if (startTour != null) builder.setNeutralButton("Start guided tour", null);
+        AlertDialog dialog = builder.create();
+        dialog.setOnShowListener(ignored -> {
+            if (startTour == null) return;
+            Button start = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (start == null) return;
+            start.setOnClickListener(v -> {
+                dialog.setOnDismissListener(d -> {
+                    if (activity.isFinishing() || activity.isDestroyed()) return;
+                    activity.getWindow().getDecorView().post(startTour);
+                });
+                dialog.dismiss();
+            });
+        });
+        dialog.show();
     }
 }

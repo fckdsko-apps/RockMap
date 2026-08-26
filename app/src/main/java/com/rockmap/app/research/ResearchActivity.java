@@ -180,6 +180,9 @@ public final class ResearchActivity extends Activity {
     }
 
     private void showHub() {
+        GuidedTourCoach.clear(this);
+        tourCombinedControl = null;
+        tourShowGeologyControl = null;
         LinearLayout root = page();
         root.addView(title("Research"));
         root.addView(help("Choose what you want to investigate. Mineral Evidence and Geology stay distinct until you deliberately combine them in an area analysis."));
@@ -658,6 +661,9 @@ public final class ResearchActivity extends Activity {
 
     private void showResults(List<GeologyUnit> results, String resultTitle,
                              GeologyRepository.Bounds queryBounds, String queryContextJson) {
+        GuidedTourCoach.clear(this);
+        tourCombinedControl = null;
+        tourShowGeologyControl = null;
         List<GeologyUnit> safe = results == null ? new ArrayList<>() : results;
         currentResults = new ArrayList<>(safe);
         currentResultTitle = resultTitle;
@@ -913,6 +919,10 @@ public final class ResearchActivity extends Activity {
             } catch (Exception ex) {
                 main.post(() -> {
                     toast(ex.getMessage() == null ? "Research query failed safely." : ex.getMessage());
+                    if (GuidedTourState.isActive(this)
+                            && GuidedTourState.step(this) == GuidedTourState.STEP_SHOW_GEOLOGY) {
+                        GuidedTourState.setStep(this, GuidedTourState.STEP_COMBINED_ANALYSIS);
+                    }
                     showHub();
                 });
             }
@@ -944,6 +954,12 @@ public final class ResearchActivity extends Activity {
                     tourBackAction(),
                     null, null, this::skipTourResearchStep, this::exitTourFromResearch);
         } else if (step == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            if (currentResults == null || currentResults.isEmpty()) {
+                GuidedTourState.advance(this, GuidedTourState.STEP_COMPLETE);
+                GuidedTourCoach.clear(this);
+                finish();
+                return;
+            }
             if (tourShowGeologyControl == null || !tourShowGeologyControl.isAttachedToWindow()
                     || tourShowGeologyControl.getWidth() <= 0 || tourShowGeologyControl.getHeight() <= 0) {
                 getWindow().getDecorView().postDelayed(this::maybeShowTourCoach, 60L);
@@ -1466,6 +1482,7 @@ public final class ResearchActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        GuidedTourCoach.clear(this);
         clearGeologyUpdateObserver();
         executor.shutdownNow();
         if (waypointRepository != null) waypointRepository.close();

@@ -516,6 +516,12 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         FieldMapState.NavigationTarget target = FieldMapState.navigationTarget(activity);
 
+        String tourExpandedTool = requiredExpandedToolForActiveTour();
+        if (tourExpandedTool != null && !tourExpandedTool.equals(expandedTool)) {
+            expandedTool = tourExpandedTool;
+            FieldMapState.setExpandedTool(activity, tourExpandedTool);
+        }
+
         boolean trackActive = activeTrack != null || viewedTrack != null;
         boolean navigationActive = target != null;
         boolean measurementActive = measureActive;
@@ -568,6 +574,24 @@ public final class FieldMapController implements LocationRepository.Listener {
             hud.post(this::updateMapUiInsets);
             hud.post(this::showActiveMapFieldTourCoach);
         }
+    }
+
+    private String requiredExpandedToolForActiveTour() {
+        if (!FieldTourState.active(activity)) return null;
+        String tool = FieldTourState.tool(activity);
+        int step = FieldTourState.step(activity);
+        if (FieldUiNames.TRACK.equals(tool)) {
+            if ((step >= 5 && step <= 9) || step == 11 || (step >= 13 && step <= 17)) {
+                return FieldMapState.TOOL_TRACK;
+            }
+        } else if (FieldUiNames.NAVIGATE.equals(tool)) {
+            if (step >= 5 && step <= 9) return FieldMapState.TOOL_NAVIGATE;
+        } else if (FieldUiNames.MEASURE.equals(tool)) {
+            if (step >= 2 && step <= 16) return FieldMapState.TOOL_MEASURE;
+        } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
+            if (step >= 3 && step <= 14) return FieldMapState.TOOL_MEASURE;
+        }
+        return null;
     }
 
     private void addTrackHud(FieldDatabase.Track activeTrack, FieldDatabase.Track viewedTrack) {
@@ -1149,30 +1173,38 @@ public final class FieldMapController implements LocationRepository.Listener {
                 .setTitle(tool + " help")
                 .setMessage(message)
                 .setPositiveButton("Close", null);
-        if (guidedTourTool != null && !guidedTourTool.trim().isEmpty()) {
-            builder.setNeutralButton("Start guided tour", (d, w) -> {
-                // Keep the existing Field menu alive underneath this help dialog. Dismissing and
-                // immediately reopening it caused the old menu's asynchronous onDismiss callback
-                // to cancel the newly started tour before its first coach could render.
-                FieldTourState.start(activity, guidedTourTool);
-                lastFieldTourCoachKey = "";
-                GuidedTourCoach.clear(activity);
-                final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
-                        ? fieldDialog[0] : null;
-                main.post(() -> {
-                    if (field != null && field.isShowing() && field.getWindow() != null) {
-                        View target = field.getWindow().getDecorView()
-                                .findViewWithTag(fieldMenuTourTag(guidedTourTool));
-                        if (target != null) {
-                            showUnifiedFieldMenuTourCoach(field, target, guidedTourTool);
-                            return;
+        boolean canStartTour = guidedTourTool != null && !guidedTourTool.trim().isEmpty();
+        if (canStartTour) builder.setNeutralButton("Start guided tour", null);
+        AlertDialog helpDialog = builder.create();
+        helpDialog.setOnShowListener(ignored -> {
+            if (!canStartTour) return;
+            Button start = helpDialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (start == null) return;
+            start.setOnClickListener(v -> {
+                helpDialog.setOnDismissListener(d -> {
+                    // Start only after the help window is gone. The Field menu remains alive
+                    // underneath, so its real row can be highlighted without racing two dialogs.
+                    FieldTourState.start(activity, guidedTourTool);
+                    lastFieldTourCoachKey = "";
+                    GuidedTourCoach.clear(activity);
+                    final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
+                            ? fieldDialog[0] : null;
+                    main.post(() -> {
+                        if (field != null && field.isShowing() && field.getWindow() != null) {
+                            View target = field.getWindow().getDecorView()
+                                    .findViewWithTag(fieldMenuTourTag(guidedTourTool));
+                            if (target != null) {
+                                showUnifiedFieldMenuTourCoach(field, target, guidedTourTool);
+                                return;
+                            }
                         }
-                    }
-                    showFieldMenu();
+                        showFieldMenu();
+                    });
                 });
+                helpDialog.dismiss();
             });
-        }
-        builder.show();
+        });
+        helpDialog.show();
     }
 
     private void showNavigateMenu() {
@@ -1209,7 +1241,10 @@ public final class FieldMapController implements LocationRepository.Listener {
                 int step = FieldTourState.step(activity);
                 if (FieldTourState.is(activity, FieldUiNames.NAVIGATE)
                         && step >= 2 && step <= 4) {
-                    finishActiveFieldTour();
+                    GuidedTourCoach.clear(activity);
+                    FieldTourState.step(activity, 1);
+                    lastFieldTourCoachKey = "";
+                    main.post(this::showFieldMenu);
                 }
             });
             showNavigateMenuTourCoach(holder[0], savedAction, fieldAction, coordinateAction);
@@ -1273,22 +1308,23 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void beginNavigatePractice(AlertDialog dialog) {
-        if (dialog != null) {
-            dialog.setOnDismissListener(null);
-            dialog.dismiss();
-        }
-        FieldMapState.NavigationTarget previous = FieldMapState.navigationTarget(activity);
-        FieldTourRuntimeState.beginNavigationPractice(activity, previous,
-                FieldMapState.expandedTool(activity));
-
         GeoMath.Point practice = navigationPracticePoint();
         if (practice == null) {
             main.postDelayed(() -> {
-                if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 4)) {
-                    beginNavigatePractice(null);
+                if (FieldTourState.is(activity, FieldUiNames.NAVIGATE, 4)
+                        && dialog != null && dialog.isShowing()) {
+                    beginNavigatePractice(dialog);
                 }
             }, 80L);
             return;
+        }
+
+        FieldMapState.NavigationTarget previous = FieldMapState.navigationTarget(activity);
+        FieldTourRuntimeState.beginNavigationPractice(activity, previous,
+                FieldMapState.expandedTool(activity));
+        if (dialog != null) {
+            dialog.setOnDismissListener(null);
+            dialog.dismiss();
         }
         FieldTourState.step(activity, 5);
         FieldTourState.text(activity, "");
@@ -1713,13 +1749,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 body = "Stop ends GPS recording. The recorded track remains saved on this device.";
                 action = "Tap “Stop”.";
                 final FieldDatabase.Track active = db.getActiveTrack();
-                skip = () -> {
-                    if (active != null) FieldTourState.entityId(activity, active.id);
-                    FieldTourState.step(activity, 12);
-                    FieldTourState.text(activity, "");
-                    GuidedTourCoach.clear(activity);
-                    openFieldScreen("tracks");
-                };
+                skip = () -> stopTourTrackAndOpenList(active);
                 back = () -> {
                     FieldTourState.step(activity, 10);
                     FieldTourState.text(activity, "");
@@ -2039,8 +2069,6 @@ public final class FieldMapController implements LocationRepository.Listener {
             recoverMissingMapTourTarget(tool, step);
             return;
         }
-        if (target != null && (!target.isAttachedToWindow() || !target.isShown()
-                || target.getWidth() <= 0 || target.getHeight() <= 0)) return;
         if (back == null && step > 1 && !suppressDefaultBack) {
             back = () -> setMapTourStep(Math.max(1, step - 1));
         }
@@ -2872,16 +2900,12 @@ public final class FieldMapController implements LocationRepository.Listener {
             }
         });
         dialog.setOnDismissListener(d -> {
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 17)) {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 17)
+                    || FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15)) {
+                String tool = FieldTourState.tool(activity);
                 GuidedTourCoach.clear(activity);
                 FieldTourState.text(activity, "");
-                FieldTourState.step(activity, 16);
-                lastFieldTourCoachKey = "";
-                main.post(this::renderHud);
-            } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 15)) {
-                GuidedTourCoach.clear(activity);
-                FieldTourState.text(activity, "");
-                FieldTourState.step(activity, 14);
+                FieldTourState.step(activity, FieldUiNames.MEASURE.equals(tool) ? 16 : 14);
                 lastFieldTourCoachKey = "";
                 main.post(this::renderHud);
             }
@@ -2909,6 +2933,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                         FieldTourState.step(activity,
                                 FieldUiNames.MEASURE.equals(tool) ? 16 : 14);
                         FieldTourState.text(activity, "");
+                        lastFieldTourCoachKey = "";
                         renderHud();
                     },
                     "Continue", () -> {
@@ -2916,16 +2941,8 @@ public final class FieldMapController implements LocationRepository.Listener {
                         showSaveAreaTour(dialog, name, save);
                     },
                     () -> {
-                        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
-                            FieldTourState.text(activity, "save");
-                            showSaveAreaTour(dialog, name, save);
-                        } else {
-                            dialog.setOnDismissListener(null);
-                            dialog.dismiss();
-                            FieldTourState.text(activity, "");
-                            finishActiveFieldTour();
-                            renderHud();
-                        }
+                        FieldTourState.text(activity, "save");
+                        showSaveAreaTour(dialog, name, save);
                     },
                     () -> {
                         dialog.setOnDismissListener(null);
@@ -2942,17 +2959,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                         showSaveAreaTour(dialog, name, save);
                     },
                     null, null,
-                    () -> {
-                        if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
-                            save.performClick();
-                        } else {
-                            dialog.setOnDismissListener(null);
-                            dialog.dismiss();
-                            FieldTourState.text(activity, "");
-                            finishActiveFieldTour();
-                            renderHud();
-                        }
-                    },
+                    save::performClick,
                     () -> {
                         dialog.setOnDismissListener(null);
                         dialog.dismiss();
@@ -3016,6 +3023,24 @@ public final class FieldMapController implements LocationRepository.Listener {
         main.postDelayed(this::refreshFieldSnapshot, 300L);
     }
 
+    private void stopTourTrackAndOpenList(FieldDatabase.Track track) {
+        if (track == null) {
+            FieldTourState.step(activity, 2);
+            FieldTourState.text(activity, "");
+            lastFieldTourCoachKey = "";
+            GuidedTourCoach.clear(activity);
+            openFieldScreen("tracks");
+            return;
+        }
+        FieldTourState.entityId(activity, track.id);
+        FieldTourState.step(activity, 12);
+        FieldTourState.text(activity, "");
+        lastFieldTourCoachKey = "";
+        GuidedTourCoach.clear(activity);
+        trackCommand(TrackRecordingService.ACTION_STOP, track.id);
+        main.postDelayed(() -> openStoppedTrackListWhenReady(track.id, 0), 260L);
+    }
+
     private void confirmStopTrack(FieldDatabase.Track track) {
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("Stop track?")
                 .setMessage("The recorded line will remain visible on the map until you hide or delete the track.")
@@ -3025,16 +3050,13 @@ public final class FieldMapController implements LocationRepository.Listener {
             Button stop = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             stop.setOnClickListener(v -> {
                 boolean touring = FieldTourState.is(activity, FieldUiNames.TRACK, 11);
-                if (touring) {
-                    FieldTourState.entityId(activity, track.id);
-                    FieldTourState.step(activity, 12);
-                }
                 dialog.setOnDismissListener(null);
                 dialog.dismiss();
-                GuidedTourCoach.clear(activity);
-                trackCommand(TrackRecordingService.ACTION_STOP, track.id);
                 if (touring) {
-                    main.postDelayed(() -> openStoppedTrackListWhenReady(track.id, 0), 260L);
+                    stopTourTrackAndOpenList(track);
+                } else {
+                    GuidedTourCoach.clear(activity);
+                    trackCommand(TrackRecordingService.ACTION_STOP, track.id);
                 }
             });
             if (FieldTourState.is(activity, FieldUiNames.TRACK, 11)) {
@@ -3072,8 +3094,15 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void openStoppedTrackListWhenReady(long trackId, int attempt) {
         FieldDatabase.Track saved = db.getTrack(trackId);
         boolean complete = saved != null && FieldDatabase.TRACK_COMPLETE.equals(saved.status);
-        if (complete || attempt >= 8) {
+        if (complete) {
             openFieldScreen("tracks");
+            return;
+        }
+        if (attempt >= 30) {
+            FieldTourState.step(activity, 11);
+            FieldTourState.text(activity, "");
+            lastFieldTourCoachKey = "";
+            renderHud();
             return;
         }
         main.postDelayed(() -> openStoppedTrackListWhenReady(trackId, attempt + 1), 220L);

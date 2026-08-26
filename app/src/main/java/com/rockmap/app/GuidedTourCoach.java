@@ -15,11 +15,11 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
-import android.view.Window;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.lang.ref.WeakReference;
@@ -36,71 +36,26 @@ import java.util.List;
  */
 public final class GuidedTourCoach {
     private static final String TAG = "rockmap-guided-tour-coach";
-    private static final String DIALOG_HOST_TAG = "rockmap-guided-tour-dialog-host";
     private static WeakReference<View> highlightedView = new WeakReference<>(null);
     private static Drawable highlightedDrawable;
     private static WeakReference<ViewGroup> activeCoachRoot = new WeakReference<>(null);
-    private static WeakReference<View> activeTargetInterceptor = new WeakReference<>(null);
+    private static WeakReference<View> activeTouchInterceptTarget = new WeakReference<>(null);
+    private static WeakReference<DialogCoachHost> activeDialogCoachHost = new WeakReference<>(null);
     private static long highlightGeneration;
     private static long coachGeneration;
 
     private GuidedTourCoach() {}
 
     /**
-     * Give a tour that is teaching an AlertDialog a full-screen, non-clickable presentation layer.
-     * The actual alert panel keeps its measured size in the middle of the screen, while the coach
-     * card can move across the entire usable display. Empty space in this host is not clickable, so
-     * the real dialog controls underneath remain the controls the user actually operates.
+     * Create a coach host for an AlertDialog without changing the AlertDialog window at all.
+     * The coach itself is shown in a small non-modal PopupWindow above the real dialog. Because
+     * the popup window is only as large as the coach card, taps everywhere else continue to reach
+     * the untouched dialog. This deliberately avoids resizing/reparenting the dialog, which can
+     * destroy AlertDialog layout and background geometry on Samsung/Android builds.
      */
     public static FrameLayout prepareDialogHost(Activity activity, AlertDialog dialog) {
         if (activity == null || dialog == null || dialog.getWindow() == null) return null;
-        View decor = dialog.getWindow().getDecorView();
-        if (!(decor instanceof FrameLayout)) return null;
-        FrameLayout decorRoot = (FrameLayout) decor;
-        View existing = decorRoot.findViewWithTag(DIALOG_HOST_TAG);
-        if (existing instanceof FrameLayout) {
-            existing.setElevation(dp(activity, 96));
-            existing.setTranslationZ(dp(activity, 96));
-            existing.bringToFront();
-            return (FrameLayout) existing;
-        }
-
-        // Do not resize, recolor, re-parent, or otherwise alter the AlertDialog window or panel.
-        // The dialog keeps Android's native geometry and background. The coach is only an overlay
-        // sibling inside the already-laid-out dialog decor, with a higher Z than the alert panel.
-        FrameLayout host = new FrameLayout(activity);
-        host.setTag(DIALOG_HOST_TAG);
-        host.setClickable(false);
-        host.setFocusable(false);
-        host.setClipChildren(false);
-        host.setClipToPadding(false);
-        host.setElevation(dp(activity, 96));
-        host.setTranslationZ(dp(activity, 96));
-        FrameLayout.LayoutParams hostParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.TOP | Gravity.START);
-        decorRoot.addView(host, hostParams);
-
-        ViewTreeObserver.OnGlobalLayoutListener keepAbove = new ViewTreeObserver.OnGlobalLayoutListener() {
-            @Override public void onGlobalLayout() {
-                if (host.getParent() != decorRoot) {
-                    if (decorRoot.getViewTreeObserver().isAlive()) {
-                        decorRoot.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                    }
-                    return;
-                }
-                host.setElevation(dp(activity, 96));
-                host.setTranslationZ(dp(activity, 96));
-                host.bringToFront();
-            }
-        };
-        decorRoot.getViewTreeObserver().addOnGlobalLayoutListener(keepAbove);
-        host.post(() -> {
-            host.setElevation(dp(activity, 96));
-            host.setTranslationZ(dp(activity, 96));
-            host.bringToFront();
-        });
-        return host;
+        return new DialogCoachHost(activity, dialog);
     }
 
     public static void clear(Activity activity) {
@@ -111,11 +66,12 @@ public final class GuidedTourCoach {
             View old = activeRoot.findViewWithTag(TAG);
             if (old != null) activeRoot.removeView(old);
         }
-        View interceptor = activeTargetInterceptor.get();
-        if (interceptor != null && interceptor.getParent() instanceof ViewGroup) {
-            ((ViewGroup) interceptor.getParent()).removeView(interceptor);
-        }
-        activeTargetInterceptor = new WeakReference<>(null);
+        View touchInterceptTarget = activeTouchInterceptTarget.get();
+        if (touchInterceptTarget != null) touchInterceptTarget.setOnTouchListener(null);
+        activeTouchInterceptTarget = new WeakReference<>(null);
+        DialogCoachHost dialogHost = activeDialogCoachHost.get();
+        if (dialogHost != null) dialogHost.dismissPopup();
+        activeDialogCoachHost = new WeakReference<>(null);
         activeCoachRoot = new WeakReference<>(null);
         if (activity == null) return;
         ViewGroup activityRoot = activity.findViewById(android.R.id.content);
@@ -144,6 +100,7 @@ public final class GuidedTourCoach {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         clear(activity);
         if (target != null && !targetReady(target)) {
+            requestTargetVisibility(target);
             waitForTargetAndShow(activity, hostRoot, step, total, title, message, requiredAction,
                     target, backAction, primaryLabel, primaryAction, skipAction, exitAction,
                     coachGeneration, 0);
@@ -156,6 +113,9 @@ public final class GuidedTourCoach {
             root = (FrameLayout) content;
         }
         activeCoachRoot = new WeakReference<>(root);
+        if (root instanceof DialogCoachHost) {
+            activeDialogCoachHost = new WeakReference<>((DialogCoachHost) root);
+        }
 
         DraggableCard card = new DraggableCard(activity, root, target);
         card.setTag(TAG);
@@ -394,10 +354,25 @@ public final class GuidedTourCoach {
         int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
         int maxWidth = Math.max(dp(activity, 236), Math.round(screenWidth * 0.76f));
         int width = Math.min(dp(activity, 340), Math.min(maxWidth, screenWidth - dp(activity, 16)));
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
-        params.setMargins(dp(activity, 8), dp(activity, 8), 0, 0);
-        root.addView(card, params);
+        FrameLayout.LayoutParams params;
+        if (root instanceof DialogCoachHost) {
+            params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.START);
+            params.setMargins(0, 0, 0, 0);
+            root.addView(card, params);
+            DialogCoachHost dialogHost = (DialogCoachHost) root;
+            int maxHeight = Math.max(dp(activity, 160),
+                    activity.getResources().getDisplayMetrics().heightPixels - dp(activity, 24));
+            card.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST));
+            dialogHost.showPopup(width, Math.max(dp(activity, 120), card.getMeasuredHeight()), card);
+        } else {
+            params = new FrameLayout.LayoutParams(
+                    width, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+            params.setMargins(dp(activity, 8), dp(activity, 8), 0, 0);
+            root.addView(card, params);
+        }
         installInformationalTargetInterceptor(activity, root, target, requiredAction, primaryAction);
         card.setElevation(dp(activity, 96));
         card.bringToFront();
@@ -419,9 +394,10 @@ public final class GuidedTourCoach {
                                                  Runnable primaryAction, Runnable skipAction,
                                                  Runnable exitAction, long generation, int attempt) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()
-                || target == null || generation != coachGeneration || attempt >= 14) return;
+                || target == null || generation != coachGeneration || attempt >= 75) return;
         target.postDelayed(() -> {
             if (generation != coachGeneration) return;
+            if (!targetReady(target)) requestTargetVisibility(target);
             if (targetReady(target)) {
                 show(activity, hostRoot, step, total, title, message, requiredAction, target,
                         backAction, primaryLabel, primaryAction, skipAction, exitAction);
@@ -431,6 +407,34 @@ public final class GuidedTourCoach {
                         skipAction, exitAction, generation, attempt + 1);
             }
         }, 40L);
+    }
+
+    private static void requestTargetVisibility(View target) {
+        if (target == null) return;
+        target.post(() -> {
+            if (!target.isAttachedToWindow()) return;
+            Rect local = new Rect(0, 0, Math.max(1, target.getWidth()), Math.max(1, target.getHeight()));
+            target.requestRectangleOnScreen(local, true);
+
+            // requestRectangleOnScreen is advisory and some nested Android layouts do not move
+            // until a later frame. If this target lives in a ScrollView, explicitly reveal it as
+            // well so a tour step cannot disappear merely because its real control starts below
+            // the fold (for example Tracks → Back to map).
+            ViewParent parent = target.getParent();
+            while (parent instanceof View) {
+                if (parent instanceof ScrollView) {
+                    ScrollView scroll = (ScrollView) parent;
+                    Rect inScroll = new Rect(0, 0, Math.max(1, target.getWidth()),
+                            Math.max(1, target.getHeight()));
+                    scroll.offsetDescendantRectToMyCoords(target, inScroll);
+                    int viewport = Math.max(1, scroll.getHeight());
+                    int desiredTop = Math.max(0, inScroll.centerY() - viewport / 2);
+                    scroll.scrollTo(scroll.getScrollX(), desiredTop);
+                    break;
+                }
+                parent = parent.getParent();
+            }
+        });
     }
 
     private static boolean targetReady(View target) {
@@ -446,23 +450,15 @@ public final class GuidedTourCoach {
         if (activity == null || root == null || target == null || primaryAction == null
                 || requiredAction == null
                 || !requiredAction.trim().toLowerCase().startsWith("review")) return;
-        Rect screen = new Rect();
-        if (!target.getGlobalVisibleRect(screen) || screen.width() <= 0 || screen.height() <= 0) return;
-        int[] rootLocation = new int[2];
-        root.getLocationOnScreen(rootLocation);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                screen.width(), screen.height(), Gravity.TOP | Gravity.START);
-        params.leftMargin = screen.left - rootLocation[0];
-        params.topMargin = screen.top - rootLocation[1];
-        View intercept = new View(activity);
-        intercept.setTag("rockmap-guided-tour-informational-target");
-        intercept.setBackgroundColor(Color.TRANSPARENT);
-        intercept.setClickable(true);
-        intercept.setFocusable(false);
-        intercept.setElevation(dp(activity, 88));
-        intercept.setOnClickListener(v -> primaryAction.run());
-        root.addView(intercept, params);
-        activeTargetInterceptor = new WeakReference<>(intercept);
+        // Intercept on the real target rather than placing a second view over it. This follows the
+        // target automatically if a ScrollView or relayout moves it, and guarantees that a tour
+        // informational tap advances without executing the underlying destructive/navigation action.
+        target.setOnTouchListener((v, event) -> {
+            if (event == null) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) primaryAction.run();
+            return true;
+        });
+        activeTouchInterceptTarget = new WeakReference<>(target);
     }
 
     private static void highlight(View target) {
@@ -519,6 +515,119 @@ public final class GuidedTourCoach {
         return Math.round(value * view.getResources().getDisplayMetrics().density);
     }
 
+    private static final class DialogCoachHost extends FrameLayout {
+        private final Activity activity;
+        private final AlertDialog sourceDialog;
+        private final PopupWindow popup;
+        private int popupX;
+        private int popupY;
+        private int popupWidth;
+        private int popupHeight;
+
+        DialogCoachHost(Activity activity, AlertDialog sourceDialog) {
+            super(activity);
+            this.activity = activity;
+            this.sourceDialog = sourceDialog;
+            setClipChildren(false);
+            setClipToPadding(false);
+            setClickable(false);
+            setFocusable(false);
+            popup = new PopupWindow(this, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, false);
+            popup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            popup.setFocusable(false);
+            popup.setTouchable(true);
+            popup.setOutsideTouchable(false);
+            popup.setClippingEnabled(false);
+            popup.setElevation(dp(activity, 24));
+
+            View anchor = sourceDialog.getWindow() == null ? null : sourceDialog.getWindow().getDecorView();
+            if (anchor != null) {
+                anchor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                    @Override public void onViewAttachedToWindow(View v) {}
+                    @Override public void onViewDetachedFromWindow(View v) { dismissPopup(); }
+                });
+            }
+        }
+
+        void showPopup(int width, int height, View card) {
+            if (sourceDialog.getWindow() == null || !sourceDialog.isShowing()) return;
+            Rect safe = screenSafeRect();
+            popupWidth = Math.min(width, Math.max(1, safe.width()));
+            popupHeight = Math.min(height, Math.max(1, safe.height()));
+            popup.setWidth(popupWidth);
+            popup.setHeight(popupHeight);
+            popupX = safe.left + dp(activity, 8);
+            popupY = safe.top + dp(activity, 8);
+            View anchor = sourceDialog.getWindow().getDecorView();
+            if (!popup.isShowing()) {
+                popup.showAtLocation(anchor, Gravity.TOP | Gravity.START, popupX, popupY);
+            } else {
+                popup.update(popupX, popupY, popupWidth, popupHeight);
+            }
+            if (card != null) {
+                card.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, orr, ob) -> {
+                    int h = Math.max(dp(activity, 1), b - t);
+                    if (!popup.isShowing() || h == popupHeight) return;
+                    Rect currentSafe = screenSafeRect();
+                    popupHeight = Math.min(h, Math.max(1, currentSafe.height()));
+                    popupY = Math.max(currentSafe.top,
+                            Math.min(popupY, currentSafe.bottom - popupHeight));
+                    popup.update(popupX, popupY, popupWidth, popupHeight);
+                });
+            }
+        }
+
+        void movePopup(int left, int top, int width, int height) {
+            Rect safe = screenSafeRect();
+            popupWidth = Math.min(Math.max(1, width), Math.max(1, safe.width()));
+            popupHeight = Math.min(Math.max(1, height), Math.max(1, safe.height()));
+            popupX = Math.max(safe.left, Math.min(left, safe.right - popupWidth));
+            popupY = Math.max(safe.top, Math.min(top, safe.bottom - popupHeight));
+            if (popup.isShowing()) popup.update(popupX, popupY, popupWidth, popupHeight);
+        }
+
+        Rect currentPopupRect(int width, int height) {
+            int w = width > 0 ? width : popupWidth;
+            int h = height > 0 ? height : popupHeight;
+            return new Rect(popupX, popupY, popupX + w, popupY + h);
+        }
+
+        Rect dialogRect() {
+            if (sourceDialog.getWindow() == null) return null;
+            View decor = sourceDialog.getWindow().getDecorView();
+            View panel = decor.findViewById(android.R.id.content);
+            if (panel != null) {
+                ViewParent parent = panel.getParent();
+                while (parent instanceof View && parent != decor) {
+                    panel = (View) parent;
+                    parent = panel.getParent();
+                }
+            }
+            if (panel == null || panel == decor) panel = decor;
+            Rect rect = new Rect();
+            if (!panel.getGlobalVisibleRect(rect) || rect.width() <= 0 || rect.height() <= 0) return null;
+            return rect;
+        }
+
+        Rect screenSafeRect() {
+            Rect visible = new Rect();
+            View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+            if (decor != null) decor.getWindowVisibleDisplayFrame(visible);
+            if (visible.width() <= 0 || visible.height() <= 0) {
+                visible.set(0, 0, activity.getResources().getDisplayMetrics().widthPixels,
+                        activity.getResources().getDisplayMetrics().heightPixels);
+            }
+            int margin = dp(activity, 8);
+            visible.inset(margin, margin);
+            return visible;
+        }
+
+        void dismissPopup() {
+            if (popup.isShowing()) popup.dismiss();
+        }
+    }
+
     private static final class DraggableCard extends LinearLayout {
         private final FrameLayout root;
         private final View target;
@@ -556,11 +665,17 @@ public final class GuidedTourCoach {
             if (event == null || root == null) return false;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) getLayoutParams();
                     dragDownRawX = event.getRawX();
                     dragDownRawY = event.getRawY();
-                    dragStartLeft = start.leftMargin;
-                    dragStartTop = start.topMargin;
+                    if (root instanceof DialogCoachHost) {
+                        Rect current = ((DialogCoachHost) root).currentPopupRect(getWidth(), getHeight());
+                        dragStartLeft = current.left;
+                        dragStartTop = current.top;
+                    } else {
+                        FrameLayout.LayoutParams start = (FrameLayout.LayoutParams) getLayoutParams();
+                        dragStartLeft = start.leftMargin;
+                        dragStartTop = start.topMargin;
+                    }
                     dragging = false;
                     return false;
                 case MotionEvent.ACTION_MOVE:
@@ -866,6 +981,14 @@ public final class GuidedTourCoach {
 
         private Rect findContainingUiRegion(View targetView) {
             if (targetView == null || root == null) return null;
+            if (root instanceof DialogCoachHost) {
+                Rect dialog = ((DialogCoachHost) root).dialogRect();
+                if (dialog != null) {
+                    int pad = dp(this, 6);
+                    dialog.inset(-pad, -pad);
+                }
+                return dialog;
+            }
             Rect best = null;
             long bestArea = 0L;
             long rootArea = (long) Math.max(1, root.getWidth()) * Math.max(1, root.getHeight());
@@ -895,6 +1018,9 @@ public final class GuidedTourCoach {
         }
 
         private Rect visibleSafeRect() {
+            if (root instanceof DialogCoachHost) {
+                return ((DialogCoachHost) root).screenSafeRect();
+            }
             int margin = dp(this, 8);
             Rect screenVisible = new Rect();
             root.getWindowVisibleDisplayFrame(screenVisible);
@@ -913,6 +1039,7 @@ public final class GuidedTourCoach {
             if (view == null || root == null || view.getVisibility() != View.VISIBLE) return null;
             Rect screen = new Rect();
             if (!view.getGlobalVisibleRect(screen) || screen.width() <= 0 || screen.height() <= 0) return null;
+            if (root instanceof DialogCoachHost) return screen;
             int[] rootLocation = new int[2];
             root.getLocationOnScreen(rootLocation);
             screen.offset(-rootLocation[0], -rootLocation[1]);
@@ -920,6 +1047,9 @@ public final class GuidedTourCoach {
         }
 
         private Rect currentRect() {
+            if (root instanceof DialogCoachHost) {
+                return ((DialogCoachHost) root).currentPopupRect(getWidth(), getHeight());
+            }
             FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) getLayoutParams();
             return rectAt(p.leftMargin, p.topMargin);
         }
@@ -973,13 +1103,17 @@ public final class GuidedTourCoach {
             int maxTop = Math.max(safe.top, safe.bottom - getHeight());
             int safeLeft = Math.max(safe.left, Math.min(left, maxLeft));
             int safeTop = Math.max(safe.top, Math.min(top, maxTop));
-            FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) getLayoutParams();
-            p.gravity = Gravity.TOP | Gravity.START;
-            p.leftMargin = safeLeft;
-            p.topMargin = safeTop;
-            p.rightMargin = 0;
-            p.bottomMargin = 0;
-            setLayoutParams(p);
+            if (root instanceof DialogCoachHost) {
+                ((DialogCoachHost) root).movePopup(safeLeft, safeTop, getWidth(), getHeight());
+            } else {
+                FrameLayout.LayoutParams p = (FrameLayout.LayoutParams) getLayoutParams();
+                p.gravity = Gravity.TOP | Gravity.START;
+                p.leftMargin = safeLeft;
+                p.topMargin = safeTop;
+                p.rightMargin = 0;
+                p.bottomMargin = 0;
+                setLayoutParams(p);
+            }
             if (save) {
                 int availableW = Math.max(0, safe.width() - getWidth());
                 int availableH = Math.max(0, safe.height() - getHeight());

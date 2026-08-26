@@ -361,6 +361,24 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 });
     }
 
+    private void tagClickable(View root, String tag) {
+        if (root == null || tag == null) return;
+        View target = firstClickableDescendant(root);
+        (target == null ? root : target).setTag(tag);
+    }
+
+    private View firstClickableDescendant(View root) {
+        if (root == null) return null;
+        if (root.isClickable()) return root;
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = firstClickableDescendant(group.getChildAt(i));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
 
     private View findFirstFeatureAction(View root) {
         if (root == null) return null;
@@ -397,10 +415,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (active == null) {
             root.addView(help("Track recording uses the GPS provider and an Android foreground service. RockMap does not request background-location permission."));
             View startTrack = action("Start new track", "Begins recording after a precise-location check.", v -> {
-                if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) FieldTourState.step(this, 3);
+                if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) GuidedTourCoach.clear(this);
                 startNewTrack();
             });
-            startTrack.setTag("rockmap-track-start-new");
+            tagClickable(startTrack, "rockmap-track-start-new");
             root.addView(startTrack);
         } else {
             List<GeoMath.Point> points = db.getTrackPoints(active.id);
@@ -435,12 +453,12 @@ public final class FieldActivity extends Activity implements LocationRepository.
                             }
                             showTrackOnMap(track.id);
                         });
-                trackAction.setTag("rockmap-track-row:" + track.id);
+                tagClickable(trackAction, "rockmap-track-row:" + track.id);
                 root.addView(trackAction);
             }
         }
         Button backToMap = back();
-        backToMap.setTag("rockmap-track-back-to-map");
+        backToMap.setTag("rockmap-tracks-back-to-map");
         root.addView(backToMap);
         setContentView(scroll(root));
         getWindow().getDecorView().post(this::showTracksTourCoach);
@@ -448,6 +466,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void startNewTrack() {
         runWithPreciseLocation(() -> {
+            if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) {
+                FieldTourState.step(this, 3);
+            }
             EditText input = new EditText(this);
             input.setHint("Track name");
             input.setText("Field track — " + DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(new Date()));
@@ -575,7 +596,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             return;
         }
         if (step == 10) {
-            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-track-back-to-map");
+            View target = findViewById(android.R.id.content).findViewWithTag("rockmap-tracks-back-to-map");
             if (target == null) {
                 FieldTourState.step(this, 11);
                 returnToMap();
@@ -614,8 +635,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     "Completed tracks stay under Recent tracks. Opening one returns to its recorded line and map controls.",
                     "Tap “" + selected.name + "”.", target,
                     () -> {
-                        FieldTourState.step(this, 11);
-                        returnToMap();
+                        FieldTourState.step(this, 2);
+                        FieldTourState.entityId(this, -1L);
+                        showTracks();
                     }, null, null,
                     () -> {
                         FieldTourState.step(this, 13);
@@ -683,14 +705,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title(FieldUiNames.FIELD_RECORDS));
         LinearLayout add = row();
         Button newGps = small("New at GPS", v -> {
-            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 4);
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) GuidedTourCoach.clear(this);
             newFieldAtGps();
         });
-        newGps.setTag("rockmap-field-record-new-gps");
         Button newCoords = small("New at coordinates", v -> {
             if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) FieldTourState.step(this, 3);
             newFieldAtCoordinates();
         });
+        newGps.setTag("rockmap-field-record-new-gps");
         newCoords.setTag("rockmap-field-record-new-coordinates");
         add.addView(newGps, weight());
         add.addView(newCoords, weight());
@@ -707,7 +729,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         + (r.sampleId == null || r.sampleId.isEmpty() ? "" : " · Sample " + r.sampleId)
                         + "\n" + CoordinateFormats.decimal(r.lat, r.lon);
                 View recordAction = action(r.name, detail, v -> showFieldRecord(r.id));
-                recordAction.setTag("rockmap-field-record-row:" + r.id);
+                tagClickable(recordAction, "rockmap-field-record-row:" + r.id);
                 root.addView(recordAction);
             }
         }
@@ -718,13 +740,23 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void newFieldAtGps() {
         runWithPreciseLocation(() -> locationRepository.requestFreshPrecise(
-                l -> editFieldRecord(new FieldDatabase.FieldRecord(
-                        0, "", "", "", "", "",
-                        l.getLatitude(), l.getLongitude(),
-                        l.hasAltitude() ? l.getAltitude() : Double.NaN,
-                        l.hasAccuracy() ? l.getAccuracy() : -1f,
-                        "", System.currentTimeMillis(), System.currentTimeMillis())),
-                this::toast));
+                l -> {
+                    if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) {
+                        FieldTourState.step(this, 4);
+                    }
+                    editFieldRecord(new FieldDatabase.FieldRecord(
+                            0, "", "", "", "", "",
+                            l.getLatitude(), l.getLongitude(),
+                            l.hasAltitude() ? l.getAltitude() : Double.NaN,
+                            l.hasAccuracy() ? l.getAccuracy() : -1f,
+                            "", System.currentTimeMillis(), System.currentTimeMillis()));
+                },
+                message -> {
+                    toast(message);
+                    if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) {
+                        getWindow().getDecorView().post(this::showFieldRecords);
+                    }
+                }));
     }
 
     private void newFieldAtCoordinates() {
@@ -742,6 +774,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             cont.setOnClickListener(v -> {
                 try {
                     CoordinateParser.Result r = CoordinateParser.parse(input.getText().toString());
+                    dialog.setOnDismissListener(null);
                     dialog.dismiss();
                     if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) {
                         FieldTourState.text(this, "");
@@ -758,6 +791,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 showFieldRecordCoordinateTour(dialog, input, cont);
             }
         });
+        dialog.setOnDismissListener(d -> {
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) {
+                GuidedTourCoach.clear(this);
+                FieldTourState.text(this, "");
+                FieldTourState.step(this, 2);
+                getWindow().getDecorView().post(this::showFieldRecords);
+            }
+        });
         dialog.show();
     }
 
@@ -770,6 +811,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     "Use coordinates when the observation is somewhere other than your current GPS position.",
                     "Enter latitude and longitude.", input,
                     () -> {
+                        dialog.setOnDismissListener(null);
                         dialog.dismiss();
                         FieldTourState.text(this, "");
                         FieldTourState.step(this, 2);
@@ -778,9 +820,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         FieldTourState.text(this, "field-coordinate-continue");
                         showFieldRecordCoordinateTour(dialog, input, cont);
                     }, () -> {
+                        dialog.setOnDismissListener(null);
                         dialog.dismiss();
                         FieldTourState.text(this, "");
-                        FieldTourState.step(this, 4);
+                        FieldTourState.step(this, 2);
                         newFieldAtGps();
                     });
         } else {
@@ -856,6 +899,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     FieldTourState.entityId(this, record.id);
                     FieldTourState.step(this, 12);
                 }
+                dialog.setOnDismissListener(null);
                 dialog.dismiss();
                 GuidedTourCoach.clear(this);
                 showFieldRecord(record.id);
@@ -863,6 +907,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
             if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)
                     && FieldTourState.step(this) >= 4 && FieldTourState.step(this) <= 11) {
                 showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save);
+            }
+        });
+        dialog.setOnDismissListener(d -> {
+            int step = FieldTourState.step(this);
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS) && step >= 4 && step <= 11) {
+                GuidedTourCoach.clear(this);
+                FieldTourState.step(this, 2);
+                getWindow().getDecorView().post(this::showFieldRecords);
             }
         });
         dialog.show();
@@ -923,6 +975,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         }
         Runnable back = () -> {
             if (step <= 4) {
+                dialog.setOnDismissListener(null);
                 dialog.dismiss();
                 FieldTourState.step(this, 2);
                 showFieldRecords();
@@ -931,7 +984,15 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 showFieldRecordEditorTour(dialog, record, name, category, mineral, sample, notes, coords, photo, save);
             }
         };
-        Runnable skip = step >= 11 ? save::performClick : next;
+        Runnable skip;
+        if (step >= 11) {
+            skip = () -> {
+                if (name.getText().toString().trim().isEmpty()) name.setText("Field Record");
+                save.performClick();
+            };
+        } else {
+            skip = next;
+        }
         showDialogCoach(dialog, step, FieldUiNames.FIELD_RECORDS, title, body, action, target,
                 back, primary, next, skip);
     }
@@ -971,7 +1032,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     FieldMapState.requestFocusBounds(this, new FieldMapState.Bounds(r.lat, r.lon, r.lat, r.lon));
                     returnToMap();
                 });
-        showMapAction.setTag("rockmap-field-record-show-map");
+        tagClickable(showMapAction, "rockmap-field-record-show-map");
         root.addView(showMapAction);
         View researchAction = action("Research this location",
                 "Choose a radius, then inspect mapped geology and continue into Mineral Evidence or Historic Mines & Workings.",
@@ -986,7 +1047,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
                         .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name));
                 });
-        researchAction.setTag("rockmap-field-record-research");
+        tagClickable(researchAction, "rockmap-field-record-research");
         root.addView(researchAction);
         View createAreaAction = action("Create Prospecting Area Around Here",
                 "Choose a radius around this Field Record and save it as a Prospecting Area.",
@@ -1003,11 +1064,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
                             "Created from Field Record: " + r.name, callback);
                 });
-        createAreaAction.setTag("rockmap-field-record-create-area");
+        tagClickable(createAreaAction, "rockmap-field-record-create-area");
         View navigateAction = action("Navigate to this point",
                 "Open the main map with a live target line, distance and bearing from GPS.",
                 v -> showPointNavigation(r.name, new GeoMath.Point(r.lat, r.lon)));
-        navigateAction.setTag("rockmap-field-record-navigate");
+        tagClickable(navigateAction, "rockmap-field-record-navigate");
         root.addView(navigateAction);
 
         LinearLayout row = row();
@@ -1047,6 +1108,26 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 });
     }
 
+    private void createDefaultFieldRecordTourArea(FieldDatabase.FieldRecord record) {
+        if (record == null || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 14)) return;
+        List<GeoMath.Point> points = ProspectingAreaCreator.circlePoints(record.lat, record.lon, 1000d);
+        if (points.size() < 3) {
+            FieldTourState.step(this, 12);
+            showFieldRecord(record.id);
+            return;
+        }
+        ProspectingAreaCreator.saveNamedPolygonAndPrompt(this,
+                record.name + " — 1 km",
+                "Created from Field Record: " + record.name,
+                points, false,
+                (areaId, savedName) -> {
+                    FieldTourState.auxId(FieldActivity.this, areaId);
+                    FieldTourState.step(FieldActivity.this, 15);
+                    GuidedTourCoach.clear(FieldActivity.this);
+                    getWindow().getDecorView().post(() -> showSavedFieldRecordTourCoach(record));
+                });
+    }
+
     private void showSavedFieldRecordTourCoach(FieldDatabase.FieldRecord record) {
         if (record == null || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS)) return;
         int step = FieldTourState.step(this);
@@ -1070,8 +1151,14 @@ public final class FieldActivity extends Activity implements LocationRepository.
         } else {
             long areaId = FieldTourState.auxId(this);
             FieldDatabase.Area area = areaId > 0L ? db.getArea(areaId) : null;
+            if (area == null) {
+                FieldTourState.auxId(this, -1L);
+                FieldTourState.step(this, 14);
+                showSavedFieldRecordTourCoach(record);
+                return;
+            }
             target = root.findViewWithTag(ProspectingAreaCreator.SAVED_RESEARCH_BUTTON_TAG);
-            if (target == null && area != null) {
+            if (target == null) {
                 ProspectingAreaCreator.showSavedResearchPrompt(this, area.id, area.name);
                 getWindow().getDecorView().postDelayed(() -> showSavedFieldRecordTourCoach(record), 60L);
                 return;
@@ -1118,12 +1205,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
         };
 
         if (step == 14) {
-            final View createTarget = target;
             showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
                     "Tap “Create Prospecting Area Around Here”.", target, back,
-                    null, null, () -> {
-                        if (createTarget != null) createTarget.performClick();
-                    });
+                    null, null, () -> createDefaultFieldRecordTourArea(record));
         } else if (step == 15) {
             final View researchTarget = target;
             showFieldCoach(step, FieldUiNames.FIELD_RECORDS, title, body,
@@ -1230,7 +1314,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     FieldMapState.requestMeasurement(this);
                     returnToMap();
                 });
-        createArea.setTag("rockmap-create-prospecting-area");
+        tagClickable(createArea, "rockmap-create-prospecting-area");
         root.addView(createArea);
         List<FieldDatabase.Area> areas = db.listAreas();
         root.addView(section("Saved Prospecting Areas"));
@@ -1241,7 +1325,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 View areaAction = action(a.name,
                         GeoMath.areaLabel(GeoMath.polygonAreaSquareMeters(a.points)) + " · " + a.points.size() + " vertices",
                         v -> showArea(a));
-                areaAction.setTag("rockmap-area-row:" + a.id);
+                tagClickable(areaAction, "rockmap-area-row:" + a.id);
                 root.addView(areaAction);
             }
         }
@@ -1523,15 +1607,29 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         .setMessage(previous.sourceName + " was imported on "
                                 + DateFormat.getDateTimeInstance().format(new Date(previous.importedAt))
                                 + ".\n\nTo replace it with a fresh import, remove the existing import first. You can also intentionally import another copy.")
-                        .setPositiveButton("Open Existing Import", (d, w) -> showImportBatch(previous.id))
+                        .setPositiveButton("Open Existing Import", (d, w) -> {
+                            if (FieldTourState.is(this, FieldUiNames.IMPORT)) finishFieldTour();
+                            showImportBatch(previous.id);
+                        })
                         .setNeutralButton("Import Another Copy", (d, w) -> confirmImport(result, name, sha))
-                        .setNegativeButton("Cancel", null)
+                        .setNegativeButton("Cancel", (d, w) -> {
+                            if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) {
+                                FieldTourState.step(this, 1);
+                                GuidedTourCoach.clear(this);
+                                getWindow().getDecorView().post(this::returnToMap);
+                            }
+                        })
                         .show();
                 return;
             }
             confirmImport(result, name, sha);
         } catch (Exception ex) {
             toast("Import rejected: " + ex.getMessage());
+            if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) {
+                FieldTourState.step(this, 1);
+                GuidedTourCoach.clear(this);
+                getWindow().getDecorView().post(this::returnToMap);
+            }
         }
     }
 
@@ -1553,6 +1651,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             Button importButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
             importButton.setOnClickListener(v -> {
                 if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) FieldTourState.step(this, 3);
+                dialog.setOnDismissListener(null);
                 dialog.dismiss();
                 GuidedTourCoach.clear(this);
                 applyImport(result, name, sha);
@@ -1562,11 +1661,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         "RockMap reads GPX, KML, and GeoJSON geometry before anything is added. Points may become Saved Locations, lines may become Tracks, and polygons may become Prospecting Areas. Review the counts before importing.",
                         "Tap “Import”.", importButton,
                         () -> {
+                            dialog.setOnDismissListener(null);
                             dialog.dismiss();
                             FieldTourState.step(this, 1);
                             returnToMap();
                         }, null, null,
                         importButton::performClick);
+            }
+        });
+        dialog.setOnDismissListener(d -> {
+            if (FieldTourState.is(this, FieldUiNames.IMPORT, 2)) {
+                GuidedTourCoach.clear(this);
+                FieldTourState.step(this, 1);
+                getWindow().getDecorView().post(this::returnToMap);
             }
         });
         dialog.show();
@@ -1593,6 +1700,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
             }
         } catch (RuntimeException ex) {
             toast("Import failed safely before completion: " + ex.getMessage());
+            if (FieldTourState.is(this, FieldUiNames.IMPORT)) {
+                finishFieldTour();
+                getWindow().getDecorView().post(this::showImports);
+            }
             return;
         }
 
@@ -1627,7 +1738,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     holder[0].dismiss();
                     focusImportBatch(batchId);
                 });
-        showImportOnMap.setTag("rockmap-import-complete-show-map");
+        tagClickable(showImportOnMap, "rockmap-import-complete-show-map");
         box.addView(showImportOnMap);
 
         if (!r.waypoints.isEmpty()) {
@@ -1665,7 +1776,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     holder[0].dismiss();
                     showImportBatch(batchId);
                 });
-        manageThisImport.setTag("rockmap-import-complete-manage");
+        tagClickable(manageThisImport, "rockmap-import-complete-manage");
         box.addView(manageThisImport);
 
         box.addView(action("Remove This Import",
@@ -1680,6 +1791,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setView(scroll(box))
                 .setNegativeButton("Done", (d, w) -> showHub())
                 .create();
+        holder[0].setOnDismissListener(d -> {
+            if (FieldTourState.is(this, FieldUiNames.IMPORT)) {
+                finishFieldTour();
+            }
+        });
         holder[0].show();
         if (FieldTourState.is(this, FieldUiNames.IMPORT, 3)) {
             FieldTourState.entityId(this, batchId);
@@ -1755,13 +1871,13 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         }
                         beginImport();
                     });
-            importFile.setTag("rockmap-import-file");
+            tagClickable(importFile, "rockmap-import-file");
             root.addView(importFile);
         } else {
             View importAnother = action("Import Another File",
                     "Choose another GPX, KML, or GeoJSON file.",
                     v -> beginImport());
-            importAnother.setTag("rockmap-import-file");
+            tagClickable(importAnother, "rockmap-import-file");
             root.addView(importAnother);
             for (FieldDatabase.ImportBatch batch : batches) {
                 String detail = DateFormat.getDateTimeInstance().format(new Date(batch.importedAt))
@@ -1774,13 +1890,13 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     }
                     showImportBatch(batch.id);
                 });
-                batchAction.setTag("rockmap-import-batch:" + batch.id);
+                tagClickable(batchAction, "rockmap-import-batch:" + batch.id);
                 root.addView(batchAction);
             }
         }
 
         View olderImports = section("Older Imports");
-        olderImports.setTag("rockmap-older-imports");
+        tagClickable(olderImports, "rockmap-older-imports");
         root.addView(olderImports);
         root.addView(help("Some imported items are not grouped under a source file, so they cannot be safely removed as one batch. Manage those items from Saved Locations, Tracks, or Prospecting Areas."));
         root.addView(action("Review Saved Locations", "Review or delete imported Saved Locations that are not grouped under an import file.", v -> showLegacyWaypoints()));
@@ -1812,7 +1928,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
         View showMap = action("Show Import on Map",
                 "Zoom to all remaining geometry that belongs to this import.",
                 v -> focusImportBatch(batchId));
-        showMap.setTag("rockmap-import-show-map");
+        tagClickable(showMap, "rockmap-import-show-map");
         root.addView(showMap);
 
         List<Long> waypointIds = db.getImportItemIds(batchId, FieldDatabase.IMPORT_WAYPOINT);
@@ -1822,19 +1938,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
         if (!waypointIds.isEmpty()) {
             View saved = action("Saved Locations from This File", waypointIds.size() + " Saved Location" + (waypointIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedWaypointsByIds(waypointIds));
-            saved.setTag("rockmap-import-saved");
+            tagClickable(saved, "rockmap-import-saved");
             root.addView(saved);
         }
         if (!trackIds.isEmpty()) {
             View tracksAction = action("Tracks from This File", trackIds.size() + " track" + (trackIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedTracks(trackIds));
-            tracksAction.setTag("rockmap-import-tracks");
+            tagClickable(tracksAction, "rockmap-import-tracks");
             root.addView(tracksAction);
         }
         if (!areaIds.isEmpty()) {
             View areasAction = action("Prospecting Areas from This File", areaIds.size() + " Prospecting Area" + (areaIds.size() == 1 ? "" : "s") + ".",
                     v -> showImportedAreas(areaIds));
-            areasAction.setTag("rockmap-import-areas");
+            tagClickable(areasAction, "rockmap-import-areas");
             root.addView(areasAction);
         }
 
@@ -2748,8 +2864,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     null, null,
                     () -> {
                         if (input.getText().toString().trim().isEmpty()) {
-                            input.setError("Enter coordinates or use GPS before converting.");
-                        } else convert.performClick();
+                            finishFieldTour();
+                        } else {
+                            convert.performClick();
+                        }
                     });
         } else if (step == 5) {
             showFieldCoach(5, FieldUiNames.COORDINATES, "Coordinate formats",
@@ -2810,8 +2928,19 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setPositiveButton("Continue", (d, w) -> requestPermissions(
                         new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION},
                         REQ_LOCATION))
-                .setNegativeButton("Cancel", (d, w) -> pendingLocationAction = null)
+                .setNegativeButton("Cancel", (d, w) -> {
+                    pendingLocationAction = null;
+                    restoreLocationTourAfterPermissionFailure();
+                })
                 .show();
+    }
+
+    private void restoreLocationTourAfterPermissionFailure() {
+        if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) {
+            getWindow().getDecorView().post(this::showTracks);
+        } else if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) {
+            getWindow().getDecorView().post(this::showFieldRecords);
+        }
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
@@ -2824,6 +2953,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
             if (pending != null) pending.run();
         } else {
             toast("Precise location was not granted.");
+            restoreLocationTourAfterPermissionFailure();
         }
     }
 
@@ -2879,6 +3009,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     @Override protected void onDestroy() {
+        GuidedTourCoach.clear(this);
         waypointRepository.close();
         super.onDestroy();
     }
