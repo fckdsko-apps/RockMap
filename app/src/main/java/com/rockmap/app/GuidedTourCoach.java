@@ -405,9 +405,10 @@ public final class GuidedTourCoach {
         card.placeForCurrentStep();
         highlight(target);
         if (target != null) {
-            target.post(() -> {
-                target.requestFocus();
-                target.announceForAccessibility(requiredAction == null
+            final View accessibilityTarget = target;
+            accessibilityTarget.post(() -> {
+                accessibilityTarget.requestFocus();
+                accessibilityTarget.announceForAccessibility(requiredAction == null
                         ? "Guided tour target" : requiredAction);
             });
         }
