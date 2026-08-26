@@ -91,7 +91,7 @@ public final class ResearchActivity extends Activity {
     private long currentAreaId = -1L;
     private View tourCombinedControl;
     private View tourShowGeologyControl;
-    private boolean showHelpAfterAreaLoad;
+    private boolean showTourOfferAfterResultLoad;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -107,12 +107,16 @@ public final class ResearchActivity extends Activity {
 
     private boolean resumeRequestedScope() {
         Intent intent = getIntent();
+        // Contextual Field/Area entry can offer the Research tour after the requested analysis is
+        // actually on screen. Consume the flag once, regardless of whether the context is a saved
+        // polygon or a point/radius query.
+        showTourOfferAfterResultLoad = intent != null
+                && intent.getBooleanExtra(EXTRA_SHOW_HELP_ON_START, false);
+        if (intent != null) intent.removeExtra(EXTRA_SHOW_HELP_ON_START);
         long areaId = intent == null ? -1L : intent.getLongExtra(EXTRA_AREA_ID, -1L);
         if (areaId > 0L) {
             currentAreaId = areaId;
-            showHelpAfterAreaLoad = intent.getBooleanExtra(EXTRA_SHOW_HELP_ON_START, false);
             intent.removeExtra(EXTRA_AREA_ID);
-            intent.removeExtra(EXTRA_SHOW_HELP_ON_START);
             if (!geology.isReady()) showInstall();
             else analyzeArea(areaId);
             return true;
@@ -477,12 +481,6 @@ public final class ResearchActivity extends Activity {
                     // context menu handles the saved polygon and Research layer as separate contexts.
                     showResults(results, "Combined Area Analysis — " + area.name, bounds,
                             queryPolygonContext(polygon, area.name, area.id));
-                    if (showHelpAfterAreaLoad) {
-                        showHelpAfterAreaLoad = false;
-                        getWindow().getDecorView().post(() -> RockMapHelp.showResearch(
-                                ResearchActivity.this, "Prospecting Area — " + area.name,
-                                ResearchActivity.this::startTourFromResearch));
-                    }
                 });
     }
 
@@ -509,7 +507,7 @@ public final class ResearchActivity extends Activity {
         root.addView(action("Enter Coordinates",
                 "Paste or type latitude, longitude.",
                 v -> showCoordinatePointEntry()));
-        root.addView(nav("Back to Research", v -> showHub()));
+        root.addView(nav("Back to Research", v -> returnToResearchHub()));
         setContentView(scroll(root));
     }
 
@@ -755,13 +753,20 @@ public final class ResearchActivity extends Activity {
             mines.setOnClickListener(v -> returnBoundsAction(ACTION_HISTORIC_MINES, queryBounds, resultTitle));
             bottom.addView(mines);
         }
-        bottom.addView(nav("Back to Research", v -> showHub()));
+        bottom.addView(nav("Back to Research", v -> returnToResearchHub()));
         screen.addView(bottom, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(screen);
         screen.requestApplyInsets();
         maybeShowTourCoach();
+        if (showTourOfferAfterResultLoad) {
+            showTourOfferAfterResultLoad = false;
+            final String helpContext = resultTitle == null || resultTitle.trim().isEmpty()
+                    ? "Research result" : resultTitle.trim();
+            getWindow().getDecorView().post(() -> RockMapHelp.showResearch(
+                    ResearchActivity.this, helpContext, ResearchActivity.this::startTourFromResearch));
+        }
     }
 
     private void showUnitGroup(UnitGroup group, String resultTitle) {
@@ -1028,6 +1033,18 @@ public final class ResearchActivity extends Activity {
     }
 
     private void startTourFromResearch() {
+        // If Research was opened contextually and the analysis result is already visible, start at
+        // the first lesson that is still relevant instead of forcing the user to repeat the same
+        // area analysis from the Research hub.
+        if (tourShowGeologyControl != null && tourShowGeologyControl.isAttachedToWindow()
+                && currentResults != null && !currentResults.isEmpty()) {
+            GuidedTourState.startTopic(this, GuidedTourState.TOPIC_RESEARCH,
+                    GuidedTourState.STEP_SHOW_GEOLOGY,
+                    GuidedTourState.STEP_CONTEXT_REOPEN);
+            GuidedTourCoach.clear(this);
+            getWindow().getDecorView().postDelayed(this::maybeShowTourCoach, 120L);
+            return;
+        }
         if (visibleBounds == null) {
             GuidedTourState.startFull(this);
             GuidedTourCoach.clear(this);
@@ -1044,6 +1061,18 @@ public final class ResearchActivity extends Activity {
         });
     }
 
+    private void returnToResearchHub() {
+        // Back to Research is navigation, never an implicit tour launcher. If the user leaves an
+        // active Research lesson through the normal screen control, end that tour state first so
+        // showHub() cannot silently resurrect it. The Research help action remains available for
+        // explicitly starting another tour.
+        if (GuidedTourState.isActive(this)) {
+            GuidedTourState.exit(this);
+            GuidedTourCoach.clear(this);
+        }
+        showHub();
+    }
+
     private void returnGeology(String geoJson, String title, int count, GeologyRepository.Bounds bounds) {
         try {
             ResearchResultStore.save(this, title, geoJson, count);
@@ -1051,6 +1080,14 @@ public final class ResearchActivity extends Activity {
             toast("Could not stage the analysis for the map: " + ex.getMessage());
             return;
         }
+        if (GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_SHOW_GEOLOGY) {
+            // Commit the destination tour state before this Activity finishes. MainActivity can
+            // then resume directly on Mineral Evidence rather than briefly seeing step 2 and
+            // relying on a later lifecycle pass to repair the handoff.
+            GuidedTourState.advance(this, GuidedTourState.STEP_MINERAL_EVIDENCE);
+        }
+        GuidedTourCoach.clear(this);
         Intent result = new Intent();
         result.putExtra(RESULT_ACTION, ACTION_GEOLOGY);
         result.putExtra(RESULT_TITLE, title);

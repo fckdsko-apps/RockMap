@@ -15,6 +15,7 @@ import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -98,14 +99,21 @@ public final class GuidedTourCoach {
                             String primaryLabel, Runnable primaryAction,
                             Runnable skipAction, Runnable exitAction) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
-        clear(activity);
+        long requestGeneration = ++coachGeneration;
+        // Do not tear down the current coach until the destination target really exists. Several
+        // tour actions rebuild panels or cross Activity boundaries asynchronously; clearing first
+        // creates a visible dead period and can strand the tour if the replacement target arrives
+        // a frame later. Keep the prior coach in place while the next real target is resolved.
+        View resolvedTarget = resolveEquivalentTarget(activity, target);
+        if (resolvedTarget != null) target = resolvedTarget;
         if (target != null && !targetReady(target)) {
             requestTargetVisibility(target);
             waitForTargetAndShow(activity, hostRoot, step, total, title, message, requiredAction,
                     target, backAction, primaryLabel, primaryAction, skipAction, exitAction,
-                    coachGeneration, 0);
+                    requestGeneration, 0);
             return;
         }
+        clear(activity);
         FrameLayout root = hostRoot;
         if (root == null) {
             ViewGroup content = activity.findViewById(android.R.id.content);
@@ -282,6 +290,29 @@ public final class GuidedTourCoach {
             compactTop.addView(compactLead, new LinearLayout.LayoutParams(
                     dp(activity, 70), dp(activity, 52)));
 
+            TextView compactTitle = new TextView(activity);
+            compactTitle.setText(title == null ? "" : title);
+            compactTitle.setTextSize(13f);
+            compactTitle.setTextColor(Color.rgb(30, 36, 38));
+            compactTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            compactTitle.setGravity(Gravity.CENTER_VERTICAL);
+            compactTitle.setMaxLines(2);
+            LinearLayout.LayoutParams compactTitleParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            compactTitleParams.setMargins(dp(activity, 4), 0, dp(activity, 4), 0);
+            compactTop.addView(compactTitle, compactTitleParams);
+            compact.addView(compactTop, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            TextView compactBody = new TextView(activity);
+            compactBody.setText(message == null ? "" : message);
+            compactBody.setTextSize(11.5f);
+            compactBody.setTextColor(Color.rgb(66, 75, 77));
+            compactBody.setLineSpacing(0f, 1.04f);
+            compactBody.setPadding(dp(activity, 4), 0, dp(activity, 4), dp(activity, 2));
+            compact.addView(compactBody, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
             TextView compactNext = new TextView(activity);
             String compactAction = requiredAction == null || requiredAction.trim().isEmpty()
                     ? "Continue the guided tour" : requiredAction.trim();
@@ -289,14 +320,10 @@ public final class GuidedTourCoach {
             compactNext.setTextSize(11.5f);
             compactNext.setTextColor(Color.rgb(28, 50, 52));
             compactNext.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            compactNext.setMaxLines(3);
-            compactNext.setGravity(Gravity.CENTER_VERTICAL);
+            compactNext.setMaxLines(4);
+            compactNext.setPadding(dp(activity, 4), dp(activity, 2), dp(activity, 4), 0);
             compactNext.setContentDescription("Guided tour action: " + compactAction);
-            LinearLayout.LayoutParams compactNextParams = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            compactNextParams.setMargins(dp(activity, 4), 0, dp(activity, 4), 0);
-            compactTop.addView(compactNext, compactNextParams);
-            compact.addView(compactTop, new LinearLayout.LayoutParams(
+            compact.addView(compactNext, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
             LinearLayout compactActions = new LinearLayout(activity);
@@ -351,7 +378,7 @@ public final class GuidedTourCoach {
             card.setCompactView(compact);
         }
 
-        int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
+        int screenWidth = activitySafeScreenRect(activity).width();
         int maxWidth = Math.max(dp(activity, 236), Math.round(screenWidth * 0.76f));
         int width = Math.min(dp(activity, 340), Math.min(maxWidth, screenWidth - dp(activity, 16)));
         FrameLayout.LayoutParams params;
@@ -362,8 +389,7 @@ public final class GuidedTourCoach {
             params.setMargins(0, 0, 0, 0);
             root.addView(card, params);
             DialogCoachHost dialogHost = (DialogCoachHost) root;
-            int maxHeight = Math.max(dp(activity, 160),
-                    activity.getResources().getDisplayMetrics().heightPixels - dp(activity, 24));
+            int maxHeight = Math.max(dp(activity, 160), dialogHost.screenSafeRect().height());
             card.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST));
             dialogHost.showPopup(width, Math.max(dp(activity, 120), card.getMeasuredHeight()), card);
@@ -394,16 +420,20 @@ public final class GuidedTourCoach {
                                                  Runnable primaryAction, Runnable skipAction,
                                                  Runnable exitAction, long generation, int attempt) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()
-                || target == null || generation != coachGeneration || attempt >= 75) return;
-        target.postDelayed(() -> {
-            if (generation != coachGeneration) return;
-            if (!targetReady(target)) requestTargetVisibility(target);
-            if (targetReady(target)) {
-                show(activity, hostRoot, step, total, title, message, requiredAction, target,
+                || target == null || generation != coachGeneration || attempt >= 250) return;
+        View scheduler = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+        if (scheduler == null) scheduler = target;
+        scheduler.postDelayed(() -> {
+            if (generation != coachGeneration || activity.isFinishing() || activity.isDestroyed()) return;
+            View liveTarget = resolveEquivalentTarget(activity, target);
+            if (liveTarget == null) liveTarget = target;
+            if (!targetReady(liveTarget)) requestTargetVisibility(liveTarget);
+            if (targetReady(liveTarget)) {
+                show(activity, hostRoot, step, total, title, message, requiredAction, liveTarget,
                         backAction, primaryLabel, primaryAction, skipAction, exitAction);
             } else {
                 waitForTargetAndShow(activity, hostRoot, step, total, title, message,
-                        requiredAction, target, backAction, primaryLabel, primaryAction,
+                        requiredAction, liveTarget, backAction, primaryLabel, primaryAction,
                         skipAction, exitAction, generation, attempt + 1);
             }
         }, 40L);
@@ -442,6 +472,42 @@ public final class GuidedTourCoach {
                 || target.getWidth() <= 0 || target.getHeight() <= 0) return false;
         Rect visible = new Rect();
         return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
+    }
+
+    /**
+     * Panel rebuilds can replace a target View while preserving its stable tag or accessibility
+     * identity. Resolve that replacement before giving up so async Research/Field transitions do
+     * not depend on pausing and resuming the app to rediscover the control.
+     */
+    private static View resolveEquivalentTarget(Activity activity, View original) {
+        if (original == null || targetReady(original) || activity == null) return original;
+        View root = activity.findViewById(android.R.id.content);
+        if (root == null) return original;
+        Object tag = original.getTag();
+        if (tag != null) {
+            View tagged = root.findViewWithTag(tag);
+            if (tagged != null) return tagged;
+        }
+        CharSequence description = original.getContentDescription();
+        if (description != null && description.length() > 0) {
+            View described = findByContentDescription(root, description.toString());
+            if (described != null) return described;
+        }
+        return original;
+    }
+
+    private static View findByContentDescription(View view, String description) {
+        if (view == null || description == null || description.isEmpty()) return null;
+        CharSequence own = view.getContentDescription();
+        if (own != null && description.contentEquals(own)) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findByContentDescription(group.getChildAt(i), description);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private static void installInformationalTargetInterceptor(Activity activity, FrameLayout root,
@@ -513,6 +579,29 @@ public final class GuidedTourCoach {
 
     private static int dp(View view, int value) {
         return Math.round(value * view.getResources().getDisplayMetrics().density);
+    }
+
+    private static Rect activitySafeScreenRect(Activity activity) {
+        int width = activity.getResources().getDisplayMetrics().widthPixels;
+        int height = activity.getResources().getDisplayMetrics().heightPixels;
+        Rect safe = new Rect(0, 0, width, height);
+        View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+        if (decor != null) {
+            Rect visible = new Rect();
+            decor.getWindowVisibleDisplayFrame(visible);
+            if (visible.width() > 0 && visible.height() > 0) safe.intersect(visible);
+            WindowInsets insets = decor.getRootWindowInsets();
+            if (insets != null) {
+                safe.left = Math.max(safe.left, insets.getSystemWindowInsetLeft());
+                safe.top = Math.max(safe.top, insets.getSystemWindowInsetTop());
+                safe.right = Math.min(safe.right, width - insets.getSystemWindowInsetRight());
+                safe.bottom = Math.min(safe.bottom, height - insets.getSystemWindowInsetBottom());
+            }
+        }
+        if (safe.width() <= 0 || safe.height() <= 0) {
+            safe.set(0, 0, Math.max(1, width), Math.max(1, height));
+        }
+        return safe;
     }
 
     private static final class DialogCoachHost extends FrameLayout {
@@ -611,16 +700,10 @@ public final class GuidedTourCoach {
         }
 
         Rect screenSafeRect() {
-            Rect visible = new Rect();
-            View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-            if (decor != null) decor.getWindowVisibleDisplayFrame(visible);
-            if (visible.width() <= 0 || visible.height() <= 0) {
-                visible.set(0, 0, activity.getResources().getDisplayMetrics().widthPixels,
-                        activity.getResources().getDisplayMetrics().heightPixels);
-            }
+            Rect safe = new Rect(activitySafeScreenRect(activity));
             int margin = dp(activity, 8);
-            visible.inset(margin, margin);
-            return visible;
+            safe.inset(margin, margin);
+            return safe;
         }
 
         void dismissPopup() {
@@ -718,7 +801,9 @@ public final class GuidedTourCoach {
                 }
                 Rect safe = visibleSafeRect();
                 Rect avoidRegion = findContainingUiRegion(target);
-                if (!denseMode && compactView != null && shouldUseDenseMode(safe, avoidRegion)) {
+                if (!denseMode && compactView != null
+                        && (getWidth() > safe.width() || getHeight() > safe.height()
+                        || shouldUseDenseMode(safe, avoidRegion))) {
                     denseMode = true;
                     setPadding(dp(this, 6), dp(this, 4), dp(this, 6), dp(this, 4));
                     for (View normal : normalViews) normal.setVisibility(View.GONE);
@@ -767,8 +852,12 @@ public final class GuidedTourCoach {
             Rect avoidRegion = findContainingUiRegion(target);
             boolean geometryChanged = !sameRect(lastTargetRect, targetRect)
                     || !sameRect(lastAvoidRegion, avoidRegion);
-            if (intersectsExpanded(current, targetRect, dp(this, 12)) || geometryChanged) {
-                // User drag is a preference, not permission for the next required control to be hidden.
+            Rect safe = visibleSafeRect();
+            boolean outsideUsableScreen = current == null || current.left < safe.left
+                    || current.top < safe.top || current.right > safe.right || current.bottom > safe.bottom;
+            if (outsideUsableScreen || intersectsExpanded(current, targetRect, dp(this, 12)) || geometryChanged) {
+                // A saved/previous position is never permission to clip the coach under a system
+                // bar or beyond the usable screen, and the required control must remain uncovered.
                 chooseSafePosition(false);
             }
         }
@@ -1021,15 +1110,15 @@ public final class GuidedTourCoach {
             if (root instanceof DialogCoachHost) {
                 return ((DialogCoachHost) root).screenSafeRect();
             }
-            int margin = dp(this, 8);
-            Rect screenVisible = new Rect();
-            root.getWindowVisibleDisplayFrame(screenVisible);
+            Rect screenSafe = activitySafeScreenRect((Activity) getContext());
             int[] rootLocation = new int[2];
             root.getLocationOnScreen(rootLocation);
-            int left = Math.max(0, screenVisible.left - rootLocation[0]) + margin;
-            int top = Math.max(0, screenVisible.top - rootLocation[1]) + margin;
-            int right = Math.min(root.getWidth(), screenVisible.right - rootLocation[0]) - margin;
-            int bottom = Math.min(root.getHeight(), screenVisible.bottom - rootLocation[1]) - margin;
+            int left = Math.max(0, screenSafe.left - rootLocation[0]);
+            int top = Math.max(0, screenSafe.top - rootLocation[1]);
+            int right = Math.min(root.getWidth(), screenSafe.right - rootLocation[0]);
+            int bottom = Math.min(root.getHeight(), screenSafe.bottom - rootLocation[1]);
+            int margin = dp(this, 8);
+            left += margin; top += margin; right -= margin; bottom -= margin;
             if (right <= left) { left = margin; right = Math.max(left + 1, root.getWidth() - margin); }
             if (bottom <= top) { top = margin; bottom = Math.max(top + 1, root.getHeight() - margin); }
             return new Rect(left, top, right, bottom);

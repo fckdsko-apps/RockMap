@@ -225,6 +225,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (mapView == null) return;
         root = findMapRoot(mapView);
         if (root == null) return;
+        // A controller/activity recreation can outlive the Java reference to a one-shot Measure
+        // catcher. Remove any orphaned transparent catcher before wiring controls so stale tour
+        // state can never leave Measure visible but the map/HUD untouchable after a restart.
+        removeOrphanTapCapture();
         controls = findBottomControls(root);
         clarifyMainGpsControl();
 
@@ -1761,27 +1765,27 @@ public final class FieldMapController implements LocationRepository.Listener {
                 if (step == 13) {
                     tag = "rockmap-track-backtrack";
                     title = "Backtrack";
-                    body = "Backtrack starts directional guidance toward the beginning of this saved track. It does not calculate a safe, legal, or practical route.";
+                    body = "Backtrack starts directional guidance toward the beginning of this saved track. It points you toward the recorded start; it does not calculate a safe, legal, or practical route.";
                     action = "Review “Backtrack”, then Continue.";
                 } else if (step == 14) {
                     tag = "rockmap-track-hide";
                     title = "Hide";
-                    body = "Hide removes this track line from the map without deleting the saved track.";
+                    body = "Hide removes this track line from the map without deleting the saved track. You can reopen or show the track again later.";
                     action = "Review “Hide”, then Continue.";
                 } else if (step == 15) {
                     tag = "rockmap-track-delete";
                     title = "Delete";
-                    body = "Delete permanently removes the track and its recorded points from this device.";
+                    body = "Delete permanently removes this saved track and its recorded points from this device. The guided tour only explains this control—it will not delete the practice track.";
                     action = "Review “Delete”, then Continue.";
                 } else if (step == 16) {
                     tag = "rockmap-track-all";
                     title = "All tracks";
-                    body = "All tracks returns to the Tracks list so you can open another recording.";
+                    body = "All tracks returns to the Tracks list, where you can review the active recording and saved tracks or open a different track on the map.";
                     action = "Review “All tracks”, then Continue.";
                 } else {
                     tag = "rockmap-track-close-view";
                     title = "Close map view";
-                    body = "Close map view stops inspecting this saved track here. It does not hide or delete the track.";
+                    body = "Close map view ends the current inspection of this saved track. It does not hide or delete the track, and the saved recording remains available under Tracks.";
                     action = "Review “Close map view”, then Finish.";
                 }
                 target = hudTourTarget(tag);
@@ -2554,25 +2558,42 @@ public final class FieldMapController implements LocationRepository.Listener {
         FrameLayout catcher = new FrameLayout(activity);
         catcher.setTag(TAP_CAPTURE_TAG);
         catcher.setBackgroundColor(Color.TRANSPARENT);
+        catcher.setClickable(true);
         final float[] down = new float[2];
         catcher.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                down[0] = event.getRawX(); down[1] = event.getRawY(); return true;
+                down[0] = event.getRawX();
+                down[1] = event.getRawY();
+                return true;
+            }
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                removeTapCapture();
+                return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                 v.performClick();
                 float dx = event.getRawX() - down[0];
                 float dy = event.getRawY() - down[1];
-                removeTapCapture();
-                if (Math.hypot(dx, dy) > dp(18)) {
+                // The old fixed 18dp test rejected ordinary finger taps on some phones. Use a
+                // deliberately forgiving tap envelope while still treating an unmistakable drag
+                // as the user's request to leave one-shot placement and pan normally.
+                int tapTolerance = Math.max(dp(32), floatingTouchSlop * 2);
+                if (Math.hypot(dx, dy) > tapTolerance) {
+                    removeTapCapture();
                     toast("No point added. Pan the map normally, then tap “Tap map” again.");
                     return true;
                 }
                 int[] mapLocation = new int[2];
                 mapView.getLocationOnScreen(mapLocation);
-                PointF screen = new PointF(event.getRawX() - mapLocation[0], event.getRawY() - mapLocation[1]);
+                PointF screen = new PointF(event.getRawX() - mapLocation[0],
+                        event.getRawY() - mapLocation[1]);
                 LatLng latLng = map.getProjection().fromScreenLocation(screen);
+                // Mark one-shot mode complete before renderHud() runs, but keep the catcher View
+                // physically attached until the point is committed so this same gesture cannot
+                // leak through to the map's normal feature-tap handler and open Location information.
+                awaitingMapTap = false;
                 addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), true);
+                removeTapCapture();
                 return true;
             }
             return true;
@@ -2593,6 +2614,15 @@ public final class FieldMapController implements LocationRepository.Listener {
             ((ViewGroup) tapCapture.getParent()).removeView(tapCapture);
         }
         tapCapture = null;
+        removeOrphanTapCapture();
+    }
+
+    private void removeOrphanTapCapture() {
+        if (root == null) return;
+        View orphan = root.findViewWithTag(TAP_CAPTURE_TAG);
+        if (orphan != null && orphan != tapCapture && orphan.getParent() instanceof ViewGroup) {
+            ((ViewGroup) orphan.getParent()).removeView(orphan);
+        }
     }
 
     /**
@@ -2867,6 +2897,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                             activity, name.getText().toString().trim(),
                             "Saved from map measurement", pointsToSave, false,
                             (savedId, savedName) -> {
+                                wireSavedAreaResearchTourOffer(savedId);
                                 if (areaTour) {
                                     FieldTourState.entityId(activity, savedId);
                                     FieldTourState.step(activity, 16);
@@ -2911,6 +2942,29 @@ public final class FieldMapController implements LocationRepository.Listener {
             }
         });
         dialog.show();
+    }
+
+    private void wireSavedAreaResearchTourOffer(long areaId) {
+        wireSavedAreaResearchTourOffer(areaId, 0);
+    }
+
+    private void wireSavedAreaResearchTourOffer(long areaId, int attempt) {
+        if (areaId <= 0L || attempt >= 20) return;
+        View content = activity.findViewById(android.R.id.content);
+        View research = content == null ? null
+                : content.findViewWithTag(ProspectingAreaCreator.SAVED_RESEARCH_BUTTON_TAG);
+        if (research == null) {
+            main.postDelayed(() -> wireSavedAreaResearchTourOffer(areaId, attempt + 1), 60L);
+            return;
+        }
+        research.setOnClickListener(v -> {
+            ProspectingAreaCreator.dismissSavedResearchPrompt(activity);
+            Intent field = new Intent(activity, FieldActivity.class);
+            field.putExtra(FieldActivity.EXTRA_SCREEN, "areas");
+            field.putExtra(FieldActivity.EXTRA_AREA_ID, areaId);
+            field.putExtra(FieldActivity.EXTRA_START_CONTEXTUAL_RESEARCH, true);
+            activity.startActivity(field);
+        });
     }
 
     private void showSaveAreaTour(AlertDialog dialog, EditText name, Button save) {

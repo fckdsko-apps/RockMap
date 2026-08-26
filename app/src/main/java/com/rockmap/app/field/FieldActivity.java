@@ -52,6 +52,7 @@ public final class FieldActivity extends Activity implements LocationRepository.
     public static final String EXTRA_AREA_ID = "rockmap.field.area_id";
     public static final String EXTRA_SHOW_HELP_TOURS = "rockmap.field.show_help_tours";
     public static final String EXTRA_START_HELP_TOOL = "rockmap.field.start_help_tool";
+    public static final String EXTRA_START_CONTEXTUAL_RESEARCH = "rockmap.field.start_contextual_research";
     private static final int REQ_LOCATION = 811;
     private static final int REQ_IMPORT = 812;
     private static final int REQ_PHOTO = 813;
@@ -109,7 +110,17 @@ public final class FieldActivity extends Activity implements LocationRepository.
         else if ("areas".equals(screen)) {
             long areaId = getIntent() == null ? -1L : getIntent().getLongExtra(EXTRA_AREA_ID, -1L);
             FieldDatabase.Area area = areaId > 0L ? db.getArea(areaId) : null;
-            if (area != null) showArea(area); else showProspectingAreas();
+            if (area != null) {
+                showArea(area);
+                if (getIntent() != null
+                        && getIntent().getBooleanExtra(EXTRA_START_CONTEXTUAL_RESEARCH, false)) {
+                    getIntent().removeExtra(EXTRA_START_CONTEXTUAL_RESEARCH);
+                    getWindow().getDecorView().post(() -> startResearch(
+                            new Intent(FieldActivity.this, ResearchActivity.class)
+                                    .putExtra(ResearchActivity.EXTRA_AREA_ID, area.id)
+                                    .putExtra(ResearchActivity.EXTRA_SHOW_HELP_ON_START, true)));
+                }
+            } else showProspectingAreas();
         }
         else if ("measure".equals(screen)) {
             FieldMapState.requestMeasurement(this);
@@ -1045,22 +1056,24 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     startResearch(new Intent(this, ResearchActivity.class)
                         .putExtra(ResearchActivity.EXTRA_POINT_LAT, r.lat)
                         .putExtra(ResearchActivity.EXTRA_POINT_LON, r.lon)
-                        .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name));
+                        .putExtra(ResearchActivity.EXTRA_POINT_LABEL, r.name)
+                        .putExtra(ResearchActivity.EXTRA_SHOW_HELP_ON_START, true));
                 });
         tagClickable(researchAction, "rockmap-field-record-research");
         root.addView(researchAction);
         View createAreaAction = action("Create Prospecting Area Around Here",
                 "Choose a radius around this Field Record and save it as a Prospecting Area.",
                 v -> {
-                    ProspectingAreaCreator.SaveCallback callback = null;
-                    if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 14)) {
-                        callback = (areaId, savedName) -> {
+                    final boolean tourStep = FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 14);
+                    ProspectingAreaCreator.SaveCallback callback = (areaId, savedName) -> {
+                        wireSavedResearchPromptToContextualResearch(areaId);
+                        if (tourStep) {
                             FieldTourState.auxId(FieldActivity.this, areaId);
                             FieldTourState.step(FieldActivity.this, 15);
                             GuidedTourCoach.clear(FieldActivity.this);
                             getWindow().getDecorView().post(() -> showSavedFieldRecordTourCoach(r));
-                        };
-                    }
+                        }
+                    };
                     ProspectingAreaCreator.chooseRadiusAndSave(this, r.lat, r.lon, r.name,
                             "Created from Field Record: " + r.name, callback);
                 });
@@ -1121,11 +1134,34 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 "Created from Field Record: " + record.name,
                 points, false,
                 (areaId, savedName) -> {
+                    wireSavedResearchPromptToContextualResearch(areaId);
                     FieldTourState.auxId(FieldActivity.this, areaId);
                     FieldTourState.step(FieldActivity.this, 15);
                     GuidedTourCoach.clear(FieldActivity.this);
                     getWindow().getDecorView().post(() -> showSavedFieldRecordTourCoach(record));
                 });
+    }
+
+    private void wireSavedResearchPromptToContextualResearch(long areaId) {
+        wireSavedResearchPromptToContextualResearch(areaId, 0);
+    }
+
+    private void wireSavedResearchPromptToContextualResearch(long areaId, int attempt) {
+        if (areaId <= 0L || attempt >= 20) return;
+        View root = findViewById(android.R.id.content);
+        View research = root == null ? null
+                : root.findViewWithTag(ProspectingAreaCreator.SAVED_RESEARCH_BUTTON_TAG);
+        if (research == null) {
+            getWindow().getDecorView().postDelayed(
+                    () -> wireSavedResearchPromptToContextualResearch(areaId, attempt + 1), 60L);
+            return;
+        }
+        research.setOnClickListener(v -> {
+            ProspectingAreaCreator.dismissSavedResearchPrompt(FieldActivity.this);
+            startResearch(new Intent(FieldActivity.this, ResearchActivity.class)
+                    .putExtra(ResearchActivity.EXTRA_AREA_ID, areaId)
+                    .putExtra(ResearchActivity.EXTRA_SHOW_HELP_ON_START, true));
+        });
     }
 
     private void showSavedFieldRecordTourCoach(FieldDatabase.FieldRecord record) {
@@ -1395,7 +1431,8 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 return;
             }
             startResearch(new Intent(this, ResearchActivity.class)
-                    .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id));
+                    .putExtra(ResearchActivity.EXTRA_AREA_ID, a.id)
+                    .putExtra(ResearchActivity.EXTRA_SHOW_HELP_ON_START, true));
         });
         researchButton.setTag("rockmap-area-research");
         Button showMapButton = small("Show on Map", v -> {
@@ -2325,18 +2362,74 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     body,
                     hasExportable ? "Review the available export categories." : "Continue to learn about export formats.", target,
                     () -> { FieldTourState.step(this, 1); returnToMap(); },
-                    "Continue", () -> { FieldTourState.step(this, 3); showExportTourCoach(hasExportable); },
-                    () -> { FieldTourState.step(this, 3); showExportTourCoach(hasExportable); });
+                    "Continue", () -> {
+                        FieldTourState.step(this, 3);
+                        if (hasExportable) openExportTourFormatStep();
+                        else showExportTourCoach(false);
+                    },
+                    () -> {
+                        FieldTourState.step(this, 3);
+                        if (hasExportable) openExportTourFormatStep();
+                        else showExportTourCoach(false);
+                    });
+        } else if (hasExportable) {
+            // Step 3 teaches the real format chooser, not an abstract card on the Export hub.
+            // If this screen was rebuilt while the tour was already on step 3, reopen the same
+            // real chooser so the tutorial never asks for a dialog that is not actually visible.
+            openExportTourFormatStep();
         } else {
-            String body = hasExportable
-                    ? "Tap an available export category to choose its applicable output format, such as GPX, GeoJSON, CSV, or KML. Android then asks where to save the copy. Export does not remove the original RockMap data."
-                    : "Different data types support formats such as GPX, GeoJSON, CSV, or KML. Android asks where to save the exported copy. Exporting does not remove the original RockMap data.";
+            String body = "Different data types support formats such as GPX, GeoJSON, CSV, or KML. Android asks where to save the exported copy. Exporting does not remove the original RockMap data.";
             showFieldCoach(3, FieldUiNames.EXPORT, "Choose a format",
-                    body,
-                    hasExportable ? "Review an available export option." : "Finish when you are ready.", target,
-                    () -> { FieldTourState.step(this, 2); showExportTourCoach(hasExportable); },
+                    body, "Finish when you are ready.", null,
+                    () -> { FieldTourState.step(this, 2); showExportTourCoach(false); },
                     "Finish", this::finishFieldTour, this::finishFieldTour);
         }
+    }
+
+    /** Open the same real format chooser used by Export Data when tour step 3 asks about formats. */
+    private void openExportTourFormatStep() {
+        if (!FieldTourState.is(this, FieldUiNames.EXPORT, 3)) return;
+        GuidedTourCoach.clear(this);
+        waypointRepository.getAll(waypoints -> {
+            if (!FieldTourState.is(this, FieldUiNames.EXPORT, 3)) return;
+            if (waypoints != null && !waypoints.isEmpty()) {
+                showSavedLocationExportFormats(waypoints.size());
+                return;
+            }
+            if (!db.listFieldRecords().isEmpty()) {
+                showFieldRecordExportFormats();
+                return;
+            }
+            for (FieldDatabase.Track track : db.listTracks(0)) {
+                if (track != null && db.getTrackPoints(track.id).size() >= 2) {
+                    showTrackExportFormats(-1L, "RockMap-Tracks");
+                    return;
+                }
+            }
+            if (!db.listAreas().isEmpty()) {
+                showAreaExportFormats(-1L, "RockMap-Prospecting-Areas");
+                return;
+            }
+            if (ResearchResultStore.exists(this)) {
+                showResearchExportFormats();
+                return;
+            }
+
+            // Imported files export as GeoJSON directly after choosing the import, so there is no
+            // format chooser to fake. Explain that exception rather than manufacturing a dialog.
+            List<FieldDatabase.ImportBatch> batches = db.listImportBatches();
+            if (!batches.isEmpty()) {
+                View target = findFirstFeatureAction(findViewById(android.R.id.content));
+                showFieldCoach(3, FieldUiNames.EXPORT, "Choose a format",
+                        "Different data types support formats such as GPX, GeoJSON, CSV, or KML. Android asks where to save the exported copy. Exporting does not remove the original RockMap data.",
+                        "Finish when you are ready.", target,
+                        () -> { FieldTourState.step(this, 2); showExportTourCoach(true); },
+                        "Finish", this::finishFieldTour, this::finishFieldTour);
+                return;
+            }
+
+            showExportTourCoach(false);
+        });
     }
 
     private void showSavedLocationExportFormats(int count) {
@@ -2564,17 +2657,23 @@ public final class FieldActivity extends Activity implements LocationRepository.
         content.addView(help(guidance));
 
         final AlertDialog[] holder = new AlertDialog[1];
+        final View[] firstChoice = new View[1];
         for (int i = 0; i < labels.length; i++) {
             final int choice = i;
-            content.addView(exportOption(
+            View option = exportOption(
                     labels[i],
                     details != null && i < details.length ? details[i] : "",
                     ctas != null && i < ctas.length ? ctas[i] : "Tap this box to select ›",
                     true,
                     v -> {
+                        boolean exportTourFormatStep = FieldTourState.is(
+                                FieldActivity.this, FieldUiNames.EXPORT, 3);
+                        if (exportTourFormatStep) finishFieldTour();
                         if (holder[0] != null) holder[0].dismiss();
                         handler.onChoice(choice);
-                    }));
+                    });
+            if (firstChoice[0] == null) firstChoice[0] = option;
+            content.addView(option);
         }
 
         ScrollView scroller = new ScrollView(this);
@@ -2586,7 +2685,38 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .setNegativeButton("Cancel", null)
                 .create();
         holder[0] = dialog;
+        dialog.setOnDismissListener(d -> {
+            // Canceling the real format chooser during the tour returns to the preceding valid
+            // Export step instead of leaving step 3 alive with no dialog/coach to teach it.
+            if (FieldTourState.is(FieldActivity.this, FieldUiNames.EXPORT, 3)) {
+                GuidedTourCoach.clear(FieldActivity.this);
+                FieldTourState.step(FieldActivity.this, 2);
+                getWindow().getDecorView().post(FieldActivity.this::showExportHub);
+            }
+        });
         dialog.show();
+
+        if (FieldTourState.is(this, FieldUiNames.EXPORT, 3)) {
+            String body = "Tap an available export category to choose its applicable output format, such as GPX, GeoJSON, CSV, or KML. Android then asks where to save the copy. Export does not remove the original RockMap data.";
+            showDialogCoach(dialog, 3, FieldUiNames.EXPORT, "Choose a format",
+                    body,
+                    "Review an available export option.",
+                    firstChoice[0],
+                    () -> {
+                        FieldTourState.step(this, 2);
+                        GuidedTourCoach.clear(this);
+                        if (dialog.isShowing()) dialog.dismiss();
+                        showExportHub();
+                    },
+                    "Finish", () -> {
+                        finishFieldTour();
+                        if (dialog.isShowing()) dialog.dismiss();
+                    },
+                    () -> {
+                        finishFieldTour();
+                        if (dialog.isShowing()) dialog.dismiss();
+                    });
+        }
     }
 
     private View exportOption(String title, String detail, String cta,
