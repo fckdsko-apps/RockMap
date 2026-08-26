@@ -320,10 +320,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         MapContextCloseController context = MapContextCloseController.forMap(mapView);
         if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE && context.isCollapsed()) {
             GuidedTourState.advance(this, GuidedTourState.STEP_CONTEXT_REOPEN);
-            mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+            scheduleGuidedTourCoachForCurrentStep();
         } else if (step == GuidedTourState.STEP_CONTEXT_REOPEN && !context.isCollapsed()) {
             GuidedTourState.advance(this, GuidedTourState.STEP_COMPLETE);
-            mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+            scheduleGuidedTourCoachForCurrentStep();
         }
     }
 
@@ -659,7 +659,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         configureMineralOverview(result);
         if (GuidedTourState.isActive(this)
                 && GuidedTourState.step(this) == GuidedTourState.STEP_CHOOSE_MINERAL) {
-            mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 180L);
+            scheduleGuidedTourCoachForCurrentStep();
         }
     }
 
@@ -780,7 +780,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                                 () -> showMineralAreaHeatmap(item, result)));
                 if (GuidedTourState.isActive(MainActivity.this)
                         && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_CHOOSE_MINERAL) {
-                    mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 80L);
+                    scheduleGuidedTourCoachForCurrentStep();
                 }
             }
         };
@@ -966,7 +966,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         if (GuidedTourState.isActive(MainActivity.this)
                                 && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_CHOOSE_MINERAL) {
                             GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_LAYERS_REVEAL);
-                            mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 250L);
+                            scheduleGuidedTourCoachForCurrentStep();
                         }
                     }
 
@@ -1980,22 +1980,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private FrameLayout dialogTourRoot(AlertDialog dialog) {
-        if (dialog == null || dialog.getWindow() == null) return null;
-        View content = dialog.getWindow().findViewById(android.R.id.content);
-        if (content instanceof FrameLayout) return (FrameLayout) content;
-        View decor = dialog.getWindow().getDecorView();
-        return findFirstFrameLayout(decor);
-    }
-
-    private FrameLayout findFirstFrameLayout(View view) {
-        if (view instanceof FrameLayout) return (FrameLayout) view;
-        if (!(view instanceof ViewGroup)) return null;
-        ViewGroup group = (ViewGroup) view;
-        for (int i = 0; i < group.getChildCount(); i++) {
-            FrameLayout found = findFirstFrameLayout(group.getChildAt(i));
-            if (found != null) return found;
-        }
-        return null;
+        // Guided-tour coach and native dialog are deliberately independent windows. Never host
+        // the coach inside a dialog/menu content hierarchy: the dialog keeps its normal geometry
+        // while the coach remains draggable across the full usable screen.
+        return GuidedTourCoach.prepareDialogHost(this, dialog);
     }
 
     private Runnable dialogTourBack(AlertDialog dialog) {
@@ -2236,7 +2224,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     && selected != null && "Mount Antero".equalsIgnoreCase(selected.name)) {
                 GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_OPEN_RESEARCH);
                 GuidedTourCoach.clear(MainActivity.this);
-                mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 300L);
+                scheduleGuidedTourCoachForCurrentStep();
             }
         });
 
@@ -4324,7 +4312,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void advanceTourTo(int nextStep) {
         GuidedTourState.advance(this, nextStep);
-        mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+        scheduleGuidedTourCoachForCurrentStep();
     }
 
     private Runnable tourBackAction() {
@@ -4344,50 +4332,46 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 return;
             case GuidedTourState.STEP_CHOOSE_MINERAL:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_MINERAL_EVIDENCE);
-                showGuidedTourCoachForCurrentStep();
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_LAYERS_REVEAL:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CHOOSE_MINERAL);
-                if (activeResearchBounds != null) {
-                    showMineralEvidenceForBounds(activeResearchBounds);
-                    mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 220L);
-                } else {
-                    showGuidedTourCoachForCurrentStep();
-                }
+                if (activeResearchBounds != null) showMineralEvidenceForBounds(activeResearchBounds);
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_HISTORIC_MINES:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_LAYERS_REVEAL);
-                showGuidedTourCoachForCurrentStep();
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_WORKSPACE_COLLAPSE:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_HISTORIC_MINES);
                 if (researchAreaPanel != null) researchAreaPanel.expand();
-                showGuidedTourCoachForCurrentStep();
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_WORKSPACE_REOPEN:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_WORKSPACE_COLLAPSE);
                 if (researchAreaPanel != null) researchAreaPanel.expand();
-                showGuidedTourCoachForCurrentStep();
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_CONTEXT_CONTROLS:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_WORKSPACE_REOPEN);
                 if (researchAreaPanel != null) researchAreaPanel.collapse();
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 100L);
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_CONTROLS);
                 MapContextCloseController.forMap(mapView).expandControls();
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 100L);
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_CONTEXT_REOPEN:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_COLLAPSE);
                 MapContextCloseController.forMap(mapView).expandControls();
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 100L);
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_COMPLETE:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_REOPEN);
                 MapContextCloseController.forMap(mapView).collapseControls();
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 100L);
+                scheduleGuidedTourCoachForCurrentStep();
                 return;
             default:
                 GuidedTourState.setStep(this, step - 1);
@@ -4466,7 +4450,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 if (activeResearchBounds != null) {
                     GuidedTourState.advance(this, GuidedTourState.STEP_WORKSPACE_COLLAPSE);
                     showHistoricMinesForBounds(activeResearchBounds, false);
-                    mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 250L);
+                    scheduleGuidedTourCoachForCurrentStep();
                 } else {
                     advanceTourTo(GuidedTourState.STEP_WORKSPACE_COLLAPSE);
                 }
@@ -4485,7 +4469,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
                 GuidedTourState.advance(this, GuidedTourState.STEP_CONTEXT_REOPEN);
                 MapContextCloseController.forMap(mapView).collapseControls();
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+                scheduleGuidedTourCoachForCurrentStep();
                 break;
             case GuidedTourState.STEP_CONTEXT_REOPEN:
                 // expandControls() triggers the presentation-state callback, which advances to
@@ -4500,6 +4484,89 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 advanceTourTo(step + 1);
                 break;
         }
+    }
+
+    private void scheduleGuidedTourCoachForCurrentStep() {
+        if (!GuidedTourState.isActive(this) || getWindow() == null) return;
+        final int expectedStep = GuidedTourState.step(this);
+        View scheduler = getWindow().getDecorView();
+        scheduler.post(() -> showGuidedTourCoachWhenReady(expectedStep, 0));
+    }
+
+    private void showGuidedTourCoachWhenReady(int expectedStep, int attempt) {
+        if (!GuidedTourState.isActive(this) || GuidedTourState.step(this) != expectedStep
+                || isFinishing() || isDestroyed()) return;
+
+        View requiredTarget = guidedTourReadinessTarget(expectedStep);
+        if (!guidedTourStepNeedsReadyTarget(expectedStep) || tourTargetReady(requiredTarget)) {
+            showGuidedTourCoachForCurrentStep();
+            return;
+        }
+
+        if (attempt >= 250) {
+            // Keep the tour state intact rather than silently clearing it. Reassert the permanent
+            // map controls so the user is never stranded even if an async Research surface fails
+            // to materialize; a later real callback/resume can retry the same exact step.
+            restorePermanentMapChrome();
+            return;
+        }
+        View scheduler = getWindow() == null ? null : getWindow().getDecorView();
+        if (scheduler != null) {
+            scheduler.postDelayed(() -> showGuidedTourCoachWhenReady(expectedStep, attempt + 1), 40L);
+        }
+    }
+
+    private boolean guidedTourStepNeedsReadyTarget(int step) {
+        return step == GuidedTourState.STEP_MINERAL_EVIDENCE
+                || step == GuidedTourState.STEP_CHOOSE_MINERAL
+                || step == GuidedTourState.STEP_HISTORIC_MINES
+                || step == GuidedTourState.STEP_WORKSPACE_COLLAPSE
+                || step == GuidedTourState.STEP_WORKSPACE_REOPEN
+                || step == GuidedTourState.STEP_CONTEXT_CONTROLS
+                || step == GuidedTourState.STEP_CONTEXT_COLLAPSE
+                || step == GuidedTourState.STEP_CONTEXT_REOPEN
+                || step == GuidedTourState.STEP_COMPLETE;
+    }
+
+    private View guidedTourReadinessTarget(int step) {
+        if (step == GuidedTourState.STEP_MINERAL_EVIDENCE) {
+            return researchAreaPanel == null ? null : researchAreaPanel.getMineralControl();
+        }
+        if (step == GuidedTourState.STEP_CHOOSE_MINERAL) {
+            View primary = researchAreaPanel == null ? null : researchAreaPanel.getPrimaryActionControl();
+            if (primary != null) return primary;
+            if (tourMineralSelectionTarget != null) return tourMineralSelectionTarget;
+            return null;
+        }
+        if (step == GuidedTourState.STEP_HISTORIC_MINES) {
+            return researchAreaPanel == null ? null : researchAreaPanel.getHistoricControl();
+        }
+        if (step == GuidedTourState.STEP_WORKSPACE_COLLAPSE) {
+            return researchAreaPanel == null ? null : researchAreaPanel.getCollapseControl();
+        }
+        if (step == GuidedTourState.STEP_WORKSPACE_REOPEN) {
+            return researchAreaPanel == null ? null : researchAreaPanel.getExpandControl();
+        }
+        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS) {
+            MapContextCloseController context = MapContextCloseController.forMap(mapView);
+            View drag = context.getDragControl();
+            return drag == null ? context.getContextMenuView() : drag;
+        }
+        if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE) {
+            return MapContextCloseController.forMap(mapView).getCollapseControl();
+        }
+        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
+            return MapContextCloseController.forMap(mapView).getCollapsedControl();
+        }
+        if (step == GuidedTourState.STEP_COMPLETE) return mainHelpToursButton;
+        return null;
+    }
+
+    private boolean tourTargetReady(View target) {
+        if (target == null || !target.isAttachedToWindow() || !target.isShown()
+                || target.getWidth() <= 0 || target.getHeight() <= 0) return false;
+        Rect visible = new Rect();
+        return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
     }
 
     private void showGuidedTourCoachForCurrentStep() {
@@ -4823,7 +4890,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     GuidedTourCoach.clear(MainActivity.this);
                 }
                 showHistoricMinesForBounds(activeResearchBounds, false);
-                mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 350L);
+                scheduleGuidedTourCoachForCurrentStep();
             }
             @Override public void onHelp() {
                 RockMapHelp.showResearch(MainActivity.this, activeResearchView,
@@ -4845,11 +4912,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     if (tourStep == GuidedTourState.STEP_WORKSPACE_COLLAPSE
                             && ResearchAreaPanelController.MODE_COLLAPSED.equals(mode)) {
                         GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_WORKSPACE_REOPEN);
-                        mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 120L);
+                        scheduleGuidedTourCoachForCurrentStep();
                     } else if (tourStep == GuidedTourState.STEP_WORKSPACE_REOPEN
                             && ResearchAreaPanelController.MODE_EXPANDED.equals(mode)) {
                         GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_CONTEXT_CONTROLS);
-                        mapView.postDelayed(MainActivity.this::showGuidedTourCoachForCurrentStep, 120L);
+                        scheduleGuidedTourCoachForCurrentStep();
                     }
                 }
             }
@@ -5302,6 +5369,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == RESEARCH_REQUEST) {
+            restorePermanentMapChrome();
             if (resultCode == RESULT_OK && data != null) handleResearchResult(data);
             return;
         }
@@ -5327,6 +5395,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void handleResearchResult(Intent data) {
+        if (data == null) return;
+        restorePermanentMapChrome();
         String action = data.getStringExtra(ResearchActivity.RESULT_ACTION);
         long returnedAreaId = data.getLongExtra(ResearchActivity.RESULT_AREA_ID, -1L);
         if (returnedAreaId > 0L) activeResearchAreaId = returnedAreaId;
@@ -5358,7 +5428,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 if (GuidedTourState.isActive(this)
                         && GuidedTourState.step(this) == GuidedTourState.STEP_SHOW_GEOLOGY) {
                     GuidedTourState.advance(this, GuidedTourState.STEP_MINERAL_EVIDENCE);
-                    mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 250L);
+                    scheduleGuidedTourCoachForCurrentStep();
                 }
             } catch (IOException ex) {
                 showMessage("Research result could not be opened on the map: " + ex.getMessage());
@@ -6038,6 +6108,43 @@ public final class MainActivity extends Activity implements LocationRepository.L
         return Math.round(dp * getResources().getDisplayMetrics().density);
     }
 
+    /**
+     * MainActivity owns the permanent map chrome. Research/Field transitions may add temporary
+     * panels above the map, but they are never allowed to detach or leave the base tray/help
+     * controls hidden when this Activity becomes interactive again.
+     */
+    private void restorePermanentMapChrome() {
+        if (mainRoot == null) return;
+
+        if (mainControls != null) {
+            if (mainControls.getParent() == null) {
+                FrameLayout.LayoutParams controlsParams = new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM);
+                mainRoot.addView(mainControls, controlsParams);
+            }
+            if (mainControls.getParent() == mainRoot) {
+                mainControls.setVisibility(View.VISIBLE);
+                mainControls.requestLayout();
+                mainControls.bringToFront();
+            }
+        }
+
+        mainRoot.requestApplyInsets();
+        FieldMapController.ensurePersistentEntry(this);
+        mainRoot.post(() -> {
+            if (mainControls != null && mainControls.getParent() == mainRoot) {
+                mainControls.setVisibility(View.VISIBLE);
+                mainControls.bringToFront();
+            }
+            positionHelpToursButtonNow();
+            if (mainHelpToursButton != null && mainHelpToursButton.getVisibility() == View.VISIBLE) {
+                mainHelpToursButton.bringToFront();
+            }
+            FieldMapController.ensurePersistentEntry(MainActivity.this);
+        });
+    }
+
     @Override protected void onStart() {
         super.onStart();
         started = true;
@@ -6049,12 +6156,12 @@ public final class MainActivity extends Activity implements LocationRepository.L
         super.onResume();
         mapView.onResume();
         MapContextCloseController.forMap(mapView).refresh();
-        FieldMapController.ensurePersistentEntry(this);
+        restorePermanentMapChrome();
         if (GuidedTourState.isActive(this)) {
             int step = GuidedTourState.step(this);
             if (step != GuidedTourState.STEP_COMBINED_ANALYSIS
                     && step != GuidedTourState.STEP_SHOW_GEOLOGY) {
-                mapView.postDelayed(this::showGuidedTourCoachForCurrentStep, 120L);
+                scheduleGuidedTourCoachForCurrentStep();
             }
         }
     }

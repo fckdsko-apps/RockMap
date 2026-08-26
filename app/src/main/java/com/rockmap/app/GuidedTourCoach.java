@@ -26,6 +26,7 @@ import android.widget.TextView;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.WeakHashMap;
 
 /**
  * Non-blocking guided-tour coach.
@@ -42,8 +43,10 @@ public final class GuidedTourCoach {
     private static WeakReference<ViewGroup> activeCoachRoot = new WeakReference<>(null);
     private static WeakReference<View> activeTouchInterceptTarget = new WeakReference<>(null);
     private static WeakReference<DialogCoachHost> activeDialogCoachHost = new WeakReference<>(null);
+    private static WeakReference<Activity> activeCoachOwner = new WeakReference<>(null);
+    private static final WeakHashMap<Activity, Long> requestGenerations = new WeakHashMap<>();
+    private static long requestSequence;
     private static long highlightGeneration;
-    private static long coachGeneration;
 
     private GuidedTourCoach() {}
 
@@ -60,7 +63,23 @@ public final class GuidedTourCoach {
     }
 
     public static void clear(Activity activity) {
-        coachGeneration++;
+        cancelPendingRequest(activity);
+        Activity owner = activeCoachOwner.get();
+        if (activity == null || owner == null || owner == activity) {
+            clearVisibleCoach();
+            return;
+        }
+
+        // An Activity that is finishing late must never tear down a coach already owned by the
+        // Activity now on screen. Remove only a stray local card from the caller's own content.
+        ViewGroup activityRoot = activity.findViewById(android.R.id.content);
+        if (activityRoot != null) {
+            View old = activityRoot.findViewWithTag(TAG);
+            if (old != null) activityRoot.removeView(old);
+        }
+    }
+
+    private static void clearVisibleCoach() {
         clearHighlight();
         ViewGroup activeRoot = activeCoachRoot.get();
         if (activeRoot != null) {
@@ -74,12 +93,33 @@ public final class GuidedTourCoach {
         if (dialogHost != null) dialogHost.dismissPopup();
         activeDialogCoachHost = new WeakReference<>(null);
         activeCoachRoot = new WeakReference<>(null);
-        if (activity == null) return;
-        ViewGroup activityRoot = activity.findViewById(android.R.id.content);
-        if (activityRoot != null && activityRoot != activeRoot) {
-            View old = activityRoot.findViewWithTag(TAG);
-            if (old != null) activityRoot.removeView(old);
-        }
+        activeCoachOwner = new WeakReference<>(null);
+    }
+
+    private static synchronized long beginPendingRequest(Activity activity) {
+        long token = ++requestSequence;
+        if (activity != null) requestGenerations.put(activity, token);
+        return token;
+    }
+
+    private static synchronized void cancelPendingRequest(Activity activity) {
+        if (activity == null) requestGenerations.clear();
+        else requestGenerations.remove(activity);
+    }
+
+    private static synchronized boolean isPendingRequestCurrent(Activity activity, long token) {
+        Long current = activity == null ? null : requestGenerations.get(activity);
+        return current != null && current == token;
+    }
+
+    private static synchronized boolean claimPendingRequest(Activity activity, long token) {
+        Long current = activity == null ? null : requestGenerations.get(activity);
+        if (current == null || current != token) return false;
+        // Once a destination is ready, it owns the visible coach. Invalidate waits belonging to
+        // older Activities so a paused/finishing screen cannot wake later and replace it.
+        requestGenerations.clear();
+        requestGenerations.put(activity, token);
+        return true;
     }
 
     public static void show(Activity activity, int step, int total, String title, String message,
@@ -99,7 +139,7 @@ public final class GuidedTourCoach {
                             String primaryLabel, Runnable primaryAction,
                             Runnable skipAction, Runnable exitAction) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
-        long requestGeneration = ++coachGeneration;
+        long requestGeneration = beginPendingRequest(activity);
         // Do not tear down the current coach until the destination target really exists. Several
         // tour actions rebuild panels or cross Activity boundaries asynchronously; clearing first
         // creates a visible dead period and can strand the tour if the replacement target arrives
@@ -113,7 +153,11 @@ public final class GuidedTourCoach {
                     requestGeneration, 0);
             return;
         }
-        clear(activity);
+        if (!claimPendingRequest(activity, requestGeneration)) return;
+        // A ready destination intentionally replaces the previous visible coach, even when the
+        // previous lesson belonged to another Activity. Cleanup remains owner-scoped everywhere
+        // else, so a late onDestroy() cannot remove this new coach.
+        clearVisibleCoach();
         FrameLayout root = hostRoot;
         if (root == null) {
             ViewGroup content = activity.findViewById(android.R.id.content);
@@ -121,6 +165,7 @@ public final class GuidedTourCoach {
             root = (FrameLayout) content;
         }
         activeCoachRoot = new WeakReference<>(root);
+        activeCoachOwner = new WeakReference<>(activity);
         if (root instanceof DialogCoachHost) {
             activeDialogCoachHost = new WeakReference<>((DialogCoachHost) root);
         }
@@ -421,11 +466,12 @@ public final class GuidedTourCoach {
                                                  Runnable primaryAction, Runnable skipAction,
                                                  Runnable exitAction, long generation, int attempt) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()
-                || target == null || generation != coachGeneration || attempt >= 250) return;
+                || target == null || !isPendingRequestCurrent(activity, generation) || attempt >= 250) return;
         View scheduler = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (scheduler == null) scheduler = target;
         scheduler.postDelayed(() -> {
-            if (generation != coachGeneration || activity.isFinishing() || activity.isDestroyed()) return;
+            if (!isPendingRequestCurrent(activity, generation)
+                    || activity.isFinishing() || activity.isDestroyed()) return;
             View liveTarget = resolveEquivalentTarget(activity, target);
             if (liveTarget == null) liveTarget = target;
             if (!targetReady(liveTarget)) requestTargetVisibility(liveTarget);
@@ -647,8 +693,10 @@ public final class GuidedTourCoach {
             popupHeight = Math.min(height, Math.max(1, safe.height()));
             popup.setWidth(popupWidth);
             popup.setHeight(popupHeight);
-            popupX = safe.left + dp(activity, 8);
-            popupY = safe.top + dp(activity, 8);
+            // The dialog and coach are separate windows. Start the independent coach near the
+            // usable-screen center so it never flashes as though it were docked inside the dialog.
+            popupX = safe.left + Math.max(0, (safe.width() - popupWidth) / 2);
+            popupY = safe.top + Math.max(0, (safe.height() - popupHeight) / 2);
             View anchor = sourceDialog.getWindow().getDecorView();
             if (!popup.isShowing()) {
                 popup.showAtLocation(anchor, Gravity.TOP | Gravity.START, popupX, popupY);
@@ -909,8 +957,10 @@ public final class GuidedTourCoach {
                         score += 1.0e15d;
                     }
                     if (savedRect != null && candidate != savedRect) {
+                        // A remembered drag is only a weak preference. It must not pull every new
+                        // lesson back to an old bottom/edge position when the center is now clear.
                         score += Math.hypot(bounded.left - savedRect.left,
-                                bounded.top - savedRect.top) * 0.15d;
+                                bounded.top - savedRect.top) * 0.015d;
                     }
                     if (score < bestScore) {
                         bestScore = score;
@@ -1037,13 +1087,14 @@ public final class GuidedTourCoach {
                     score += overlapArea(cardRect, obstacle) * 1000000d;
                 }
             }
-            // Prefer screen edges over the center when obstruction is otherwise equal; the map
-            // remains easier to read and the instructional card behaves like a docked helper.
+            // When obstruction is otherwise equal, start near the usable-screen center. The coach
+            // remains fully independent and draggable; exact targets still carry the much larger
+            // collision penalty above, so centering never wins by covering the control being taught.
             Rect safe = visibleSafeRect();
-            int edgeDistance = Math.min(
-                    Math.min(Math.abs(cardRect.left - safe.left), Math.abs(safe.right - cardRect.right)),
-                    Math.min(Math.abs(cardRect.top - safe.top), Math.abs(safe.bottom - cardRect.bottom)));
-            score += edgeDistance * 0.35d;
+            double cardCenterX = (cardRect.left + cardRect.right) / 2d;
+            double cardCenterY = (cardRect.top + cardRect.bottom) / 2d;
+            score += Math.hypot(cardCenterX - safe.exactCenterX(),
+                    cardCenterY - safe.exactCenterY()) * 0.35d;
             return score;
         }
 
@@ -1072,12 +1123,10 @@ public final class GuidedTourCoach {
         private Rect findContainingUiRegion(View targetView) {
             if (targetView == null || root == null) return null;
             if (root instanceof DialogCoachHost) {
-                Rect dialog = ((DialogCoachHost) root).dialogRect();
-                if (dialog != null) {
-                    int pad = dp(this, 6);
-                    dialog.inset(-pad, -pad);
-                }
-                return dialog;
+                // The coach is deliberately NOT part of the dialog/menu. It lives in its own
+                // PopupWindow and may float over unused dialog space when that is the best screen
+                // position. Only the exact target is protected from overlap by the target score.
+                return null;
             }
             Rect best = null;
             long bestArea = 0L;

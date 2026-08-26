@@ -105,7 +105,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 controller.fieldButton.setVisibility(View.VISIBLE);
                 controller.fieldButton.bringToFront();
                 // Temporary Research/context views can finish layout a frame later. Reassert the
-                // persistent entry after that layout settles so closing a heatmap/area cannot
+                // persistent Field entry after that layout settles so closing a heatmap/area cannot
                 // strand Field behind or leave it invisible.
                 controller.fieldButton.postDelayed(() -> {
                     controller.positionFieldButtonNow();
@@ -178,6 +178,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private boolean cameraMoveListenerInstalled;
     private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
+    private long hudRenderGeneration;
     private long lastWaypointRefresh;
     private String trackJson = emptyCollection();
     private String areaJson = emptyCollection();
@@ -504,6 +505,7 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void renderHud() {
         if (hud == null) return;
+        final long renderGeneration = ++hudRenderGeneration;
         installCollapsedTabs();
         hud.removeAllViews();
         removeCollapsedTab(TRACK_TAB_TAG);
@@ -575,9 +577,35 @@ public final class FieldMapController implements LocationRepository.Listener {
         bringFieldUiToFront();
         positionFieldButton();
         if (hud != null) {
-            hud.post(this::updateMapUiInsets);
-            hud.post(this::showActiveMapFieldTourCoach);
+            // HUD contents can change height substantially when a tour action creates the next
+            // control (for example the third Measure point reveals Save as Prospecting Area).
+            // Wait until Android has completed the exact rebuild's requested layout, clamp the
+            // final panel geometry, then render the next coach. A stale rebuild never wins after
+            // a newer one.
+            hud.post(() -> finishHudRenderWhenLaidOut(renderGeneration, 0));
         }
+    }
+
+    private void finishHudRenderWhenLaidOut(long renderGeneration, int attempt) {
+        if (renderGeneration != hudRenderGeneration || hud == null) return;
+        if ((hud.isLayoutRequested() || hud.getWidth() <= 0
+                || (hud.getVisibility() == View.VISIBLE && hud.getHeight() <= 0)) && attempt < 30) {
+            hud.postDelayed(() -> finishHudRenderWhenLaidOut(renderGeneration, attempt + 1), 16L);
+            return;
+        }
+        ensureHudWithinUsableBounds();
+        bringFieldUiToFront();
+        updateMapUiInsets();
+        showActiveMapFieldTourCoach();
+    }
+
+    private void ensureHudWithinUsableBounds() {
+        if (hud == null || root == null || hud.getVisibility() != View.VISIBLE
+                || !(hud.getLayoutParams() instanceof FrameLayout.LayoutParams)
+                || hud.getWidth() <= 0 || hud.getHeight() <= 0) return;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) hud.getLayoutParams();
+        positionFloatingView(hud, params.leftMargin, params.topMargin, false);
+        hud.bringToFront();
     }
 
     private String requiredExpandedToolForActiveTour() {
@@ -3470,10 +3498,17 @@ public final class FieldMapController implements LocationRepository.Listener {
         int width = view.getWidth() > 0 ? view.getWidth() : Math.max(dp(82), ((FrameLayout.LayoutParams) view.getLayoutParams()).width);
         int height = view.getHeight() > 0 ? view.getHeight() : dp(80);
         int margin = dp(6);
-        int bottomGuard = dp(118);
         left = Math.max(margin, Math.min(left, Math.max(margin, rootWidth - width - margin)));
         int minTop = Math.max(margin, statusBarHeight() + dp(2));
-        top = Math.max(minTop, Math.min(top, Math.max(minTop, rootHeight - height - bottomGuard)));
+        int usableBottom = rootHeight - margin;
+        if (controls != null && controls.getVisibility() == View.VISIBLE
+                && controls.getHeight() > 0 && controls.getTop() > 0) {
+            usableBottom = Math.min(usableBottom, controls.getTop() - margin);
+        } else {
+            usableBottom = Math.min(usableBottom, rootHeight - dp(118));
+        }
+        int maxTop = Math.max(minTop, usableBottom - height);
+        top = Math.max(minTop, Math.min(top, maxTop));
         FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) view.getLayoutParams();
         params.gravity = Gravity.TOP | Gravity.START;
         params.leftMargin = left;
@@ -3556,9 +3591,24 @@ public final class FieldMapController implements LocationRepository.Listener {
         return null;
     }
 
-    /** Locate MainActivity's bottom action tray by layout role, never by visible button text. */
+    /** Locate MainActivity's bottom action tray by stable control identity, with layout fallback. */
     private ViewGroup findBottomControls(FrameLayout container) {
         if (container == null) return null;
+
+        // Research/context surfaces can also be bottom-gravity ViewGroups. Resolve the real map
+        // tray from its stable Center GPS tag first so a temporary panel can never be mistaken for
+        // the permanent controls during Activity restoration.
+        View mainControl = container.findViewWithTag("rockmap-main-gps");
+        if (mainControl != null) {
+            View current = mainControl;
+            while (current.getParent() instanceof View && current.getParent() != container) {
+                current = (View) current.getParent();
+            }
+            if (current instanceof ViewGroup && current.getParent() == container) {
+                return (ViewGroup) current;
+            }
+        }
+
         for (int i = 0; i < container.getChildCount(); i++) {
             View child = container.getChildAt(i);
             if (!(child instanceof ViewGroup) || child == mapView) continue;
