@@ -4957,6 +4957,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showResearchAreaPanel(String activeView, String status) {
+        showResearchAreaPanel(activeView, status, true);
+    }
+
+    private void showResearchAreaPanel(String activeView, String status, boolean configureView) {
         if (activeResearchBounds == null || mainRoot == null) return;
         activeResearchView = activeView == null || activeView.trim().isEmpty()
                 ? ResearchAreaPanelController.VIEW_GEOLOGY : activeView.trim();
@@ -5037,14 +5041,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
             }
         });
         applyTourCompatibleResearchPanelMode(researchAreaPanel.currentMode());
-        configureResearchPanelForView(activeResearchView);
+        if (configureView) configureResearchPanelForView(activeResearchView);
         saveResearchSession();
         FieldMapController.ensurePersistentEntry(this);
     }
 
     private void showResearchEmptyState(String view, String subject, String detail) {
         String message = detail == null ? "" : detail.trim();
-        showResearchAreaPanel(view, "Nothing found in this area");
+        showResearchAreaPanel(view, "Nothing found in this area", false);
         if (researchAreaPanel == null) return;
         researchAreaPanel.reopenExpanded();
         researchAreaPanel.clearFixedContent();
