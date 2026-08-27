@@ -184,7 +184,7 @@ def classify_gnis(layer_id: int, feature_class: str) -> tuple[str, int]:
     return fc or "Place", 50
 
 
-def http_json(url: str, params: dict[str, object], *, attempts: int = 5) -> dict:
+def http_json(url: str, params: dict[str, object], *, attempts: int = 3) -> dict:
     query = urllib.parse.urlencode(params)
     full = f"{url}?{query}"
     last: Exception | None = None
