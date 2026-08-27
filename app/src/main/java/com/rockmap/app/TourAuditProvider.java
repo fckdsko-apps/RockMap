@@ -9,7 +9,7 @@ import android.net.Uri;
 public final class TourAuditProvider extends ContentProvider {
     @Override
     public boolean onCreate() {
-        if (getContext() != null) TourAudit.install(getContext());
+        if (getContext() != null) TourAuditV2.install(getContext());
         return true;
     }
 
