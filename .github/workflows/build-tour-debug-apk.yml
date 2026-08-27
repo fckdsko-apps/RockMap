@@ -67,6 +67,10 @@ jobs:
         shell: bash
         run: python3 scripts/preflight.py
 
+      - name: Inject minimal tour debugger
+        shell: bash
+        run: python3 scripts/inject_tour_debug.py
+
       - name: Stage verified place index from stable APK
         shell: bash
         env:
