@@ -203,6 +203,12 @@ public final class FieldMapController implements LocationRepository.Listener {
     private boolean hudUserPositioned;
     private int hudUserLeft;
     private int hudUserTop;
+    // Polygon-placement lessons use their own compact HUD position. A remembered location from
+    // the full Measure panel must not drag the compact map controls back over the working map.
+    private boolean compactTourHudMode;
+    private boolean compactTourHudUserPositioned;
+    private int compactTourHudUserLeft;
+    private int compactTourHudUserTop;
     private boolean collapsedTabsUserPositioned;
     private int collapsedTabsUserLeft;
     private int collapsedTabsUserTop;
@@ -312,6 +318,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         unresolvedHudRenderReason = "";
         lastPassiveHudSkipGeneration = -1L;
         clearHudTourLayoutWait();
+        if (awaitingMapTap && measurementPolygonTourStepActive()) {
+            FieldTourState.text(activity, "");
+            lastFieldTourCoachKey = "";
+        }
         removeTapCapture();
         if (measureActive) FieldMapState.saveMeasurement(activity, measurement, true);
         locationRepository.stop();
@@ -593,6 +603,11 @@ public final class FieldMapController implements LocationRepository.Listener {
             FieldMapState.setExpandedTool(activity, null);
         }
 
+        boolean compactMeasurementTourHud = measurementActive
+                && FieldMapState.TOOL_MEASURE.equals(expandedTool)
+                && measurementPolygonTourStepActive();
+        configureHudLayoutMode(compactMeasurementTourHud);
+
         boolean expanded = false;
         if (trackActive) {
             if (FieldMapState.TOOL_TRACK.equals(expandedTool)) {
@@ -633,10 +648,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         TourDebugLog.hudLifecycle(activity, "HUD_RENDER_BUILT", renderGeneration, renderReason,
                 expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
 
-        // GONE is a valid terminal presentation when no Field HUD should be displayed. Never wait
-        // for geometry on an intentionally hidden View; Android does not lay GONE views out, which
-        // was the source of the endless HUD_LAYOUT_WAIT loop seen in the device log.
-        if (hud.getVisibility() != View.VISIBLE) {
+        // A hidden HUD is terminal only when this render genuinely has no expanded Field panel.
+        // Measure polygon steps explicitly require a HUD; accepting GONE here was the Point-2 bug:
+        // the tour advanced to Point 3 internally while the required Measure controls stayed gone.
+        if (hud.getVisibility() != View.VISIBLE && !expanded) {
             unresolvedHudRenderGeneration = -1L;
             unresolvedHudRenderReason = "";
             clearHudTourLayoutWait();
@@ -647,17 +662,24 @@ public final class FieldMapController implements LocationRepository.Listener {
             showActiveMapFieldTourCoach();
             return;
         }
+        if (expanded && hud.getVisibility() != View.VISIBLE) {
+            hud.setVisibility(View.VISIBLE);
+            TourDebugLog.hudLifecycle(activity, "HUD_REQUIRED_VISIBLE_RESTORED", renderGeneration,
+                    renderReason, expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
+        }
 
         hud.requestLayout();
         hud.invalidate();
         // Recheck on the next choreographer frame. If geometry is still pending, the one-shot
         // global-layout listener below owns the continuation for this exact render generation.
+        final boolean expectedVisible = expanded;
         hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                renderGeneration, renderReason, renderStarted, 0));
+                renderGeneration, renderReason, renderStarted, expectedVisible, 0));
     }
 
     private void finishHudRenderWhenLaidOut(long renderGeneration, String reason,
-                                             long renderStarted, int frameAttempt) {
+                                             long renderStarted, boolean expectedVisible,
+                                             int frameAttempt) {
         if (!resumed || activity.isFinishing() || activity.isDestroyed() || hud == null
                 || !hud.isAttachedToWindow()) return;
         if (renderGeneration != hudRenderGeneration) {
@@ -669,14 +691,32 @@ public final class FieldMapController implements LocationRepository.Listener {
                 expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
 
         if (hud.getVisibility() != View.VISIBLE) {
-            unresolvedHudRenderGeneration = -1L;
-            unresolvedHudRenderReason = "";
-            clearHudTourLayoutWait();
-            updateMapUiInsets();
-            TourDebugLog.hudLifecycle(activity, "HUD_READY", renderGeneration,
-                    reason + " terminal=hidden-after-frame", expandedTool, measurement.size(), hud,
-                    null, renderStarted);
-            showActiveMapFieldTourCoach();
+            if (!expectedVisible) {
+                unresolvedHudRenderGeneration = -1L;
+                unresolvedHudRenderReason = "";
+                clearHudTourLayoutWait();
+                updateMapUiInsets();
+                TourDebugLog.hudLifecycle(activity, "HUD_READY", renderGeneration,
+                        reason + " terminal=hidden-after-frame", expandedTool, measurement.size(), hud,
+                        null, renderStarted);
+                showActiveMapFieldTourCoach();
+                return;
+            }
+            // Stay on the originating render generation. Restoring VISIBLE and requesting layout
+            // makes Android lay out the already-built compact/full HUD immediately; no pan, resume,
+            // periodic refresh, or second state transition is allowed to rescue this step.
+            hud.setVisibility(View.VISIBLE);
+            hud.requestLayout();
+            hud.invalidate();
+            TourDebugLog.hudLifecycle(activity, "HUD_REQUIRED_VISIBLE_RESTORED", renderGeneration,
+                    reason + " after-frame", expandedTool, measurement.size(), hud,
+                    settledHudTourTarget(), renderStarted);
+            if (frameAttempt < 2) {
+                hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
+                        renderGeneration, reason, renderStarted, true, frameAttempt + 1));
+            } else {
+                waitForHudTourLayout(renderGeneration, reason, renderStarted, true);
+            }
             return;
         }
 
@@ -689,7 +729,37 @@ public final class FieldMapController implements LocationRepository.Listener {
             unresolvedHudRenderReason = reason;
             TourDebugLog.hudLifecycle(activity, "HUD_LAYOUT_WAIT", renderGeneration, reason,
                     expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-            waitForHudTourLayout(renderGeneration, reason, renderStarted);
+            if (expectedVisible && frameAttempt < 3) {
+                // Do not park a required Measure HUD on a global-layout event that may not arrive
+                // until the user pans the map. Force the current hierarchy to lay itself out and
+                // recheck on the next frame while this originating generation still owns the UI.
+                hud.setVisibility(View.VISIBLE);
+                hud.bringToFront();
+                hud.requestLayout();
+                hud.invalidate();
+                if (root != null) {
+                    root.requestLayout();
+                    root.invalidate();
+                }
+                hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
+                        renderGeneration, reason, renderStarted, true, frameAttempt + 1));
+            } else {
+                waitForHudTourLayout(renderGeneration, reason, renderStarted, expectedVisible);
+            }
+            return;
+        }
+
+        // Keep the one-shot map catcher attached until the destination HUD has a real layout.
+        // Removing it before the Point-2 render was the device-observed transition where the HUD
+        // became not-shown. Once the HUD is laid out, remove the catcher and verify one final frame
+        // against the hierarchy the user will actually interact with.
+        if (releaseCompletedTapCapture()) {
+            hud.setVisibility(View.VISIBLE);
+            hud.requestLayout();
+            hud.invalidate();
+            if (root != null) root.requestLayout();
+            hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
+                    renderGeneration, reason, renderStarted, expectedVisible, frameAttempt + 1));
             return;
         }
 
@@ -704,9 +774,9 @@ public final class FieldMapController implements LocationRepository.Listener {
                     expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
             if (frameAttempt == 0) {
                 hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                        renderGeneration, reason, renderStarted, 1));
+                        renderGeneration, reason, renderStarted, expectedVisible, 1));
             } else {
-                waitForHudTourLayout(renderGeneration, reason, renderStarted);
+                waitForHudTourLayout(renderGeneration, reason, renderStarted, expectedVisible);
             }
             return;
         }
@@ -746,7 +816,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
     }
 
-    private void waitForHudTourLayout(long renderGeneration, String reason, long renderStarted) {
+    private void waitForHudTourLayout(long renderGeneration, String reason, long renderStarted,
+                                      boolean expectedVisible) {
         if (hud == null || !resumed || activity.isFinishing() || activity.isDestroyed()
                 || hud.getVisibility() != View.VISIBLE
                 || renderGeneration != hudRenderGeneration) return;
@@ -762,7 +833,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             // installs a fresh listener for the next real layout rather than spinning on a timer.
             clearHudTourLayoutWait();
             if (hud != null) hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                    renderGeneration, reason, renderStarted, 0));
+                    renderGeneration, reason, renderStarted, expectedVisible, 0));
         };
         ViewTreeObserver observer = hud.getViewTreeObserver();
         if (!observer.isAlive()) {
@@ -785,6 +856,47 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         hudTourLayoutListener = null;
         hudTourLayoutGeneration = -1L;
+    }
+
+    /** True only for the point-placement lessons that need the map to remain the primary surface. */
+    private boolean measurementPolygonTourStepActive() {
+        if (!FieldTourState.active(activity)) return false;
+        String tool = FieldTourState.tool(activity);
+        int step = FieldTourState.step(activity);
+        return (FieldUiNames.MEASURE.equals(tool) && step >= 11 && step <= 13)
+                || (FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 10 && step <= 12);
+    }
+
+    /**
+     * Switch between the normal full-width Field HUD and the compact polygon-placement HUD.
+     * Compact mode has its own remembered drag position so a prior full-panel location cannot
+     * strand the small map controls in the middle/bottom of the map.
+     */
+    private void configureHudLayoutMode(boolean compact) {
+        if (hud == null || !(hud.getLayoutParams() instanceof FrameLayout.LayoutParams)) return;
+        compactTourHudMode = compact;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) hud.getLayoutParams();
+        int screenWidth = activity.getResources().getDisplayMetrics().widthPixels;
+        int normalWidth = Math.max(dp(280), Math.min(dp(520), screenWidth - dp(24)));
+        int compactWidth = Math.max(dp(220), Math.min(dp(300), screenWidth - dp(24)));
+        params.width = compact ? compactWidth : normalWidth;
+        params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        params.gravity = Gravity.TOP | Gravity.START;
+        if (compact) {
+            params.leftMargin = compactTourHudUserPositioned
+                    ? compactTourHudUserLeft : dp(8);
+            params.topMargin = compactTourHudUserPositioned
+                    ? compactTourHudUserTop : statusBarHeight() + dp(8);
+        } else if (hudUserPositioned) {
+            params.leftMargin = hudUserLeft;
+            params.topMargin = hudUserTop;
+        } else {
+            params.leftMargin = Math.max(dp(8), (screenWidth - normalWidth) / 2);
+            params.topMargin = statusBarHeight() + dp(8);
+        }
+        params.rightMargin = 0;
+        params.bottomMargin = 0;
+        hud.setLayoutParams(params);
     }
 
     private void ensureHudWithinUsableBounds() {
@@ -1018,6 +1130,10 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void addMeasureHud() {
+        if (measurementPolygonTourStepActive()) {
+            addCompactMeasurementTourHud();
+            return;
+        }
         View header = panelHeader(
                 FieldUiNames.MEASURE + " — " + measurement.size() + " point" + (measurement.size() == 1 ? "" : "s"),
                 FieldUiNames.MEASURE_SHORT,
@@ -1142,6 +1258,45 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
     }
 
+    /** Minimal controls while the guided tour is asking for widely separated map points. */
+    private void addCompactMeasurementTourHud() {
+        String tool = FieldTourState.tool(activity);
+        int step = FieldTourState.step(activity);
+        int ordinal = FieldUiNames.MEASURE.equals(tool) ? step - 10 : step - 9;
+        ordinal = Math.max(1, Math.min(3, ordinal));
+        String pointLabel = FieldUiNames.MEASURE.equals(tool) ? "Polygon point" : "Boundary point";
+
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setMinimumHeight(dp(40));
+        header.setOnTouchListener((v, event) -> handleFloatingDrag(hud, v, event));
+
+        TextView title = hudTitle(pointLabel + " " + ordinal + " of 3 · "
+                + measurement.size() + " placed");
+        title.setPadding(dp(2), 0, dp(4), 0);
+        header.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        View dragHandle = RockMapDragHandle.compact(activity, Color.rgb(82, 88, 90),
+                (v, event) -> handleFloatingDrag(hud, v, event),
+                "Drag compact Measure controls");
+        dragHandle.setTag("rockmap-measure-compact-drag");
+        header.addView(dragHandle, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        hud.addView(header);
+
+        boolean mapTapArmed = awaitingMapTap || "map".equals(FieldTourState.text(activity));
+        Button tapMap = hudButton(mapTapArmed ? "Cancel tap" : "Tap map",
+                v -> handleTourAwareTapMap());
+        tapMap.setTag(mapTapArmed
+                ? "rockmap-measure-cancel-tap" : "rockmap-measure-tap-map");
+        tapMap.setContentDescription(mapTapArmed
+                ? "Cancel this measurement map tap"
+                : "Place the next measurement point on the map");
+        hud.addView(tapMap, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+    }
+
     private void handleTourAwareTapMap() {
         if (awaitingMapTap) {
             removeTapCapture();
@@ -1149,8 +1304,13 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldTourState.step(activity, 4);
                 FieldTourState.text(activity, "");
                 lastFieldTourCoachKey = "";
+            } else if (measurementPolygonTourStepActive()) {
+                // Cancel returns the same polygon lesson to its compact "Tap map" state instead of
+                // leaving phase=map behind with no catcher and an impossible instruction.
+                FieldTourState.text(activity, "");
+                lastFieldTourCoachKey = "";
             }
-            renderHud();
+            renderHud("map_tap_cancelled");
             return;
         }
 
@@ -2854,6 +3014,11 @@ public final class FieldMapController implements LocationRepository.Listener {
                 int tapTolerance = Math.max(dp(32), floatingTouchSlop * 2);
                 if (Math.hypot(dx, dy) > tapTolerance) {
                     removeTapCapture();
+                    if (measurementPolygonTourStepActive()) {
+                        FieldTourState.text(activity, "");
+                        lastFieldTourCoachKey = "";
+                        renderHud("map_tap_drag_cancelled");
+                    }
                     toast("No point added. Pan the map normally, then tap “Tap map” again.");
                     return true;
                 }
@@ -2862,11 +3027,11 @@ public final class FieldMapController implements LocationRepository.Listener {
                 PointF screen = new PointF(event.getRawX() - mapLocation[0],
                         event.getRawY() - mapLocation[1]);
                 LatLng latLng = map.getProjection().fromScreenLocation(screen);
-                // This ACTION_UP is already owned by the catcher and will return true, so remove
-                // the transient full-screen catcher before rebuilding the HUD/coach. The new lesson
-                // is then laid out against the final view hierarchy instead of a disappearing overlay.
+                // This ACTION_UP is owned by the catcher and returns true. Keep the catcher
+                // attached until the destination HUD has completed layout; removing it before the
+                // Point-2 render was the transition that left the required HUD not-shown. The
+                // readiness path releases it before the next coach becomes actionable.
                 awaitingMapTap = false;
-                removeTapCapture();
                 addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
                 return true;
             }
@@ -2878,8 +3043,20 @@ public final class FieldMapController implements LocationRepository.Listener {
         tapCapture = catcher;
         awaitingMapTap = true;
         bringFieldUiToFront();
-        renderHud();
+        renderHud("map_tap_armed");
         toast("Tap once on the map to add the next measurement point. Dragging cancels the tap so you can pan normally afterward.");
+    }
+
+    /** Remove a completed one-shot catcher only after the destination HUD has real geometry. */
+    private boolean releaseCompletedTapCapture() {
+        if (tapCapture == null || awaitingMapTap) return false;
+        View completed = tapCapture;
+        tapCapture = null;
+        if (completed.getParent() instanceof ViewGroup) {
+            ((ViewGroup) completed.getParent()).removeView(completed);
+        }
+        removeOrphanTapCapture();
+        return true;
     }
 
     private void removeTapCapture() {
@@ -3787,7 +3964,15 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (view == hud) updateMapUiInsets();
         if (remember) {
             if (view == hud) {
-                hudUserPositioned = true; hudUserLeft = left; hudUserTop = top;
+                if (compactTourHudMode) {
+                    compactTourHudUserPositioned = true;
+                    compactTourHudUserLeft = left;
+                    compactTourHudUserTop = top;
+                } else {
+                    hudUserPositioned = true;
+                    hudUserLeft = left;
+                    hudUserTop = top;
+                }
             } else if (view == collapsedTabs) {
                 collapsedTabsUserPositioned = true; collapsedTabsUserLeft = left; collapsedTabsUserTop = top;
             }

@@ -388,7 +388,7 @@ public final class GuidedTourCoach {
             compactNext.setTextSize(11.5f);
             compactNext.setTextColor(Color.rgb(28, 50, 52));
             compactNext.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            compactNext.setMaxLines(4);
+            compactNext.setMaxLines(mapInteractionPlacement ? 3 : 4);
             compactNext.setPadding(dp(activity, 4), dp(activity, 2), dp(activity, 4), 0);
             compactNext.setContentDescription("Guided tour action: " + compactAction);
             compact.addView(compactNext, new LinearLayout.LayoutParams(
@@ -687,7 +687,7 @@ public final class GuidedTourCoach {
         // Keep the coach visibly above Android navigation/gesture chrome even on OEM builds that
         // report a zero bottom inset while drawing edge-to-edge. This is a safety margin inside the
         // already-computed visible frame, not a guessed replacement for WindowInsets.
-        int bottomBreathingRoom = dp(activity, 16);
+        int bottomBreathingRoom = dp(activity, 32);
         if (safe.height() > bottomBreathingRoom + dp(activity, 120)) {
             safe.bottom -= bottomBreathingRoom;
         }
@@ -897,19 +897,17 @@ public final class GuidedTourCoach {
                 }
                 Rect safe = visibleSafeRect();
                 if (mapInteractionPlacement) {
-                    // Point-placement lessons should be compact enough to leave a real map working
-                    // area. Dense mode retains the instructions and controls but avoids a tall card
-                    // being clamped into Android/app bottom controls on shorter viewports.
-                    if (!denseMode && compactView != null
-                            && (getHeight() > safe.height() * 0.46f
-                            || getWidth() > safe.width())) {
+                    // A map-action lesson is always compact. Waiting until the normal card exceeds
+                    // an arbitrary height threshold still leaves a large coach covering usable map
+                    // space on ordinary phones. The compact card preserves instructions/actions.
+                    if (!denseMode && compactView != null) {
                         denseMode = true;
                         setPadding(dp(this, 6), dp(this, 4), dp(this, 6), dp(this, 4));
                         for (View normal : normalViews) normal.setVisibility(View.GONE);
                         compactView.setVisibility(View.VISIBLE);
                         FrameLayout.LayoutParams compactParams = (FrameLayout.LayoutParams) getLayoutParams();
                         compactParams.width = Math.max(dp(this, 180),
-                                Math.min(dp(this, 330), safe.width()));
+                                Math.min(dp(this, 300), safe.width()));
                         setLayoutParams(compactParams);
                         requestLayout();
                         postDelayed(this::placeForCurrentStep, 40L);
@@ -975,7 +973,11 @@ public final class GuidedTourCoach {
             boolean outsideUsableScreen = current == null || current.left < safe.left
                     || current.top < safe.top || current.right > safe.right || current.bottom > safe.bottom;
             if (mapInteractionPlacement) {
-                if (outsideUsableScreen) chooseMapInteractionPosition();
+                ArrayList<Rect> mapObstacles = new ArrayList<>();
+                collectMapInteractionObstacles(mapObstacles);
+                if (outsideUsableScreen || hasMeaningfulObstacleOverlap(current, mapObstacles)) {
+                    chooseMapInteractionPosition();
+                }
                 return;
             }
             if (outsideUsableScreen || intersectsExpanded(current, targetRect, dp(this, 12))
@@ -992,7 +994,7 @@ public final class GuidedTourCoach {
             try {
                 Rect safe = visibleSafeRect();
                 ArrayList<Rect> obstacles = new ArrayList<>();
-                collectInteractiveObstacles(root, obstacles);
+                collectMapInteractionObstacles(obstacles);
 
                 float[] remembered;
                 synchronized (mapInteractionPositions) { remembered = mapInteractionPositions.get(activity); }
@@ -1246,6 +1248,38 @@ public final class GuidedTourCoach {
                     View child = group.getChildAt(i);
                     if (child == this || isDescendantOf(child, this)) continue;
                     collectInteractiveObstacles(child, out);
+                }
+            }
+        }
+
+        /**
+         * Map placement must avoid whole visible panels, not just their clickable children. A
+         * non-clickable HUD background still blocks the exact map area the user is being told to
+         * tap, so direct root-level floating panels are obstacles as well.
+         */
+        private void collectMapInteractionObstacles(List<Rect> out) {
+            collectInteractiveObstacles(root, out);
+            if (root == null) return;
+            long rootArea = (long) Math.max(1, root.getWidth()) * Math.max(1, root.getHeight());
+            for (int i = 0; i < root.getChildCount(); i++) {
+                View child = root.getChildAt(i);
+                if (child == null || child == this || isDescendantOf(child, this)
+                        || child.getVisibility() != View.VISIBLE || child.getAlpha() < 0.05f) {
+                    continue;
+                }
+                Rect rect = rectInRoot(child);
+                if (rect == null || rect.width() <= 0 || rect.height() <= 0) continue;
+                long area = (long) rect.width() * rect.height();
+                // Ignore the map itself, the transparent one-shot catcher, and other full-screen
+                // containers. Retain floating panels/trays even when their background is not
+                // clickable; they are visually unavailable map space.
+                if (area >= rootArea * 0.55d) continue;
+                if (child.getBackground() != null || child.getTag() != null
+                        || child instanceof LinearLayout) {
+                    Rect padded = new Rect(rect);
+                    int pad = dp(this, 6);
+                    padded.inset(-pad, -pad);
+                    out.add(padded);
                 }
             }
         }
