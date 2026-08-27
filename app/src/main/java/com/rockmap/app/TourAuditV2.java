@@ -39,16 +39,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Diagnostic-only guided-tour audit, revision 2.
+ * Diagnostic-only universal guided-tour observer.
  *
- * This observer never advances or repairs a tour. It records persisted state, complete target
- * readiness, the actual GuidedTourCoach owner/root (including dialog PopupWindow hosts), Activity
- * lifecycle/focus, and per-step invariants for the main Research tour plus the map-owned Tracks,
- * Navigate, Measure, and Prospecting Areas tours.
+ * Revision 3 deliberately observes the shared GuidedTourCoach boundary instead of maintaining a
+ * separate hard-coded UI scanner for every tour. That gives the same diagnostics to main-map,
+ * Research, FieldTourState-backed, dialog-hosted, and legacy coach-only tours. This class never
+ * advances, repairs, reopens, clicks, hides, enables, or otherwise mutates RockMap tour UI.
  */
 public final class TourAuditV2 {
-    private static final String BASE_HEAD = "b071240e2dbbebcb581d3223ed97e713cb3f42d3";
-    private static final String AUDIT_VERSION = "2";
+    private static final String BASE_HEAD = "b6406a1905108a004a281cda08cfe6ab25ce9a9e";
+    private static final String AUDIT_VERSION = "3-universal";
     private static final String TOUR_PREFS = "rockmap_guided_tour";
     private static final String RESEARCH_PREFS = "rockmap-research-session-v1";
     private static final String FIELD_TOUR_PREFS = "rockmap_field_tool_tour";
@@ -58,21 +58,21 @@ public final class TourAuditV2 {
     private static final String FILE_NAME = "RockMap-Tour-Audit.txt";
     private static final String COACH_TAG = "rockmap-guided-tour-coach";
 
-    private static final long MAX_INTERNAL_BYTES = 900L * 1024L;
-    private static final int KEEP_INTERNAL_BYTES = 700 * 1024;
-    private static final long SAMPLE_MS = 250L;
-    private static final long MAIN_INVARIANT_GRACE_MS = 1200L;
-    private static final long FIELD_TARGET_GRACE_MS = 1200L;
-    private static final long COACH_MISMATCH_GRACE_MS = 1200L;
+    private static final long SAMPLE_MS = 200L;
+    private static final long STATE_COACH_GRACE_MS = 1200L;
     private static final long COACH_MISSING_GRACE_MS = 2500L;
-    private static final long FOCUS_LOSS_GRACE_MS = 800L;
+    private static final long REQUEST_STALL_MS = 1800L;
+    private static final long TARGET_LOST_MS = 750L;
+    private static final long FOCUS_LOST_MS = 800L;
     private static final long PUBLIC_MIRROR_INTERVAL_MS = 1500L;
+    private static final long MAX_INTERNAL_BYTES = 1024L * 1024L;
+    private static final int KEEP_INTERNAL_BYTES = 800 * 1024;
 
     private static final AtomicBoolean INSTALLED = new AtomicBoolean();
     private static final AtomicBoolean MIRROR_SCHEDULED = new AtomicBoolean();
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final ScheduledExecutorService IO = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread thread = new Thread(r, "rockmap-tour-audit-v2");
+        Thread thread = new Thread(r, "rockmap-tour-audit-v3");
         thread.setPriority(Thread.MIN_PRIORITY);
         return thread;
     });
@@ -86,32 +86,39 @@ public final class TourAuditV2 {
     private static SharedPreferences fieldTourPrefs;
     private static SharedPreferences fieldRuntimePrefs;
     private static SharedPreferences auditPrefs;
-
     private static SharedPreferences.OnSharedPreferenceChangeListener tourListener;
     private static SharedPreferences.OnSharedPreferenceChangeListener researchListener;
     private static SharedPreferences.OnSharedPreferenceChangeListener fieldTourListener;
     private static SharedPreferences.OnSharedPreferenceChangeListener fieldRuntimeListener;
-
     private static WeakReference<Activity> resumedActivity = new WeakReference<>(null);
-    private static String lastUiSignature = "";
 
-    private static int lastMainStep = -1;
-    private static long mainStepSinceMs;
-    private static String activeMainFailure = "";
-    private static int consecutiveMainFailures;
+    private static Field coachRootField;
+    private static Field coachOwnerField;
+    private static Field highlightedViewField;
+    private static Field requestSequenceField;
+    private static Field requestGenerationsField;
+    private static boolean reflectionReady;
+    private static boolean reflectionFailureReported;
 
-    private static String lastFieldTool = "";
-    private static int lastFieldStep = -1;
-    private static String lastFieldPhase = "";
-    private static long fieldStepSinceMs;
-    private static String activeFieldFailure = "";
-    private static int consecutiveFieldFailures;
-
-    private static String lastTargetKey = "";
-    private static int lastTargetIdentity;
-    private static long focusLossSinceMs;
-    private static String focusLossStateKey = "";
-    private static boolean focusLossReported;
+    private static String lastMainStateKey = "";
+    private static long mainStateSinceMs;
+    private static String lastFieldStateKey = "";
+    private static long fieldStateSinceMs;
+    private static String lastSnapshot = "";
+    private static String lastCoachSignature = "";
+    private static boolean lastCoachPresent;
+    private static String lastTargetSignature = "";
+    private static long targetLostSinceMs;
+    private static boolean targetLostReported;
+    private static long lastRequestSequence = -1L;
+    private static long requestObservedAtMs;
+    private static String coachSignatureAtRequest = "";
+    private static boolean requestResolved;
+    private static boolean requestStallReported;
+    private static String activeMismatch = "";
+    private static long focusLostSinceMs;
+    private static String focusLostStateKey = "";
+    private static boolean focusLostReported;
     private static long lastPublicMirrorElapsed;
 
     private static final Runnable SAMPLER = new Runnable() {
@@ -134,16 +141,11 @@ public final class TourAuditV2 {
         researchPrefs = app.getSharedPreferences(RESEARCH_PREFS, Context.MODE_PRIVATE);
         fieldTourPrefs = app.getSharedPreferences(FIELD_TOUR_PREFS, Context.MODE_PRIVATE);
         fieldRuntimePrefs = app.getSharedPreferences(FIELD_RUNTIME_PREFS, Context.MODE_PRIVATE);
+        initCoachReflection();
 
         tourListener = (prefs, key) -> {
             if (!isTourKey(key)) return;
             record("TOUR_PREF", key + "=" + prefValue(prefs, key) + " caller=" + appStack());
-            if ("tour_step".equals(key)) {
-                lastMainStep = prefs.getInt("tour_step", 1);
-                mainStepSinceMs = SystemClock.elapsedRealtime();
-                activeMainFailure = "";
-                consecutiveMainFailures = 0;
-            }
             requestImmediateSample();
         };
         researchListener = (prefs, key) -> {
@@ -153,10 +155,6 @@ public final class TourAuditV2 {
         };
         fieldTourListener = (prefs, key) -> {
             record("FIELD_TOUR_PREF", key + "=" + prefValue(prefs, key) + " caller=" + appStack());
-            if ("step".equals(key) || "tool".equals(key) || "text".equals(key) || "active".equals(key)) {
-                FieldTourStateSnapshot field = FieldTourStateSnapshot.read();
-                observeFieldTransition(field, "pref:" + key);
-            }
             requestImmediateSample();
         };
         fieldRuntimeListener = (prefs, key) -> {
@@ -205,22 +203,42 @@ public final class TourAuditV2 {
             });
         }
 
-        TourState main = TourState.read();
-        FieldTourStateSnapshot field = FieldTourStateSnapshot.read();
-        lastMainStep = main.step;
-        mainStepSinceMs = SystemClock.elapsedRealtime();
-        lastFieldTool = field.tool;
-        lastFieldStep = field.step;
-        lastFieldPhase = field.phase;
-        fieldStepSinceMs = SystemClock.elapsedRealtime();
-
+        MainState main = MainState.read();
+        FieldState field = FieldState.read();
+        lastMainStateKey = main.key();
+        lastFieldStateKey = field.key();
+        long now = SystemClock.elapsedRealtime();
+        mainStateSinceMs = now;
+        fieldStateSinceMs = now;
         recordImportant("PROCESS_START",
                 "auditVersion=" + AUDIT_VERSION
                         + " baseHead=" + BASE_HEAD
                         + " version=" + safeVersion()
                         + " sdk=" + Build.VERSION.SDK_INT
                         + " device=" + Build.MANUFACTURER + "/" + Build.MODEL
-                        + " pid=" + android.os.Process.myPid());
+                        + " pid=" + android.os.Process.myPid()
+                        + " coachReflection=" + reflectionReady);
+    }
+
+    private static void initCoachReflection() {
+        try {
+            coachRootField = GuidedTourCoach.class.getDeclaredField("activeCoachRoot");
+            coachOwnerField = GuidedTourCoach.class.getDeclaredField("activeCoachOwner");
+            highlightedViewField = GuidedTourCoach.class.getDeclaredField("highlightedView");
+            requestSequenceField = GuidedTourCoach.class.getDeclaredField("requestSequence");
+            requestGenerationsField = GuidedTourCoach.class.getDeclaredField("requestGenerations");
+            coachRootField.setAccessible(true);
+            coachOwnerField.setAccessible(true);
+            highlightedViewField.setAccessible(true);
+            requestSequenceField.setAccessible(true);
+            requestGenerationsField.setAccessible(true);
+            reflectionReady = true;
+        } catch (Throwable ex) {
+            reflectionReady = false;
+            reflectionFailureReported = true;
+            recordImportant("AUDIT_REFLECTION_ERROR",
+                    clean(ex.getClass().getSimpleName() + ": " + ex.getMessage(), 300));
+        }
     }
 
     private static void requestImmediateSample() {
@@ -234,328 +252,226 @@ public final class TourAuditV2 {
         });
     }
 
-    private static void observeFieldTransition(FieldTourStateSnapshot field, String source) {
-        if (field == null) return;
-        if (!field.tool.equals(lastFieldTool) || field.step != lastFieldStep
-                || !field.phase.equals(lastFieldPhase)) {
-            String before = clean(lastFieldTool, 30) + "/" + lastFieldStep + "/" + clean(lastFieldPhase, 30);
-            String after = clean(field.tool, 30) + "/" + field.step + "/" + clean(field.phase, 30);
-            if (!field.tool.equals(lastFieldTool) || field.step != lastFieldStep) {
-                fieldStepSinceMs = SystemClock.elapsedRealtime();
-                activeFieldFailure = "";
-                consecutiveFieldFailures = 0;
-                lastTargetKey = "";
-                lastTargetIdentity = 0;
-            }
-            record("FIELD_STEP_OBSERVED", "from=" + before + " to=" + after + " source=" + source);
-            lastFieldTool = field.tool;
-            lastFieldStep = field.step;
-            lastFieldPhase = field.phase;
-        }
-    }
-
     private static void sample(Activity activity, String reason) {
         if (activity == null || tourPrefs == null || fieldTourPrefs == null) return;
+        MainState main = MainState.read();
+        FieldState field = FieldState.read();
+        long now = SystemClock.elapsedRealtime();
 
-        TourState main = TourState.read();
-        FieldTourStateSnapshot field = FieldTourStateSnapshot.read();
-        boolean mainActive = "in_progress".equals(main.state);
-        boolean fieldActive = field.active;
+        if (!main.key().equals(lastMainStateKey)) {
+            record("MAIN_STATE", "from=" + lastMainStateKey + " to=" + main.key() + " source=" + reason);
+            lastMainStateKey = main.key();
+            mainStateSinceMs = now;
+            activeMismatch = "";
+        }
+        if (!field.key().equals(lastFieldStateKey)) {
+            record("FIELD_STATE", "from=" + lastFieldStateKey + " to=" + field.key() + " source=" + reason);
+            lastFieldStateKey = field.key();
+            fieldStateSinceMs = now;
+            activeMismatch = "";
+        }
 
-        if (!mainActive && !fieldActive) {
-            if (!lastUiSignature.isEmpty()) {
-                record("UI_STATE", "no active tour activity=" + activityName(activity));
-                lastUiSignature = "";
-            }
-            resetTransientFailures();
+        CoachRuntime coach = CoachRuntime.read(activity);
+        observeRequest(activity, main, field, coach, now);
+        observeCoach(activity, main, field, coach, now);
+        observeTarget(activity, main, field, coach, now);
+        observeStateCoachMismatch(activity, main, field, coach, now);
+        observeFocus(activity, main, field, coach, now);
+
+        String snapshot = "activity=" + activityName(activity)
+                + ",focus=" + activity.hasWindowFocus()
+                + ",main=" + main.compact()
+                + ",field=" + field.compact()
+                + ",coach=" + coach.compact();
+        if (!snapshot.equals(lastSnapshot)) {
+            record("STATE_SNAPSHOT", snapshot);
+            lastSnapshot = snapshot;
+        }
+    }
+
+    private static void observeRequest(Activity activity, MainState main, FieldState field,
+                                       CoachRuntime coach, long now) {
+        if (lastRequestSequence < 0L) {
+            lastRequestSequence = coach.requestSequence;
             return;
         }
-
-        if (mainActive && main.step != lastMainStep) {
-            lastMainStep = main.step;
-            mainStepSinceMs = SystemClock.elapsedRealtime();
-            activeMainFailure = "";
-            consecutiveMainFailures = 0;
-            record("TOUR_STEP_OBSERVED",
-                    "step=" + main.step + "(" + stepName(main.step) + ") display=" + main.displayStep
-                            + " topic=" + main.topic + " reason=" + reason);
+        if (coach.requestSequence != lastRequestSequence) {
+            lastRequestSequence = coach.requestSequence;
+            requestObservedAtMs = now;
+            coachSignatureAtRequest = lastCoachSignature;
+            requestResolved = coach.present && !coach.signature().equals(coachSignatureAtRequest);
+            requestStallReported = false;
+            record("COACH_REQUEST_OBSERVED",
+                    "sequence=" + coach.requestSequence
+                            + " activityToken=" + coach.activityRequestToken
+                            + " activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " previousCoach=" + clean(coachSignatureAtRequest, 500));
         }
-        if (fieldActive) observeFieldTransition(field, "sample:" + reason);
-
-        View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
-        MainProbes probes = MainProbes.scan(decor);
-        ResearchState research = ResearchState.read();
-        CoachSnapshot coach = CoachSnapshot.read();
-        FieldExpectation fieldExpectation = fieldActive
-                ? FieldExpectation.forState(field, activity, decor) : FieldExpectation.none();
-
-        String signature = "activity=" + activityName(activity)
-                + " focus=" + activity.hasWindowFocus()
-                + " tour=" + main.compact()
-                + " field=" + field.compact()
-                + " research=" + research.compact()
-                + " coach=" + coach.compact()
-                + " fieldExpected=" + fieldExpectation.compact()
-                + " probes=" + probes.signature();
-        if (!signature.equals(lastUiSignature)) {
-            record("UI_STATE", signature);
-            lastUiSignature = signature;
+        if (!requestResolved && coach.present && !coach.signature().equals(coachSignatureAtRequest)) {
+            requestResolved = true;
+            record("COACH_REQUEST_RESOLVED",
+                    "sequence=" + coach.requestSequence
+                            + " delayMs=" + Math.max(0L, now - requestObservedAtMs)
+                            + " coach=" + coach.compact());
         }
-
-        trackTargetReplacement(mainActive, main, fieldActive, field, probes, fieldExpectation);
-        trackFocusInterruption(activity, mainActive, main, fieldActive, field, coach);
-
-        if (mainActive) {
-            String violation = mainInvariantViolation(main, research, probes, activity);
-            String coachViolation = coachViolation("main", main.displayStep, coach, mainStepSinceMs);
-            if (violation == null) violation = coachViolation;
-            handleMainInvariant(violation, main, research, probes, coach, activity);
-        } else {
-            activeMainFailure = "";
-            consecutiveMainFailures = 0;
-        }
-
-        if (fieldActive) {
-            String violation = fieldInvariantViolation(field, fieldExpectation, coach, activity);
-            handleFieldInvariant(violation, field, fieldExpectation, coach, activity);
-        } else {
-            activeFieldFailure = "";
-            consecutiveFieldFailures = 0;
+        if (!requestResolved && !requestStallReported && requestObservedAtMs > 0L
+                && now - requestObservedAtMs >= REQUEST_STALL_MS) {
+            requestStallReported = true;
+            recordImportant("COACH_REQUEST_STALLED",
+                    "sequence=" + coach.requestSequence
+                            + " ageMs=" + (now - requestObservedAtMs)
+                            + " activityToken=" + coach.activityRequestToken
+                            + " activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " visibleCoach=" + coach.compact());
         }
     }
 
-    private static void resetTransientFailures() {
-        activeMainFailure = "";
-        consecutiveMainFailures = 0;
-        activeFieldFailure = "";
-        consecutiveFieldFailures = 0;
-        focusLossSinceMs = 0L;
-        focusLossStateKey = "";
-        focusLossReported = false;
-        lastTargetKey = "";
-        lastTargetIdentity = 0;
+    private static void observeCoach(Activity activity, MainState main, FieldState field,
+                                     CoachRuntime coach, long now) {
+        String signature = coach.signature();
+        if (coach.present && (!lastCoachPresent || !signature.equals(lastCoachSignature))) {
+            recordImportant("COACH_DISPLAYED",
+                    "activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " coach=" + coach.full());
+            lastCoachSignature = signature;
+            lastCoachPresent = true;
+            if (requestObservedAtMs > 0L && !signature.equals(coachSignatureAtRequest)) {
+                requestResolved = true;
+            }
+            return;
+        }
+        if (!coach.present && lastCoachPresent) {
+            record("COACH_CLEARED",
+                    "activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " previous=" + clean(lastCoachSignature, 800));
+            lastCoachPresent = false;
+            lastCoachSignature = "";
+        }
     }
 
-    private static void trackFocusInterruption(Activity activity, boolean mainActive, TourState main,
-                                               boolean fieldActive, FieldTourStateSnapshot field,
-                                               CoachSnapshot coach) {
-        long now = SystemClock.elapsedRealtime();
-        String stateKey = fieldActive
-                ? "field:" + field.tool + ":" + field.step + ":" + field.phase
-                : "main:" + main.topic + ":" + main.step;
+    private static void observeTarget(Activity activity, MainState main, FieldState field,
+                                      CoachRuntime coach, long now) {
+        String signature = coach.targetSignature();
+        if (!signature.equals(lastTargetSignature)) {
+            if (!lastTargetSignature.isEmpty() || !signature.isEmpty()) {
+                record("TARGET_STATE",
+                        "activity=" + activityName(activity)
+                                + " main=" + main.compact()
+                                + " field=" + field.compact()
+                                + " target=" + coach.targetDetail());
+            }
+            lastTargetSignature = signature;
+            targetLostSinceMs = 0L;
+            targetLostReported = false;
+        }
+        if (!coach.present || coach.target == null || coach.targetReady) {
+            if (targetLostReported) {
+                recordImportant("TARGET_RECOVERED",
+                        "activity=" + activityName(activity)
+                                + " target=" + coach.targetDetail());
+            }
+            targetLostSinceMs = 0L;
+            targetLostReported = false;
+            return;
+        }
+        if (targetLostSinceMs == 0L) targetLostSinceMs = now;
+        if (!targetLostReported && now - targetLostSinceMs >= TARGET_LOST_MS) {
+            targetLostReported = true;
+            recordImportant("TARGET_LOST",
+                    "durationMs=" + (now - targetLostSinceMs)
+                            + " activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " coach=" + coach.compact()
+                            + " target=" + coach.targetDetail());
+        }
+    }
 
+    private static void observeStateCoachMismatch(Activity activity, MainState main, FieldState field,
+                                                   CoachRuntime coach, long now) {
+        String violation = null;
+        if (field.active) {
+            long age = now - fieldStateSinceMs;
+            if (!coach.present && age >= COACH_MISSING_GRACE_MS) {
+                violation = "Field state expects step " + field.step + " but no coach is visible";
+            } else if (coach.present && coach.step > 0 && coach.step != field.step
+                    && age >= STATE_COACH_GRACE_MS) {
+                violation = "Field state is step " + field.step + " but displayed coach is " + coach.step;
+            }
+        } else if (main.active) {
+            long age = now - mainStateSinceMs;
+            boolean transitionalResearchStep = main.step == 9 || main.step == 10;
+            if (!coach.present && !transitionalResearchStep && age >= COACH_MISSING_GRACE_MS) {
+                violation = "Main tour expects display step " + main.displayStep + " but no coach is visible";
+            } else if (coach.present && coach.step > 0 && coach.step != main.displayStep
+                    && age >= STATE_COACH_GRACE_MS) {
+                violation = "Main persisted display step is " + main.displayStep
+                        + " but displayed coach is " + coach.step;
+            }
+        }
+
+        if (violation == null) {
+            if (!activeMismatch.isEmpty()) {
+                recordImportant("STATE_COACH_RECOVERED",
+                        "previous=" + activeMismatch
+                                + " activity=" + activityName(activity)
+                                + " coach=" + coach.compact());
+            }
+            activeMismatch = "";
+            return;
+        }
+        if (!violation.equals(activeMismatch)) {
+            activeMismatch = violation;
+            recordImportant("STATE_COACH_MISMATCH",
+                    "reason=" + violation
+                            + " activity=" + activityName(activity)
+                            + " main=" + main.compact()
+                            + " field=" + field.compact()
+                            + " coach=" + coach.full());
+        }
+    }
+
+    private static void observeFocus(Activity activity, MainState main, FieldState field,
+                                     CoachRuntime coach, long now) {
+        String stateKey = field.active ? "field:" + field.key()
+                : main.active ? "main:" + main.key()
+                : coach.present ? "coach:" + coach.step + "/" + coach.total
+                : "idle";
         boolean dialogCoach = "dialog".equals(coach.hostKind);
         if (activity.hasWindowFocus() || dialogCoach) {
-            if (focusLossReported && focusLossSinceMs > 0L) {
+            if (focusLostReported && focusLostSinceMs > 0L) {
                 recordImportant("FOCUS_RESTORED",
-                        "state=" + focusLossStateKey + " durationMs=" + (now - focusLossSinceMs)
+                        "state=" + focusLostStateKey
+                                + " durationMs=" + (now - focusLostSinceMs)
                                 + " activity=" + activityName(activity));
             }
-            focusLossSinceMs = 0L;
-            focusLossStateKey = "";
-            focusLossReported = false;
+            focusLostSinceMs = 0L;
+            focusLostStateKey = "";
+            focusLostReported = false;
             return;
         }
-
-        if (focusLossSinceMs == 0L || !stateKey.equals(focusLossStateKey)) {
-            focusLossSinceMs = now;
-            focusLossStateKey = stateKey;
-            focusLossReported = false;
+        if (focusLostSinceMs == 0L || !stateKey.equals(focusLostStateKey)) {
+            focusLostSinceMs = now;
+            focusLostStateKey = stateKey;
+            focusLostReported = false;
             return;
         }
-        if (!focusLossReported && now - focusLossSinceMs >= FOCUS_LOSS_GRACE_MS) {
-            focusLossReported = true;
+        if (!focusLostReported && now - focusLostSinceMs >= FOCUS_LOST_MS) {
+            focusLostReported = true;
             recordImportant("FOCUS_INTERRUPTION",
-                    "state=" + stateKey + " durationMs=" + (now - focusLossSinceMs)
+                    "state=" + stateKey
+                            + " durationMs=" + (now - focusLostSinceMs)
                             + " activity=" + activityName(activity)
-                            + " coach=" + coach.compact()
-                            + " reason=Activity lost window focus while active tour had no dialog-hosted coach");
+                            + " coach=" + coach.compact());
         }
-    }
-
-    private static void trackTargetReplacement(boolean mainActive, TourState main,
-                                               boolean fieldActive, FieldTourStateSnapshot field,
-                                               MainProbes probes, FieldExpectation expectation) {
-        String key = "";
-        View target = null;
-        if (fieldActive && expectation.targetTag != null) {
-            key = "field:" + field.tool + ":" + field.step + ":" + expectation.targetTag;
-            target = expectation.target.view;
-        } else if (mainActive) {
-            Probe mainTarget = probes.targetForMainStep(main.step);
-            if (mainTarget != null && mainTarget.view != null) {
-                key = "main:" + main.step + ":" + mainTarget.key;
-                target = mainTarget.view;
-            }
-        }
-        if (key.isEmpty() || target == null) {
-            if (!key.equals(lastTargetKey)) {
-                lastTargetKey = key;
-                lastTargetIdentity = 0;
-            }
-            return;
-        }
-        int identity = System.identityHashCode(target);
-        if (key.equals(lastTargetKey) && lastTargetIdentity != 0 && identity != lastTargetIdentity) {
-            record("TARGET_REPLACED",
-                    "key=" + key + " oldObj=" + Integer.toHexString(lastTargetIdentity)
-                            + " newObj=" + Integer.toHexString(identity)
-                            + " new=" + describe(target));
-        }
-        lastTargetKey = key;
-        lastTargetIdentity = identity;
-    }
-
-    private static String coachViolation(String domain, int expectedStep,
-                                         CoachSnapshot coach, long stepSinceMs) {
-        long age = SystemClock.elapsedRealtime() - stepSinceMs;
-        if (!coach.present) {
-            if (age >= COACH_MISSING_GRACE_MS) {
-                return domain + " coach missing for " + age + "ms";
-            }
-            return null;
-        }
-        if (coach.step > 0 && coach.step != expectedStep && age >= COACH_MISMATCH_GRACE_MS) {
-            return domain + " coach displays step " + coach.step
-                    + " while persisted step is " + expectedStep
-                    + " for " + age + "ms";
-        }
-        return null;
-    }
-
-    private static String mainInvariantViolation(TourState tour, ResearchState research,
-                                                 MainProbes p, Activity activity) {
-        Probe required = null;
-        String requirement = null;
-        if (tour.step != 9 && tour.step != 10 && !"MainActivity".equals(activityName(activity))) {
-            return "step requires MainActivity but current Activity is " + activityName(activity);
-        }
-        switch (tour.step) {
-            case 1: required = p.centerGps; requirement = "Center GPS main control"; break;
-            case 2: required = p.saveGps; requirement = "Save GPS main control"; break;
-            case 3: required = p.savedLocations; requirement = "Saved Locations main control"; break;
-            case 4: required = p.trips; requirement = "Trips main control"; break;
-            case 5: required = p.offlineData; requirement = "Offline Data main control"; break;
-            case 6: required = p.layers; requirement = "Layers main control"; break;
-            case 7: required = p.find; requirement = "Find main control"; break;
-            case 8: required = p.researchMain; requirement = "Research main control"; break;
-            case 9:
-            case 10:
-                return null;
-            case 11:
-                if (!p.researchCollapse.ready()) return "Research workspace is not expanded for Mineral Evidence";
-                required = p.mineralTab; requirement = "Mineral Evidence Research tab"; break;
-            case 12:
-                if (!p.researchCollapse.ready()) return "Research workspace is not expanded for Choose Mineral";
-                if (!p.showEvidence.ready() && !p.mineralChoice.ready()) {
-                    return "Choose Mineral has neither a selectable mineral row nor Show Evidence on Map";
-                }
-                return null;
-            case 13:
-                if (research.mineralLabel.isEmpty()) return "Layers Reveal has no persisted selected mineral label";
-                required = p.layers; requirement = "Layers main control"; break;
-            case 14:
-                if (!p.researchCollapse.ready()) return "Research workspace is not expanded for Historic Mines";
-                required = p.historicTab; requirement = "Historic Mines Research tab"; break;
-            case 15: required = p.researchCollapse; requirement = "Research collapse control"; break;
-            case 16: required = p.researchExpand; requirement = "collapsed Research expand control"; break;
-            case 17:
-                if (p.mappedCollapsed.ready()) return "Mapped Research controls are collapsed during Context Controls";
-                if (!p.mappedDrag.ready() && !p.mappedCollapse.ready()) {
-                    return "Mapped Research controls are not visible for Context Controls";
-                }
-                return null;
-            case 18: required = p.mappedCollapse; requirement = "mapped Research collapse control"; break;
-            case 19: required = p.mappedCollapsed; requirement = "collapsed mapped Research control"; break;
-            case 20: required = p.helpTours; requirement = "Help & Tours control"; break;
-            default: return "unknown guided-tour step " + tour.step;
-        }
-        if (required == null || !required.ready()) {
-            return requirement + " is not ready: " + (required == null ? "missing probe" : required.detail);
-        }
-        return null;
-    }
-
-    private static String fieldInvariantViolation(FieldTourStateSnapshot field,
-                                                  FieldExpectation expectation,
-                                                  CoachSnapshot coach,
-                                                  Activity activity) {
-        long age = SystemClock.elapsedRealtime() - fieldStepSinceMs;
-
-        String coachProblem = coachViolation("field " + field.tool, field.step, coach, fieldStepSinceMs);
-        if (coachProblem != null) return coachProblem;
-
-        if (expectation.expectedDialog && age >= FIELD_TARGET_GRACE_MS) {
-            if (!coach.present || !"dialog".equals(coach.hostKind)) {
-                return "step expects dialog-hosted coach but coach host is " + coach.hostKind;
-            }
-        }
-
-        if (expectation.targetTag != null && age >= FIELD_TARGET_GRACE_MS
-                && !expectation.target.ready()) {
-            return "expected target " + expectation.targetTag
-                    + " is not ready: " + expectation.target.detail;
-        }
-
-        if (expectation.requiresMapPhase && age >= FIELD_TARGET_GRACE_MS
-                && !"map".equals(field.phase)) {
-            return "map-placement step is not armed; phase=" + clean(field.phase, 60);
-        }
-
-        return null;
-    }
-
-    private static void handleMainInvariant(String violation, TourState tour, ResearchState research,
-                                            MainProbes probes, CoachSnapshot coach, Activity activity) {
-        if (violation == null || violation.isEmpty()) {
-            if (!activeMainFailure.isEmpty()) {
-                recordImportant("INVARIANT_RECOVERED",
-                        "domain=main previous=" + activeMainFailure
-                                + " step=" + tour.step + " activity=" + activityName(activity));
-            }
-            activeMainFailure = "";
-            consecutiveMainFailures = 0;
-            return;
-        }
-        if (SystemClock.elapsedRealtime() - mainStepSinceMs < MAIN_INVARIANT_GRACE_MS) return;
-        consecutiveMainFailures++;
-        if (violation.equals(activeMainFailure) || consecutiveMainFailures < 2) return;
-        activeMainFailure = violation;
-        recordImportant("INVARIANT_FAIL",
-                "domain=main step=" + tour.step + "(" + stepName(tour.step) + ")"
-                        + " display=" + tour.displayStep + " topic=" + tour.topic
-                        + " activity=" + activityName(activity)
-                        + " reason=" + violation
-                        + " research=" + research.compact()
-                        + " coach=" + coach.full()
-                        + " probes=" + probes.full());
-    }
-
-    private static void handleFieldInvariant(String violation, FieldTourStateSnapshot field,
-                                             FieldExpectation expectation, CoachSnapshot coach,
-                                             Activity activity) {
-        if (violation == null || violation.isEmpty()) {
-            if (!activeFieldFailure.isEmpty()) {
-                recordImportant("FIELD_INVARIANT_RECOVERED",
-                        "previous=" + activeFieldFailure
-                                + " tool=" + field.tool + " step=" + field.step
-                                + " phase=" + field.phase + " activity=" + activityName(activity));
-            }
-            activeFieldFailure = "";
-            consecutiveFieldFailures = 0;
-            return;
-        }
-        if (SystemClock.elapsedRealtime() - fieldStepSinceMs < FIELD_TARGET_GRACE_MS) return;
-        consecutiveFieldFailures++;
-        if (violation.equals(activeFieldFailure) || consecutiveFieldFailures < 2) return;
-        activeFieldFailure = violation;
-        recordImportant("FIELD_INVARIANT_FAIL",
-                "tool=" + field.tool + " step=" + field.step + "/" + field.total()
-                        + " phase=" + clean(field.phase, 80)
-                        + " activity=" + activityName(activity)
-                        + " reason=" + violation
-                        + " expectation=" + expectation.full()
-                        + " coach=" + coach.full());
     }
 
     private static boolean isTourKey(String key) {
@@ -611,34 +527,337 @@ public final class TourAuditV2 {
         return activity == null ? "null" : activity.getClass().getSimpleName();
     }
 
-    private static String stepName(int step) {
-        switch (step) {
-            case 1: return "CENTER_GPS";
-            case 2: return "SAVE_GPS";
-            case 3: return "SAVED_LOCATIONS";
-            case 4: return "TRIPS";
-            case 5: return "OFFLINE_DATA";
-            case 6: return "LAYERS_BASICS";
-            case 7: return "FIND_MOUNT_ANTERO";
-            case 8: return "OPEN_RESEARCH";
-            case 9: return "COMBINED_ANALYSIS";
-            case 10: return "SHOW_GEOLOGY";
-            case 11: return "MINERAL_EVIDENCE";
-            case 12: return "CHOOSE_MINERAL";
-            case 13: return "LAYERS_REVEAL";
-            case 14: return "HISTORIC_MINES";
-            case 15: return "WORKSPACE_COLLAPSE";
-            case 16: return "WORKSPACE_REOPEN";
-            case 17: return "CONTEXT_CONTROLS";
-            case 18: return "CONTEXT_COLLAPSE";
-            case 19: return "CONTEXT_REOPEN";
-            case 20: return "COMPLETE";
-            default: return "STEP_" + step;
+    private static final class MainState {
+        final boolean active;
+        final String state;
+        final String topic;
+        final int step;
+        final int start;
+        final int end;
+        final int displayStep;
+        final int displayTotal;
+
+        MainState(String state, String topic, int step, int start, int end) {
+            this.state = state;
+            this.active = "in_progress".equals(state);
+            this.topic = topic;
+            this.step = step;
+            this.start = start;
+            this.end = end;
+            this.displayStep = step == 20 ? Math.max(1, end - start + 2)
+                    : Math.max(1, step - start + 1);
+            this.displayTotal = Math.max(2, end - start + 2);
+        }
+
+        static MainState read() {
+            String state = prefString(tourPrefs, "tour_state", "not_offered");
+            String topic = prefString(tourPrefs, "tour_topic", "full");
+            int step = Math.max(1, tourPrefs.getInt("tour_step", 1));
+            int start = Math.max(1, tourPrefs.getInt("tour_start_step", 1));
+            int end = Math.max(start, tourPrefs.getInt("tour_end_step", 19));
+            return new MainState(state, topic, step, start, end);
+        }
+
+        String key() {
+            return state + "/" + topic + "/" + step + "/" + start + "/" + end;
+        }
+
+        String compact() {
+            return active ? topic + ":step=" + step + ":display=" + displayStep + "/" + displayTotal
+                    : state + ":step=" + step;
         }
     }
 
-    private static void record(String type, String detail) { enqueue(type, detail, false); }
-    private static void recordImportant(String type, String detail) { enqueue(type, detail, true); }
+    private static final class FieldState {
+        final boolean active;
+        final String tool;
+        final int step;
+        final String phase;
+        final long entityId;
+        final long auxId;
+        final boolean navPractice;
+
+        FieldState(boolean active, String tool, int step, String phase,
+                   long entityId, long auxId, boolean navPractice) {
+            this.active = active;
+            this.tool = tool;
+            this.step = step;
+            this.phase = phase;
+            this.entityId = entityId;
+            this.auxId = auxId;
+            this.navPractice = navPractice;
+        }
+
+        static FieldState read() {
+            return new FieldState(
+                    fieldTourPrefs.getBoolean("active", false),
+                    prefString(fieldTourPrefs, "tool", ""),
+                    fieldTourPrefs.getInt("step", 0),
+                    prefString(fieldTourPrefs, "text", ""),
+                    fieldTourPrefs.getLong("entity_id", -1L),
+                    fieldTourPrefs.getLong("aux_id", -1L),
+                    fieldRuntimePrefs.getBoolean("nav_practice", false));
+        }
+
+        String key() {
+            return active + "/" + tool + "/" + step + "/" + phase + "/" + entityId + "/" + auxId;
+        }
+
+        String compact() {
+            return active ? clean(tool, 35) + ":step=" + step + ":phase=" + clean(phase, 35)
+                    + ":entity=" + entityId + ":aux=" + auxId + ":navPractice=" + navPractice
+                    : "inactive";
+        }
+    }
+
+    private static final class CoachRuntime {
+        final boolean present;
+        final int step;
+        final int total;
+        final String hostKind;
+        final String owner;
+        final String cardText;
+        final int coachIdentity;
+        final View target;
+        final boolean targetReady;
+        final long requestSequence;
+        final long activityRequestToken;
+        final String detail;
+
+        CoachRuntime(boolean present, int step, int total, String hostKind, String owner,
+                     String cardText, int coachIdentity, View target, boolean targetReady,
+                     long requestSequence, long activityRequestToken, String detail) {
+            this.present = present;
+            this.step = step;
+            this.total = total;
+            this.hostKind = hostKind;
+            this.owner = owner;
+            this.cardText = cardText;
+            this.coachIdentity = coachIdentity;
+            this.target = target;
+            this.targetReady = targetReady;
+            this.requestSequence = requestSequence;
+            this.activityRequestToken = activityRequestToken;
+            this.detail = detail;
+        }
+
+        static CoachRuntime read(Activity currentActivity) {
+            if (!reflectionReady) {
+                if (!reflectionFailureReported) {
+                    reflectionFailureReported = true;
+                    recordImportant("AUDIT_REFLECTION_ERROR", "GuidedTourCoach reflection is unavailable");
+                }
+                return new CoachRuntime(false, 0, 0, "reflection_error", "", "", 0,
+                        null, false, -1L, -1L, "reflection unavailable");
+            }
+            try {
+                ViewGroup root = dereferenceViewGroup(coachRootField.get(null));
+                Activity owner = dereferenceActivity(coachOwnerField.get(null));
+                View target = dereferenceView(highlightedViewField.get(null));
+                long requestSequence = requestSequenceField.getLong(null);
+                long activityToken = requestTokenForActivity(requestGenerationsField.get(null), currentActivity);
+                View coach = root == null ? null : root.findViewWithTag(COACH_TAG);
+                boolean present = coach != null && coach.isAttachedToWindow();
+                int[] progress = present ? parseCoachProgress(coach) : new int[]{0, 0};
+                String text = present ? summarizeCoachText(coach) : "";
+                String host = root == null ? "none" : hostKind(root);
+                String ownerName = activityName(owner);
+                String detail = present ? describe(coach) : "coach not present in active root";
+                int coachIdentity = coach == null ? 0 : System.identityHashCode(coach);
+                return new CoachRuntime(present, progress[0], progress[1], host, ownerName,
+                        text, coachIdentity, target, ready(target), requestSequence, activityToken, detail);
+            } catch (Throwable ex) {
+                return new CoachRuntime(false, 0, 0, "reflection_error", "", "", 0,
+                        null, false, -1L, -1L,
+                        clean(ex.getClass().getSimpleName() + ": " + ex.getMessage(), 300));
+            }
+        }
+
+        String signature() {
+            if (!present) return "missing";
+            return step + "/" + total + "/" + hostKind + "/" + owner + "/"
+                    + Integer.toHexString(coachIdentity) + "/"
+                    + Integer.toHexString(cardText.hashCode()) + "/"
+                    + (target == null ? "none" : Integer.toHexString(System.identityHashCode(target)));
+        }
+
+        String targetSignature() {
+            if (target == null) return "";
+            return Integer.toHexString(System.identityHashCode(target)) + "/" + targetReady + "/"
+                    + target.getVisibility() + "/" + target.isShown() + "/"
+                    + String.format(Locale.US, "%.2f", effectiveAlpha(target));
+        }
+
+        String targetDetail() {
+            return target == null ? "none" : describe(target);
+        }
+
+        String compact() {
+            return (present ? "VISIBLE" : "missing")
+                    + "[step=" + step + "/" + total
+                    + ",host=" + hostKind
+                    + ",owner=" + owner
+                    + ",requestSeq=" + requestSequence
+                    + ",activityToken=" + activityRequestToken
+                    + ",target=" + (target == null ? "none" : (targetReady ? "READY" : "NOT_READY")) + "]";
+        }
+
+        String full() {
+            return compact() + " text={" + clean(cardText, 900) + "}"
+                    + " card={" + detail + "}"
+                    + " target={" + targetDetail() + "}";
+        }
+    }
+
+    private static ViewGroup dereferenceViewGroup(Object ref) {
+        if (!(ref instanceof WeakReference)) return null;
+        Object value = ((WeakReference<?>) ref).get();
+        return value instanceof ViewGroup ? (ViewGroup) value : null;
+    }
+
+    private static Activity dereferenceActivity(Object ref) {
+        if (!(ref instanceof WeakReference)) return null;
+        Object value = ((WeakReference<?>) ref).get();
+        return value instanceof Activity ? (Activity) value : null;
+    }
+
+    private static View dereferenceView(Object ref) {
+        if (!(ref instanceof WeakReference)) return null;
+        Object value = ((WeakReference<?>) ref).get();
+        return value instanceof View ? (View) value : null;
+    }
+
+    private static long requestTokenForActivity(Object rawMap, Activity activity) {
+        if (!(rawMap instanceof Map) || activity == null) return -1L;
+        try {
+            Object value = ((Map<?, ?>) rawMap).get(activity);
+            return value instanceof Number ? ((Number) value).longValue() : -1L;
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
+    private static String hostKind(ViewGroup root) {
+        if (root == null) return "none";
+        String name = root.getClass().getSimpleName();
+        return name != null && name.contains("DialogCoachHost") ? "dialog" : "activity";
+    }
+
+    private static int[] parseCoachProgress(View root) {
+        if (root == null) return new int[]{0, 0};
+        if (root instanceof TextView) {
+            CharSequence raw = ((TextView) root).getText();
+            String text = raw == null ? "" : raw.toString().trim();
+            String prefix = "GUIDED TOUR · ";
+            if (text.startsWith(prefix)) {
+                int of = text.indexOf(" OF ", prefix.length());
+                if (of > prefix.length()) {
+                    try {
+                        int step = Integer.parseInt(text.substring(prefix.length(), of).trim());
+                        int total = Integer.parseInt(text.substring(of + 4).trim());
+                        return new int[]{step, total};
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+            if (text.matches("\\d+/\\d+")) {
+                int slash = text.indexOf('/');
+                try {
+                    return new int[]{Integer.parseInt(text.substring(0, slash)),
+                            Integer.parseInt(text.substring(slash + 1))};
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                int[] parsed = parseCoachProgress(group.getChildAt(i));
+                if (parsed[0] > 0) return parsed;
+            }
+        }
+        return new int[]{0, 0};
+    }
+
+    private static String summarizeCoachText(View root) {
+        StringBuilder out = new StringBuilder();
+        appendCoachText(root, out, 0);
+        return clean(out.toString(), 1200);
+    }
+
+    private static void appendCoachText(View view, StringBuilder out, int depth) {
+        if (view == null || out.length() >= 1200 || depth > 30) return;
+        if (view instanceof TextView) {
+            CharSequence raw = ((TextView) view).getText();
+            String text = raw == null ? "" : clean(raw.toString(), 240);
+            if (!text.isEmpty()) {
+                if (out.length() > 0) out.append(" | ");
+                out.append(text);
+            }
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount() && out.length() < 1200; i++) {
+                appendCoachText(group.getChildAt(i), out, depth + 1);
+            }
+        }
+    }
+
+    private static boolean ready(View view) {
+        if (view == null || !view.isAttachedToWindow() || !view.isShown() || !view.isEnabled()) return false;
+        if (effectiveAlpha(view) <= 0.10f || view.getWidth() <= 0 || view.getHeight() <= 0) return false;
+        Rect rect = new Rect();
+        return view.getGlobalVisibleRect(rect) && rect.width() > 0 && rect.height() > 0;
+    }
+
+    private static float effectiveAlpha(View view) {
+        float alpha = 1f;
+        View current = view;
+        int guard = 0;
+        while (current != null && guard++ < 40) {
+            alpha *= current.getAlpha();
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return alpha;
+    }
+
+    private static String describe(View view) {
+        if (view == null) return "none";
+        Rect rect = new Rect();
+        boolean global = view.getGlobalVisibleRect(rect);
+        String text = view instanceof TextView && ((TextView) view).getText() != null
+                ? clean(((TextView) view).getText().toString(), 140) : "";
+        CharSequence rawDesc = view.getContentDescription();
+        String desc = rawDesc == null ? "" : clean(rawDesc.toString(), 180);
+        Object tag = view.getTag();
+        return "class=" + view.getClass().getSimpleName()
+                + ",obj=" + Integer.toHexString(System.identityHashCode(view))
+                + ",text=" + text
+                + ",desc=" + desc
+                + ",tag=" + clean(String.valueOf(tag), 120)
+                + ",vis=" + visibilityName(view.getVisibility())
+                + ",shown=" + view.isShown()
+                + ",enabled=" + view.isEnabled()
+                + ",alpha=" + String.format(Locale.US, "%.2f", effectiveAlpha(view))
+                + ",attached=" + view.isAttachedToWindow()
+                + ",size=" + view.getWidth() + "x" + view.getHeight()
+                + ",global=" + global
+                + ",rect=" + rect.left + "," + rect.top + "-" + rect.right + "," + rect.bottom;
+    }
+
+    private static String visibilityName(int visibility) {
+        if (visibility == View.VISIBLE) return "VISIBLE";
+        if (visibility == View.INVISIBLE) return "INVISIBLE";
+        if (visibility == View.GONE) return "GONE";
+        return String.valueOf(visibility);
+    }
+
+    private static void record(String type, String detail) {
+        enqueue(type, detail, false);
+    }
+
+    private static void recordImportant(String type, String detail) {
+        enqueue(type, detail, true);
+    }
 
     private static void enqueue(String type, String detail, boolean forceMirror) {
         if (app == null || internalLog == null) return;
@@ -648,7 +867,7 @@ public final class TourAuditV2 {
         String stamp = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
                 .format(new Date(wall));
         String line = stamp + " | +" + elapsed + "ms | #" + seq + " | "
-                + clean(type, 60) + " | " + clean(detail, 7000) + "\n";
+                + clean(type, 80) + " | " + clean(detail, 9000) + "\n";
         IO.execute(() -> appendLine(line, forceMirror));
     }
 
@@ -692,8 +911,7 @@ public final class TourAuditV2 {
         while (start < all.length && all[start] != '\n') start++;
         if (start < all.length) start++;
         try (FileOutputStream output = new FileOutputStream(internalLog, false)) {
-            output.write("[older Tour Audit entries trimmed]\n"
-                    .getBytes(StandardCharsets.UTF_8));
+            output.write("[older Tour Audit entries trimmed]\n".getBytes(StandardCharsets.UTF_8));
             output.write(all, Math.min(start, all.length),
                     all.length - Math.min(start, all.length));
         }
@@ -710,8 +928,7 @@ public final class TourAuditV2 {
     }
 
     private static void mirrorToDownloads() {
-        if (app == null || internalLog == null
-                || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        if (app == null || internalLog == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
         try {
             byte[] bytes;
             synchronized (FILE_LOCK) {
@@ -765,658 +982,5 @@ public final class TourAuditV2 {
         String compact = value.replace('\n', ' ').replace('\r', ' ')
                 .replaceAll("\\s+", " ").trim();
         return compact.length() <= max ? compact : compact.substring(0, max) + "…";
-    }
-
-    private static final class TourState {
-        final String state;
-        final String topic;
-        final int step;
-        final int start;
-        final int end;
-        final int displayStep;
-        final int displayTotal;
-
-        TourState(String state, String topic, int step, int start, int end) {
-            this.state = state;
-            this.topic = topic;
-            this.step = step;
-            this.start = start;
-            this.end = end;
-            this.displayStep = step == 20
-                    ? Math.max(1, end - start + 2) : Math.max(1, step - start + 1);
-            this.displayTotal = Math.max(2, end - start + 2);
-        }
-
-        static TourState read() {
-            String state = prefString(tourPrefs, "tour_state", "not_offered");
-            String topic = prefString(tourPrefs, "tour_topic", "full");
-            int step = Math.max(1, tourPrefs.getInt("tour_step", 1));
-            int start = Math.max(1, tourPrefs.getInt("tour_start_step", 1));
-            int end = Math.max(start, tourPrefs.getInt("tour_end_step", 19));
-            return new TourState(state, topic, step, start, end);
-        }
-
-        String compact() {
-            return state + "/" + topic + "/" + step + "(" + stepName(step) + ") display="
-                    + displayStep + "/" + displayTotal;
-        }
-    }
-
-    private static final class ResearchState {
-        final boolean active;
-        final String view;
-        final String panel;
-        final boolean geologyVisible;
-        final boolean mineralVisible;
-        final boolean minesVisible;
-        final String mineralKey;
-        final String mineralLabel;
-        final int geologyCount;
-
-        ResearchState(boolean active, String view, String panel, boolean geologyVisible,
-                      boolean mineralVisible, boolean minesVisible, String mineralKey,
-                      String mineralLabel, int geologyCount) {
-            this.active = active;
-            this.view = view;
-            this.panel = panel;
-            this.geologyVisible = geologyVisible;
-            this.mineralVisible = mineralVisible;
-            this.minesVisible = minesVisible;
-            this.mineralKey = mineralKey;
-            this.mineralLabel = mineralLabel;
-            this.geologyCount = geologyCount;
-        }
-
-        static ResearchState read() {
-            return new ResearchState(
-                    researchPrefs.getBoolean("active", false),
-                    prefString(researchPrefs, "view", ""),
-                    prefString(researchPrefs, "panel", ""),
-                    researchPrefs.getBoolean("geology_visible", false),
-                    researchPrefs.getBoolean("mineral_visible", false),
-                    researchPrefs.getBoolean("mines_visible", false),
-                    prefString(researchPrefs, "mineral_key", ""),
-                    prefString(researchPrefs, "mineral_label", ""),
-                    researchPrefs.getInt("geology_count", 0));
-        }
-
-        String compact() {
-            return "active=" + active + ",view=" + view + ",panel=" + panel
-                    + ",geo=" + geologyVisible + ",min=" + mineralVisible
-                    + ",mines=" + minesVisible + ",mineral=" + clean(mineralLabel, 60)
-                    + ",key=" + clean(mineralKey, 40) + ",geologyCount=" + geologyCount;
-        }
-    }
-
-    private static final class FieldTourStateSnapshot {
-        final boolean active;
-        final String tool;
-        final int step;
-        final String phase;
-        final long entityId;
-        final long auxId;
-        final boolean navigationPractice;
-
-        FieldTourStateSnapshot(boolean active, String tool, int step, String phase,
-                               long entityId, long auxId, boolean navigationPractice) {
-            this.active = active;
-            this.tool = tool;
-            this.step = step;
-            this.phase = phase;
-            this.entityId = entityId;
-            this.auxId = auxId;
-            this.navigationPractice = navigationPractice;
-        }
-
-        static FieldTourStateSnapshot read() {
-            return new FieldTourStateSnapshot(
-                    fieldTourPrefs.getBoolean("active", false),
-                    prefString(fieldTourPrefs, "tool", ""),
-                    fieldTourPrefs.getInt("step", 0),
-                    prefString(fieldTourPrefs, "text", ""),
-                    fieldTourPrefs.getLong("entity_id", -1L),
-                    fieldTourPrefs.getLong("aux_id", -1L),
-                    fieldRuntimePrefs.getBoolean("nav_practice", false));
-        }
-
-        int total() {
-            if ("Tracks".equals(tool)) return 17;
-            if ("Navigate".equals(tool)) return 9;
-            if ("Measure".equals(tool)) return 17;
-            if ("Field Records".equals(tool)) return 15;
-            if ("Prospecting Areas".equals(tool)) return 19;
-            if ("Import Files".equals(tool)) return 3;
-            if ("Manage Imports".equals(tool)) return 8;
-            if ("Export Data".equals(tool)) return 3;
-            if ("Coordinates".equals(tool)) return 5;
-            return 2;
-        }
-
-        String compact() {
-            return "active=" + active + ",tool=" + clean(tool, 40) + ",step=" + step
-                    + "/" + total() + ",phase=" + clean(phase, 40)
-                    + ",entity=" + entityId + ",aux=" + auxId
-                    + ",navPractice=" + navigationPractice;
-        }
-    }
-
-    private static final class Probe {
-        final String key;
-        View view;
-        String detail = "missing";
-
-        Probe(String key) { this.key = key; }
-
-        void set(View candidate) {
-            view = candidate;
-            detail = candidate == null ? "missing" : describe(candidate);
-        }
-
-        boolean ready() { return view != null && TourAuditV2.ready(view); }
-
-        String compact() {
-            if (view == null) return key + "=missing";
-            return key + "=" + (ready() ? "READY" : "NOT_READY")
-                    + "[obj=" + Integer.toHexString(System.identityHashCode(view))
-                    + ",vis=" + visibilityName(view.getVisibility())
-                    + ",shown=" + view.isShown()
-                    + ",enabled=" + view.isEnabled()
-                    + ",alpha=" + String.format(Locale.US, "%.2f", effectiveAlpha(view)) + "]";
-        }
-    }
-
-    private static final class MainProbes {
-        final Probe centerGps = new Probe("centerGps");
-        final Probe saveGps = new Probe("saveGps");
-        final Probe savedLocations = new Probe("savedLocations");
-        final Probe trips = new Probe("trips");
-        final Probe offlineData = new Probe("offlineData");
-        final Probe layers = new Probe("layers");
-        final Probe find = new Probe("find");
-        final Probe researchMain = new Probe("researchMain");
-        final Probe helpTours = new Probe("helpTours");
-        final Probe researchCollapse = new Probe("researchCollapse");
-        final Probe researchExpand = new Probe("researchExpand");
-        final Probe mineralTab = new Probe("mineralTab");
-        final Probe historicTab = new Probe("historicTab");
-        final Probe mineralChoice = new Probe("mineralChoice");
-        final Probe showEvidence = new Probe("showEvidence");
-        final Probe mappedDrag = new Probe("mappedDrag");
-        final Probe mappedCollapse = new Probe("mappedCollapse");
-        final Probe mappedCollapsed = new Probe("mappedCollapsed");
-
-        static MainProbes scan(View root) {
-            MainProbes p = new MainProbes();
-            p.centerGps.set(findByTag(root, "rockmap-main-gps"));
-            p.saveGps.set(findByTag(root, "rockmap-main-save-gps"));
-            p.savedLocations.set(findByTag(root, "rockmap-main-markers"));
-            p.trips.set(findByTag(root, "rockmap-main-trips"));
-            p.offlineData.set(findByTag(root, "rockmap-main-data"));
-            p.layers.set(findByTag(root, "rockmap-main-layers"));
-            p.find.set(findByTag(root, "rockmap-main-find"));
-            p.researchMain.set(findByTag(root, "rockmap-main-minerals"));
-            p.helpTours.set(findByTag(root, "rockmap-help-tours"));
-            p.researchCollapse.set(findByContentDescription(root, "Collapse Research workspace", false));
-            p.researchExpand.set(findByContentDescription(root, "Expand Research workspace", false));
-            p.mappedCollapse.set(findByContentDescription(root, "Collapse mapped research controls", false));
-            p.mappedCollapsed.set(findByContentDescription(root, "Open mapped research controls", true));
-            p.mappedDrag.set(findByContentDescription(root, "Drag mapped research controls", true));
-            p.mineralTab.set(findByButtonText(root, "Mineral Evidence"));
-            p.historicTab.set(findByButtonText(root, "Historic Mines"));
-            p.showEvidence.set(findByText(root, "Show Evidence on Map", false));
-            p.mineralChoice.set(findMineralChoice(root));
-            return p;
-        }
-
-        Probe targetForMainStep(int step) {
-            switch (step) {
-                case 1: return centerGps;
-                case 2: return saveGps;
-                case 3: return savedLocations;
-                case 4: return trips;
-                case 5: return offlineData;
-                case 6:
-                case 13: return layers;
-                case 7: return find;
-                case 8: return researchMain;
-                case 11: return mineralTab;
-                case 12: return showEvidence.ready() ? showEvidence : mineralChoice;
-                case 14: return historicTab;
-                case 15: return researchCollapse;
-                case 16: return researchExpand;
-                case 17: return mappedDrag.ready() ? mappedDrag : mappedCollapse;
-                case 18: return mappedCollapse;
-                case 19: return mappedCollapsed;
-                case 20: return helpTours;
-                default: return null;
-            }
-        }
-
-        String signature() {
-            return centerGps.compact() + ',' + saveGps.compact() + ',' + savedLocations.compact()
-                    + ',' + trips.compact() + ',' + offlineData.compact() + ',' + layers.compact()
-                    + ',' + find.compact() + ',' + researchMain.compact() + ',' + helpTours.compact()
-                    + ',' + researchCollapse.compact() + ',' + researchExpand.compact()
-                    + ',' + mineralTab.compact() + ',' + historicTab.compact()
-                    + ',' + mineralChoice.compact() + ',' + showEvidence.compact()
-                    + ',' + mappedDrag.compact() + ',' + mappedCollapse.compact()
-                    + ',' + mappedCollapsed.compact();
-        }
-
-        String full() {
-            return signature()
-                    + " | researchCollapse{" + researchCollapse.detail + "}"
-                    + " researchExpand{" + researchExpand.detail + "}"
-                    + " mineralTab{" + mineralTab.detail + "}"
-                    + " historicTab{" + historicTab.detail + "}"
-                    + " mineralChoice{" + mineralChoice.detail + "}"
-                    + " showEvidence{" + showEvidence.detail + "}"
-                    + " layers{" + layers.detail + "}"
-                    + " mappedDrag{" + mappedDrag.detail + "}"
-                    + " mappedCollapse{" + mappedCollapse.detail + "}"
-                    + " mappedCollapsed{" + mappedCollapsed.detail + "}";
-        }
-    }
-
-    private static final class FieldExpectation {
-        final String targetTag;
-        final Probe target;
-        final boolean expectedDialog;
-        final boolean requiresMapPhase;
-        final String note;
-
-        FieldExpectation(String targetTag, View target, boolean expectedDialog,
-                         boolean requiresMapPhase, String note) {
-            this.targetTag = targetTag;
-            this.target = new Probe("fieldTarget");
-            this.target.set(target);
-            this.expectedDialog = expectedDialog;
-            this.requiresMapPhase = requiresMapPhase;
-            this.note = note == null ? "" : note;
-        }
-
-        static FieldExpectation none() {
-            return new FieldExpectation(null, null, false, false, "none");
-        }
-
-        static FieldExpectation forState(FieldTourStateSnapshot f, Activity activity, View root) {
-            String tag = null;
-            boolean dialog = false;
-            boolean mapPhase = false;
-            String note = "coach-sync-only";
-
-            if ("Tracks".equals(f.tool)) {
-                switch (f.step) {
-                    case 5: tag = "rockmap-track-status"; break;
-                    case 6: tag = "rockmap-track-pause"; break;
-                    case 7: tag = "rockmap-track-resume"; break;
-                    case 8: tag = "rockmap-hud-drag:Track"; break;
-                    case 9: tag = "rockmap-track-list"; break;
-                    case 11: tag = "rockmap-track-stop"; break;
-                    case 13: tag = "rockmap-track-backtrack"; break;
-                    case 14: tag = "rockmap-track-hide"; break;
-                    case 15: tag = "rockmap-track-delete"; break;
-                    case 16: tag = "rockmap-track-all"; break;
-                    case 17: tag = "rockmap-track-close-view"; break;
-                    default: note = "cross-screen/dialog step; coach-sync invariant only"; break;
-                }
-            } else if ("Navigate".equals(f.tool)) {
-                switch (f.step) {
-                    case 5:
-                    case 6: tag = "rockmap-nav-status"; break;
-                    case 7: tag = "rockmap-nav-frame"; break;
-                    case 8: tag = "rockmap-nav-target"; break;
-                    case 9: tag = "rockmap-nav-stop"; break;
-                    default: note = "setup/dialog step; coach-sync invariant only"; break;
-                }
-            } else if ("Measure".equals(f.tool)) {
-                switch (f.step) {
-                    case 1:
-                        dialog = true;
-                        note = "Field menu dialog";
-                        break;
-                    case 2: tag = "rockmap-measure-tap-map"; break;
-                    case 3: tag = "rockmap-measure-cancel-tap"; break;
-                    case 4: tag = "rockmap-measure-tap-map"; break;
-                    case 5:
-                        mapPhase = true;
-                        note = "live map tap";
-                        break;
-                    case 6: tag = "rockmap-measure-drag-note"; break;
-                    case 7: tag = "rockmap-measure-undo"; break;
-                    case 8:
-                        tag = "undo".equals(f.phase)
-                                ? "rockmap-measure-undo" : "rockmap-measure-add-gps";
-                        break;
-                    case 9: tag = "rockmap-measure-saved"; break;
-                    case 10: tag = "rockmap-measure-field"; break;
-                    case 11:
-                    case 12:
-                    case 13:
-                        if ("map".equals(f.phase)) {
-                            mapPhase = true;
-                            note = "live polygon map tap";
-                        } else {
-                            tag = "rockmap-measure-tap-map";
-                        }
-                        break;
-                    case 14: tag = "rockmap-measure-summary"; break;
-                    case 15: tag = "rockmap-measure-done"; break;
-                    case 16: tag = "rockmap-measure-save-area"; break;
-                    case 17:
-                        dialog = true;
-                        note = "Save measured area dialog";
-                        break;
-                    default: note = "unknown Measure step"; break;
-                }
-            } else if ("Prospecting Areas".equals(f.tool)) {
-                switch (f.step) {
-                    case 1:
-                        dialog = true;
-                        note = "Field menu dialog";
-                        break;
-                    case 3: tag = "rockmap-measure-header"; break;
-                    case 4: tag = "rockmap-measure-add-gps"; break;
-                    case 5: tag = "rockmap-measure-saved"; break;
-                    case 6: tag = "rockmap-measure-field"; break;
-                    case 7: tag = "rockmap-measure-paste"; break;
-                    case 8: tag = "rockmap-measure-undo"; break;
-                    case 9: tag = "rockmap-measure-done"; break;
-                    case 10:
-                    case 11:
-                    case 12:
-                        if ("map".equals(f.phase)) {
-                            mapPhase = true;
-                            note = "live boundary map tap";
-                        } else {
-                            tag = "rockmap-measure-tap-map";
-                        }
-                        break;
-                    case 13: tag = "rockmap-measure-drag-note"; break;
-                    case 14: tag = "rockmap-measure-save-area"; break;
-                    case 15:
-                        dialog = true;
-                        note = "Save Prospecting Area dialog";
-                        break;
-                    default:
-                        note = "saved-area/Research handoff step; coach-sync invariant only";
-                        break;
-                }
-            } else {
-                note = "tool has generic coach-sync invariant; no map-target contract in audit v2";
-                if (f.step == 1) dialog = true;
-            }
-
-            View target = tag == null ? null : findByTag(root, tag);
-            return new FieldExpectation(tag, target, dialog, mapPhase, note);
-        }
-
-        String compact() {
-            return "tag=" + (targetTag == null ? "-" : targetTag)
-                    + ",target=" + target.compact()
-                    + ",dialog=" + expectedDialog
-                    + ",mapPhase=" + requiresMapPhase
-                    + ",note=" + clean(note, 80);
-        }
-
-        String full() {
-            return compact() + " targetDetail={" + target.detail + "}";
-        }
-    }
-
-    private static final class CoachSnapshot {
-        final boolean present;
-        final int step;
-        final String hostKind;
-        final String owner;
-        final String title;
-        final String detail;
-
-        CoachSnapshot(boolean present, int step, String hostKind,
-                      String owner, String title, String detail) {
-            this.present = present;
-            this.step = step;
-            this.hostKind = hostKind;
-            this.owner = owner;
-            this.title = title;
-            this.detail = detail;
-        }
-
-        static CoachSnapshot read() {
-            try {
-                Field rootField = GuidedTourCoach.class.getDeclaredField("activeCoachRoot");
-                Field ownerField = GuidedTourCoach.class.getDeclaredField("activeCoachOwner");
-                rootField.setAccessible(true);
-                ownerField.setAccessible(true);
-
-                Object rootRefObject = rootField.get(null);
-                Object ownerRefObject = ownerField.get(null);
-                ViewGroup root = null;
-                Activity owner = null;
-                if (rootRefObject instanceof WeakReference) {
-                    Object value = ((WeakReference<?>) rootRefObject).get();
-                    if (value instanceof ViewGroup) root = (ViewGroup) value;
-                }
-                if (ownerRefObject instanceof WeakReference) {
-                    Object value = ((WeakReference<?>) ownerRefObject).get();
-                    if (value instanceof Activity) owner = (Activity) value;
-                }
-                if (root == null) {
-                    return new CoachSnapshot(false, 0, "none",
-                            activityName(owner), "", "activeCoachRoot=null");
-                }
-                View coach = root.findViewWithTag(COACH_TAG);
-                if (coach == null) {
-                    return new CoachSnapshot(false, 0, hostKind(root),
-                            activityName(owner), "", "coach tag missing from active root");
-                }
-                int step = parseCoachStepFromTree(coach);
-                String title = findCoachTitle(coach);
-                return new CoachSnapshot(true, step, hostKind(root),
-                        activityName(owner), title, describe(coach));
-            } catch (Throwable ex) {
-                return new CoachSnapshot(false, 0, "reflection_error", "",
-                        "", clean(ex.getClass().getSimpleName() + ":" + ex.getMessage(), 160));
-            }
-        }
-
-        static String hostKind(ViewGroup root) {
-            if (root == null) return "none";
-            String name = root.getClass().getSimpleName();
-            return name != null && name.contains("DialogCoachHost") ? "dialog" : "activity";
-        }
-
-        String compact() {
-            return (present ? "READY" : "missing")
-                    + "[step=" + step + ",host=" + hostKind + ",owner=" + owner
-                    + ",title=" + clean(title, 50) + "]";
-        }
-
-        String full() {
-            return compact() + " detail={" + detail + "}";
-        }
-    }
-
-    private static View findByTag(View root, String tag) {
-        if (root == null || tag == null) return null;
-        if (tag.equals(String.valueOf(root.getTag()))) return root;
-        if (root instanceof ViewGroup) {
-            View tagged = ((ViewGroup) root).findViewWithTag(tag);
-            if (tagged != null) return tagged;
-        }
-        return null;
-    }
-
-    private static View findByContentDescription(View root, String value, boolean prefix) {
-        if (root == null || value == null) return null;
-        CharSequence raw = root.getContentDescription();
-        String desc = raw == null ? "" : raw.toString();
-        if ((prefix && desc.startsWith(value)) || (!prefix && value.equals(desc))) return root;
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findByContentDescription(group.getChildAt(i), value, prefix);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private static View findByText(View root, String value, boolean prefix) {
-        if (root == null || value == null) return null;
-        if (root instanceof TextView) {
-            CharSequence raw = ((TextView) root).getText();
-            String text = raw == null ? "" : raw.toString();
-            if ((prefix && text.startsWith(value)) || (!prefix && value.equals(text))) return root;
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findByText(group.getChildAt(i), value, prefix);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private static View findByButtonText(View root, String value) {
-        if (root == null || value == null) return null;
-        if (root instanceof android.widget.Button) {
-            CharSequence raw = ((android.widget.Button) root).getText();
-            if (raw != null && value.equals(raw.toString())) return root;
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findByButtonText(group.getChildAt(i), value);
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private static View findMineralChoice(View root) {
-        if (root == null) return null;
-        CharSequence raw = root.getContentDescription();
-        String desc = raw == null ? "" : raw.toString();
-        if ((desc.startsWith("Select ") || desc.startsWith("Selected "))
-                && desc.contains("Mineral Evidence")) return root;
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View found = findMineralChoice(group.getChildAt(i));
-                if (found != null) return found;
-            }
-        }
-        return null;
-    }
-
-    private static int parseCoachStepFromTree(View root) {
-        if (root == null) return 0;
-        if (root instanceof TextView) {
-            CharSequence raw = ((TextView) root).getText();
-            int parsed = parseCoachStep(raw == null ? "" : raw.toString());
-            if (parsed > 0) return parsed;
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                int parsed = parseCoachStepFromTree(group.getChildAt(i));
-                if (parsed > 0) return parsed;
-            }
-        }
-        return 0;
-    }
-
-    private static String findCoachTitle(View root) {
-        if (root == null) return "";
-        if (root instanceof TextView) {
-            CharSequence raw = ((TextView) root).getText();
-            String text = raw == null ? "" : raw.toString().trim();
-            if (!text.isEmpty()
-                    && !text.startsWith("GUIDED TOUR · ")
-                    && !text.matches("\\d+/\\d+")
-                    && !text.startsWith("ACTION: ")
-                    && text.length() <= 100) {
-                return text;
-            }
-        }
-        if (root instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) root;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                String title = findCoachTitle(group.getChildAt(i));
-                if (!title.isEmpty()) return title;
-            }
-        }
-        return "";
-    }
-
-    private static int parseCoachStep(String text) {
-        if (text == null) return 0;
-        String value = text.trim();
-        String prefix = "GUIDED TOUR · ";
-        if (value.startsWith(prefix)) {
-            int of = value.indexOf(" OF ", prefix.length());
-            if (of > prefix.length()) {
-                try { return Integer.parseInt(value.substring(prefix.length(), of).trim()); }
-                catch (NumberFormatException ignored) { return 0; }
-            }
-        }
-        if (value.matches("\\d+/\\d+")) {
-            try { return Integer.parseInt(value.substring(0, value.indexOf('/'))); }
-            catch (NumberFormatException ignored) { return 0; }
-        }
-        return 0;
-    }
-
-    private static boolean ready(View view) {
-        if (view == null || !view.isAttachedToWindow()
-                || !view.isShown() || !view.isEnabled()) return false;
-        if (effectiveAlpha(view) <= 0.10f
-                || view.getWidth() <= 0 || view.getHeight() <= 0) return false;
-        Rect rect = new Rect();
-        return view.getGlobalVisibleRect(rect) && rect.width() > 0 && rect.height() > 0;
-    }
-
-    private static float effectiveAlpha(View view) {
-        float alpha = 1f;
-        View current = view;
-        int guard = 0;
-        while (current != null && guard++ < 100) {
-            alpha *= current.getAlpha();
-            if (!(current.getParent() instanceof View)) break;
-            current = (View) current.getParent();
-        }
-        return alpha;
-    }
-
-    private static String describe(View view) {
-        if (view == null) return "missing";
-        Rect rect = new Rect();
-        boolean global = view.getGlobalVisibleRect(rect);
-        String text = view instanceof TextView && ((TextView) view).getText() != null
-                ? clean(((TextView) view).getText().toString(), 100) : "";
-        CharSequence rawDesc = view.getContentDescription();
-        String desc = rawDesc == null ? "" : clean(rawDesc.toString(), 140);
-        Object tag = view.getTag();
-        return "class=" + view.getClass().getSimpleName()
-                + ",text=" + text
-                + ",desc=" + desc
-                + ",tag=" + clean(String.valueOf(tag), 100)
-                + ",vis=" + visibilityName(view.getVisibility())
-                + ",shown=" + view.isShown()
-                + ",enabled=" + view.isEnabled()
-                + ",alpha=" + String.format(Locale.US, "%.2f", effectiveAlpha(view))
-                + ",attached=" + view.isAttachedToWindow()
-                + ",size=" + view.getWidth() + "x" + view.getHeight()
-                + ",global=" + global
-                + ",rect=" + rect.left + "," + rect.top + "-" + rect.right + "," + rect.bottom;
-    }
-
-    private static String visibilityName(int visibility) {
-        if (visibility == View.VISIBLE) return "VISIBLE";
-        if (visibility == View.INVISIBLE) return "INVISIBLE";
-        if (visibility == View.GONE) return "GONE";
-        return String.valueOf(visibility);
     }
 }
