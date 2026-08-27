@@ -219,26 +219,39 @@ public final class MapContextCloseController {
 
     public boolean isCollapsed() { return menuCollapsed; }
 
-    public View getDragControl() {
-        ensureViews();
-        if (map != null) refreshNow();
-        return menuDragControl;
-    }
+    /** Observational tour accessors: never build, refresh, or replace the View being inspected. */
+    public View getDragControl() { return menuDragControl; }
 
-    public View getCollapseControl() {
-        ensureViews();
-        if (map != null) refreshNow();
-        return menuCollapseControl;
-    }
+    public View getCollapseControl() { return menuCollapseControl; }
 
-    public View getCollapsedControl() {
-        ensureViews();
-        if (map != null) refreshNow();
-        return collapsedTab;
+    public View getCollapsedControl() { return collapsedTab; }
+
+    public View getExpandedContainer() { return menu; }
+
+    public View getDisplayedContainer() {
+        return menuCollapsed ? collapsedTab : menu;
     }
 
     public void collapseControls() { collapseMenu(); }
     public void expandControls() { expandMenu(); }
+
+    /** Explicit tour preparation. Unlike the accessors above, these methods intentionally render. */
+    public void prepareExpandedControls() {
+        if (!menuCollapsed && menu != null && menu.isShown()
+                && menuDragControl != null && menuCollapseControl != null) return;
+        if (menuCollapsed) {
+            menuCollapsed = false;
+            if (collapsedTab != null) collapsedTab.setVisibility(View.GONE);
+        }
+        if (map != null) refreshNow();
+        else ensureViews();
+    }
+
+    public void prepareCollapsedControls() {
+        if (menuCollapsed && collapsedTab != null && collapsedTab.isShown()) return;
+        prepareExpandedControls();
+        collapseMenu();
+    }
 
     public void clearHistoricTarget() {
         historic = null;
@@ -246,13 +259,7 @@ public final class MapContextCloseController {
     }
 
     public View getContextMenuView() {
-        ensureViews();
-        // This getter is used when the guided tour teaches mapped-context controls. Rebuild the
-        // visible control immediately so the tour never targets a stale GONE view that only
-        // reappears after an unrelated camera movement. If the user has collapsed the box, the
-        // visible side tab is the correct target rather than the hidden expanded box.
-        if (map != null) refreshNow();
-        return menuCollapsed && collapsedTab != null ? collapsedTab : menu;
+        return getDisplayedContainer();
     }
 
     public void refresh() {
@@ -461,7 +468,7 @@ public final class MapContextCloseController {
         collapsedTop = params.topMargin;
         menu.setVisibility(View.GONE);
         showCollapsedTab();
-        if (presentationStateChangedAction != null) presentationStateChangedAction.run();
+        notifyPresentationReady(collapsedTab);
     }
 
     private void expandMenu() {
@@ -479,8 +486,23 @@ public final class MapContextCloseController {
                     : Math.max(margin, rootWidth - width - margin);
             menuUserTop = collapsedTop;
         }
-        refresh();
-        if (presentationStateChangedAction != null) presentationStateChangedAction.run();
+        // Expansion is a user-visible state transition. Rebuild it synchronously so the
+        // presentation callback cannot advance a guided tour while the expanded controls still
+        // exist only as logical state waiting on a future post/camera-idle refresh.
+        if (map != null) refreshNow();
+        else ensureViews();
+        notifyPresentationReady(menu);
+    }
+
+    private void notifyPresentationReady(View anchor) {
+        Runnable callback = presentationStateChangedAction;
+        if (callback == null) return;
+        if (anchor == null) {
+            callback.run();
+            return;
+        }
+        anchor.requestLayout();
+        anchor.post(callback);
     }
 
     private void showCollapsedTab() {
