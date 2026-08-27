@@ -5,19 +5,16 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
-import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
-import android.view.ViewTreeObserver;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -30,8 +27,6 @@ import android.widget.Toast;
 import com.rockmap.app.MainActivity;
 import com.rockmap.app.GuidedTourCoach;
 import com.rockmap.app.RockMapDragHandle;
-import com.rockmap.app.TourTrainingArea;
-import com.rockmap.app.TourDebugLog;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -184,10 +179,6 @@ public final class FieldMapController implements LocationRepository.Listener {
     private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
     private long hudRenderGeneration;
-    private long unresolvedHudRenderGeneration = -1L;
-    private String unresolvedHudRenderReason = "";
-    private ViewTreeObserver.OnGlobalLayoutListener hudTourLayoutListener;
-    private long hudTourLayoutGeneration = -1L;
     private long lastWaypointRefresh;
     private String trackJson = emptyCollection();
     private String areaJson = emptyCollection();
@@ -303,7 +294,6 @@ public final class FieldMapController implements LocationRepository.Listener {
     public void onPause() {
         resumed = false;
         main.removeCallbacks(refreshLoop);
-        clearHudTourLayoutWait();
         removeTapCapture();
         if (measureActive) FieldMapState.saveMeasurement(activity, measurement, true);
         locationRepository.stop();
@@ -505,7 +495,7 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void setExpandedTool(String tool) {
         setExpandedToolValue(tool);
-        renderHud("tool_expanded");
+        renderHud();
     }
 
     private void setExpandedToolValue(String tool) {
@@ -514,34 +504,8 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void renderHud() {
-        renderHud("state_change");
-    }
-
-    private void renderHud(String reason) {
         if (hud == null) return;
         final long renderGeneration = ++hudRenderGeneration;
-        final long renderStarted = SystemClock.elapsedRealtime();
-        final String renderReason = reason == null ? "state_change" : reason;
-
-        if (unresolvedHudRenderGeneration >= 0L && unresolvedHudRenderGeneration != renderGeneration
-                && ("resume".equals(renderReason) || "periodic_refresh".equals(renderReason)
-                || "camera_context_refresh".equals(renderReason))) {
-            TourDebugLog.hudLifecycle(activity, "HUD_RECOVERY", renderGeneration,
-                    renderReason + " rescued=" + unresolvedHudRenderReason
-                            + "#" + unresolvedHudRenderGeneration,
-                    expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-        }
-        if (unresolvedHudRenderGeneration >= 0L && unresolvedHudRenderGeneration != renderGeneration) {
-            TourDebugLog.hudLifecycle(activity, "HUD_SUPERSEDED", unresolvedHudRenderGeneration,
-                    unresolvedHudRenderReason, expandedTool, measurement.size(), hud,
-                    settledHudTourTarget(), renderStarted);
-        }
-        unresolvedHudRenderGeneration = -1L;
-        unresolvedHudRenderReason = "";
-
-        TourDebugLog.hudLifecycle(activity, "HUD_RENDER_START", renderGeneration, renderReason,
-                expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-        clearHudTourLayoutWait();
         installCollapsedTabs();
         hud.removeAllViews();
         removeCollapsedTab(TRACK_TAB_TAG);
@@ -584,6 +548,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                         v -> setExpandedTool(FieldMapState.TOOL_TRACK));
             }
         }
+
         if (navigationActive) {
             if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) {
                 addNavigationHud(target);
@@ -593,6 +558,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                         v -> setExpandedTool(FieldMapState.TOOL_NAVIGATE));
             }
         }
+
         if (measurementActive) {
             if (FieldMapState.TOOL_MEASURE.equals(expandedTool)) {
                 addMeasureHud();
@@ -610,123 +576,27 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         bringFieldUiToFront();
         positionFieldButton();
-        hud.requestLayout();
-        hud.invalidate();
-        TourDebugLog.hudLifecycle(activity, "HUD_RENDER_BUILT", renderGeneration, renderReason,
-                expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-        // Recheck on the next choreographer frame. If geometry is still pending, the one-shot
-        // global-layout listener below owns the continuation for this exact render generation.
-        hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                renderGeneration, renderReason, renderStarted, 0));
+        if (hud != null) {
+            // HUD contents can change height substantially when a tour action creates the next
+            // control (for example the third Measure point reveals Save as Prospecting Area).
+            // Wait until Android has completed the exact rebuild's requested layout, clamp the
+            // final panel geometry, then render the next coach. A stale rebuild never wins after
+            // a newer one.
+            hud.post(() -> finishHudRenderWhenLaidOut(renderGeneration, 0));
+        }
     }
 
-    private void finishHudRenderWhenLaidOut(long renderGeneration, String reason,
-                                             long renderStarted, int frameAttempt) {
-        if (renderGeneration != hudRenderGeneration || hud == null) {
-            TourDebugLog.hudLifecycle(activity, "HUD_SUPERSEDED", renderGeneration, reason,
-                    expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
+    private void finishHudRenderWhenLaidOut(long renderGeneration, int attempt) {
+        if (renderGeneration != hudRenderGeneration || hud == null) return;
+        if ((hud.isLayoutRequested() || hud.getWidth() <= 0
+                || (hud.getVisibility() == View.VISIBLE && hud.getHeight() <= 0)) && attempt < 30) {
+            hud.postDelayed(() -> finishHudRenderWhenLaidOut(renderGeneration, attempt + 1), 16L);
             return;
         }
-        TourDebugLog.hudLifecycle(activity, "HUD_FRAME_RECHECK", renderGeneration, reason,
-                expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-
-        boolean hudReady = !hud.isLayoutRequested()
-                && hud.getWidth() > 0
-                && (hud.getVisibility() != View.VISIBLE || hud.getHeight() > 0);
-        if (!hudReady) {
-            unresolvedHudRenderGeneration = renderGeneration;
-            unresolvedHudRenderReason = reason;
-            TourDebugLog.hudLifecycle(activity, "HUD_LAYOUT_WAIT", renderGeneration, reason,
-                    expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
-            waitForHudTourLayout(renderGeneration, reason, renderStarted);
-            return;
-        }
-
         ensureHudWithinUsableBounds();
         bringFieldUiToFront();
         updateMapUiInsets();
-        View requiredTarget = settledHudTourTarget();
-        if (requiredTarget != null && !hudTourTargetReady(requiredTarget)) {
-            unresolvedHudRenderGeneration = renderGeneration;
-            unresolvedHudRenderReason = reason;
-            TourDebugLog.hudLifecycle(activity, "HUD_LAYOUT_WAIT", renderGeneration, reason,
-                    expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
-            if (frameAttempt == 0) {
-                hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                        renderGeneration, reason, renderStarted, 1));
-            } else {
-                waitForHudTourLayout(renderGeneration, reason, renderStarted);
-            }
-            return;
-        }
-
-        unresolvedHudRenderGeneration = -1L;
-        unresolvedHudRenderReason = "";
-        clearHudTourLayoutWait();
-        TourDebugLog.hudLifecycle(activity, "HUD_READY", renderGeneration, reason,
-                expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
         showActiveMapFieldTourCoach();
-    }
-
-    private View settledHudTourTarget() {
-        if (!FieldTourState.active(activity)) return null;
-        String tool = FieldTourState.tool(activity);
-        int step = FieldTourState.step(activity);
-        String phase = FieldTourState.text(activity);
-        if (FieldUiNames.MEASURE.equals(tool)) {
-            if (step >= 11 && step <= 13 && !"map".equals(phase) && !awaitingMapTap) {
-                return hudTourTarget("rockmap-measure-tap-map");
-            }
-            if (step == 14) return hudTourTarget("rockmap-measure-summary");
-        } else if (FieldUiNames.PROSPECTING_AREAS.equals(tool)) {
-            if (step >= 10 && step <= 12 && !"map".equals(phase) && !awaitingMapTap) {
-                return hudTourTarget("rockmap-measure-tap-map");
-            }
-            if (step == 13) return hudTourTarget("rockmap-measure-drag-note");
-            if (step == 14) return hudTourTarget("rockmap-measure-save-area");
-        }
-        return null;
-    }
-
-    private boolean hudTourTargetReady(View target) {
-        if (target == null || !target.isAttachedToWindow() || !target.isShown()
-                || target.getWidth() <= 0 || target.getHeight() <= 0) return false;
-        Rect visible = new Rect();
-        return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
-    }
-
-    private void waitForHudTourLayout(long renderGeneration, String reason, long renderStarted) {
-        if (hud == null || renderGeneration != hudRenderGeneration) return;
-        if (hudTourLayoutListener != null && hudTourLayoutGeneration == renderGeneration) return;
-        clearHudTourLayoutWait();
-        hudTourLayoutGeneration = renderGeneration;
-        hudTourLayoutListener = () -> {
-            if (renderGeneration != hudRenderGeneration) {
-                clearHudTourLayoutWait();
-                return;
-            }
-            // One-shot: remove before rechecking. If the target is still not ready, the recheck
-            // installs a fresh listener for the next real layout rather than spinning on a timer.
-            clearHudTourLayoutWait();
-            if (hud != null) hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
-                    renderGeneration, reason, renderStarted, 0));
-        };
-        ViewTreeObserver observer = hud.getViewTreeObserver();
-        if (!observer.isAlive()) {
-            hudTourLayoutListener = null;
-            hudTourLayoutGeneration = -1L;
-            return;
-        }
-        observer.addOnGlobalLayoutListener(hudTourLayoutListener);
-    }
-
-    private void clearHudTourLayoutWait() {
-        if (hud != null && hudTourLayoutListener != null) {
-            ViewTreeObserver observer = hud.getViewTreeObserver();
-            if (observer.isAlive()) observer.removeOnGlobalLayoutListener(hudTourLayoutListener);
-        }
-        hudTourLayoutListener = null;
-        hudTourLayoutGeneration = -1L;
     }
 
     private void ensureHudWithinUsableBounds() {
@@ -983,10 +853,6 @@ public final class FieldMapController implements LocationRepository.Listener {
         tapMap.setTag(awaitingMapTap ? "rockmap-measure-cancel-tap" : "rockmap-measure-tap-map");
         first.addView(tapMap, weight());
         Button addGps = hudButton("Add GPS", v -> {
-            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 8)) {
-                setMapTourStep(9);
-                return;
-            }
             if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 4)) {
                 setMapTourStep(5);
                 return;
@@ -1348,22 +1214,13 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (start == null) return;
             start.setOnClickListener(v -> {
                 helpDialog.setOnDismissListener(d -> {
-                    final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
-                            ? fieldDialog[0] : null;
-                    if (fieldMenuTourUsesTrainingArea(guidedTourTool)) {
-                        // The Help & Tours path already asks before moving the map. The contextual
-                        // ? beside Measure/Prospecting Areas/Field Records must do the same thing.
-                        // Do not mark the numbered tour active until Saint Peters Dome is selected.
-                        if (field != null && field.isShowing()) field.dismiss();
-                        main.post(() -> confirmTrainingAreaForFieldMenuTour(guidedTourTool));
-                        return;
-                    }
-
                     // Start only after the help window is gone. The Field menu remains alive
                     // underneath, so its real row can be highlighted without racing two dialogs.
                     FieldTourState.start(activity, guidedTourTool);
                     lastFieldTourCoachKey = "";
                     GuidedTourCoach.clear(activity);
+                    final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
+                            ? fieldDialog[0] : null;
                     main.post(() -> {
                         if (field != null && field.isShowing() && field.getWindow() != null) {
                             View target = field.getWindow().getDecorView()
@@ -1380,28 +1237,6 @@ public final class FieldMapController implements LocationRepository.Listener {
             });
         });
         helpDialog.show();
-    }
-
-    private boolean fieldMenuTourUsesTrainingArea(String tool) {
-        return FieldUiNames.MEASURE.equals(tool)
-                || FieldUiNames.PROSPECTING_AREAS.equals(tool)
-                || FieldUiNames.FIELD_RECORDS.equals(tool);
-    }
-
-    private void confirmTrainingAreaForFieldMenuTour(String tool) {
-        if (!fieldMenuTourUsesTrainingArea(tool)) return;
-        new AlertDialog.Builder(activity)
-                .setTitle("Use a training area?")
-                .setMessage("This guided tour uses Saint Peters Dome as an example so later Research steps have enough mapped mineral evidence to demonstrate the tools properly.\n\nRockMap will move the map there before the numbered tour begins. This changes only the map view; it does not change your GPS location. The example Prospecting Area is intentionally broad because source records can represent approximate localities and general vicinities.")
-                .setPositiveButton("Continue", (d, w) -> {
-                    GuidedTourCoach.clear(activity);
-                    Intent intent = new Intent(activity, MainActivity.class);
-                    intent.putExtra(MainActivity.EXTRA_START_TRAINING_FIELD_TOUR, tool);
-                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    activity.startActivity(intent);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
     }
 
     private void showNavigateMenu() {
@@ -1734,27 +1569,19 @@ public final class FieldMapController implements LocationRepository.Listener {
         FieldTourState.step(activity, step);
         FieldTourState.text(activity, "");
         lastFieldTourCoachKey = "";
-        renderHud("tour_step_change");
+        renderHud();
     }
 
     private void addMapCenterMeasurementPointForTour() {
         if (map == null || map.getCameraPosition() == null || map.getCameraPosition().target == null) return;
         LatLng center = map.getCameraPosition().target;
-        int index = measurement.size() % 3;
+        int index = measurement.size();
+        double delta = 0.00055d * Math.max(1, index);
         double lat = center.getLatitude();
         double lon = center.getLongitude();
-        // Skip-step geometry must teach the same vicinity-scale behavior as manual placement.
-        // This triangle is roughly 1–1.5 km across near the Colorado training latitude and keeps
-        // the map center inside the Prospecting Area instead of creating a tiny pinpoint polygon.
-        if (index == 0) {
-            lat -= 0.0065d;
-            lon -= 0.0085d;
-        } else if (index == 1) {
-            lat -= 0.0065d;
-            lon += 0.0085d;
-        } else {
-            lat += 0.0075d;
-        }
+        if (index % 3 == 1) lon += delta;
+        else if (index % 3 == 2) lat += delta;
+        else if (index > 0) lon -= delta;
         addMeasurementPoint(new GeoMath.Point(lat, lon), false);
     }
 
@@ -2109,11 +1936,19 @@ public final class FieldMapController implements LocationRepository.Listener {
                 final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(8); };
                 back = () -> setMapTourStep(6);
             } else if (step == 8) {
-                target = hudTourTarget("rockmap-measure-add-gps");
-                title = "Add GPS";
-                body = "Add GPS uses your real current GPS position as the next measurement point. We will not add it during this training example because the example polygon is being built around Saint Peters Dome.";
-                action = "Review “Add GPS”, then Continue.";
-                primary = "Continue"; primaryAction = () -> setMapTourStep(9); skip = primaryAction;
+                if ("undo".equals(phase)) {
+                    target = hudTourTarget("rockmap-measure-undo");
+                    title = "Remove the GPS example";
+                    body = "The GPS position was added as a real measurement point. Undo removes this example before the next point source.";
+                    action = "Tap “Undo”.";
+                    final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(9); };
+                } else {
+                    target = hudTourTarget("rockmap-measure-add-gps");
+                    title = "Add GPS";
+                    body = "Add GPS requests a fresh precise GPS fix and uses your current position as the next measurement point.";
+                    action = "Tap “Add GPS”.";
+                    skip = () -> setMapTourStep(9);
+                }
                 back = () -> setMapTourStep(7);
             } else if (step == 9) {
                 target = hudTourTarget("rockmap-measure-saved");
@@ -2131,20 +1966,15 @@ public final class FieldMapController implements LocationRepository.Listener {
                 back = () -> setMapTourStep(9);
             } else if (step >= 11 && step <= 13) {
                 int ordinal = step - 10;
-                String placement = ordinal == 1
-                        ? "Place the first boundary point well to one side of Saint Peters Dome."
-                        : (ordinal == 2
-                        ? "Place the second point well away from the first, on the other side of the visible vicinity."
-                        : "Place the third point on the opposite side so Saint Peters Dome sits inside a broad triangle.");
                 if ("map".equals(phase) || awaitingMapTap) {
                     title = "Polygon point " + ordinal;
-                    body = placement + " Prospecting Areas are broad research areas: source records can be approximate, so a tiny polygon can miss evidence from the same general vicinity.";
-                    action = "Tap a widely separated boundary location on the map.";
+                    body = "Choose the next boundary point on the map. Three points are enough to calculate an area and enable saving a Prospecting Area.";
+                    action = "Tap a location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
                     title = "Polygon point " + ordinal;
-                    body = placement + " Keep the points spread out rather than clustering them around one spot.";
+                    body = "Use Tap map for the next polygon vertex.";
                     action = "Tap “Tap map”.";
                     final View t = target; skip = () -> {
                         if (t != null) t.performClick();
@@ -2155,7 +1985,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             } else if (step == 14) {
                 target = hudTourTarget("rockmap-measure-summary");
                 title = "Distance and area";
-                body = "With two or more points RockMap measures the path. With three or more points it also calculates polygon area. For prospecting research, treat the polygon as a general vicinity rather than a precision target: mineral and historic source locations can be approximate. Drag any vertex to adjust the broad area.";
+                body = "With two or more points RockMap measures the path. With three or more points it also calculates polygon area. Drag any vertex to adjust the shape.";
                 action = "Review the measurements and try moving a vertex.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(15); skip = primaryAction;
                 back = () -> backFromMeasurementPolygon(14, 11);
@@ -2179,7 +2009,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (step == 3) {
                 target = hudTourTarget("rockmap-measure-header");
                 title = "Define the area with Measure";
-                body = "Measure builds the boundary of a Prospecting Area. Prospecting Areas should represent a useful general vicinity, not a pinpoint boundary: mineral and historic records can be approximate. Add widely separated points from the map, GPS, Saved Locations, Field Records, or coordinates, then save the finished polygon.";
+                body = "Measure builds the boundary of a Prospecting Area. Add points from the map, GPS, Saved Locations, Field Records, or coordinates, then save the finished polygon.";
                 action = "Review the Measure panel, then Continue.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(4); skip = primaryAction;
                 back = () -> {
@@ -2193,7 +2023,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             } else if (step == 4) {
                 target = hudTourTarget("rockmap-measure-add-gps");
                 title = "Add GPS";
-                body = "Add GPS uses your real current GPS position as the next boundary point. We will not add it during this training example because the example Prospecting Area is being built around Saint Peters Dome.";
+                body = "Add GPS uses a fresh GPS fix as the next boundary point.";
                 action = "Review “Add GPS”, then Continue.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(5); skip = primaryAction;
                 back = () -> setMapTourStep(3);
@@ -2234,20 +2064,15 @@ public final class FieldMapController implements LocationRepository.Listener {
                 back = () -> setMapTourStep(8);
             } else if (step >= 10 && step <= 12) {
                 int ordinal = step - 9;
-                String placement = ordinal == 1
-                        ? "Start well to one side of Saint Peters Dome."
-                        : (ordinal == 2
-                        ? "Put the second boundary point well away from the first."
-                        : "Put the third point on the opposite side so the training location is enclosed by a broad triangle.");
                 if ("map".equals(phase) || awaitingMapTap) {
                     title = "Boundary point " + ordinal;
-                    body = placement + " The goal is a general research vicinity large enough to catch approximate mineral and historic records.";
-                    action = "Tap a widely separated boundary location on the map.";
+                    body = "Tap the map to place this Prospecting Area boundary point.";
+                    action = "Tap a location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
                     title = "Boundary point " + ordinal;
-                    body = placement + " Do not cluster the tutorial points tightly around the center.";
+                    body = "Use Tap map to place the next boundary vertex.";
                     action = "Tap “Tap map”.";
                     final View t = target; skip = () -> {
                         if (t != null) t.performClick();
@@ -2279,20 +2104,9 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (back == null && step > 1 && !suppressDefaultBack) {
             back = () -> setMapTourStep(Math.max(1, step - 1));
         }
-        boolean mapInteractionStep = (FieldUiNames.MEASURE.equals(tool)
-                && step >= 11 && step <= 13
-                || FieldUiNames.PROSPECTING_AREAS.equals(tool)
-                && step >= 10 && step <= 12)
-                && ("map".equals(phase) || awaitingMapTap);
-        if (mapInteractionStep) {
-            GuidedTourCoach.showMapInteraction(activity, step, total, title, body, action,
-                    back, primary, primaryAction, skip == null ? primaryAction : skip,
-                    this::finishActiveFieldTour);
-        } else {
-            GuidedTourCoach.show(activity, step, total, title, body, action, target,
-                    back, primary, primaryAction, skip == null ? primaryAction : skip,
-                    this::finishActiveFieldTour);
-        }
+        GuidedTourCoach.show(activity, step, total, title, body, action, target,
+                back, primary, primaryAction, skip == null ? primaryAction : skip,
+                this::finishActiveFieldTour);
     }
 
     private FrameLayout dialogTourRoot(AlertDialog dialog) {
@@ -2324,7 +2138,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                     refreshWaypointLabels();
                 }
                 applyCachedSources();
-                if (!fieldTourOwnsHud()) renderHud("periodic_refresh");
+                if (!fieldTourOwnsHud()) renderHud();
                 consumeMapRequests();
             });
         });
@@ -2603,7 +2417,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             navigationUpdatesStarted = false;
             if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) setExpandedTool(null);
             else {
-                renderHud("resume");
+                renderHud();
                 applyCachedSources();
             }
             return;
@@ -2622,7 +2436,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 if (message != null) toast(message);
             });
         }
-        renderHud("resume");
+        renderHud();
         applyCachedSources();
     }
 
@@ -2806,7 +2620,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 // physically attached until the point is committed so this same gesture cannot
                 // leak through to the map's normal feature-tap handler and open Location information.
                 awaitingMapTap = false;
-                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
+                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), true);
                 removeTapCapture();
                 return true;
             }
@@ -3055,11 +2869,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         measurement.add(point);
         FieldMapState.saveMeasurement(activity, measurement, true);
-        if (centerIfFirst && measurement.size() == 1) {
-            double currentZoom = map != null && map.getCameraPosition() != null
-                    ? map.getCameraPosition().zoom : TourTrainingArea.MAP_ZOOM;
-            centerExplicit(point, currentZoom);
-        }
+        if (centerIfFirst && measurement.size() == 1) centerExplicit(point, 16d);
 
         if (FieldTourState.is(activity, FieldUiNames.MEASURE)) {
             int step = FieldTourState.step(activity);
@@ -3072,7 +2882,6 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, step + 1);
                 lastFieldTourCoachKey = "";
-                GuidedTourCoach.clear(activity);
             }
         } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)) {
             int step = FieldTourState.step(activity);
@@ -3084,7 +2893,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             }
         }
         applyCachedSources();
-        renderHud("measurement_point_added");
+        renderHud();
     }
 
     private void undoMeasurement() {
