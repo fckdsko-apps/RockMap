@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Inject minimal guided-tour diagnostics into the checked-out tour-debug build.
+Inject guided-tour diagnostics into the checked-out tour-debug build.
 
-This script intentionally edits source only inside the GitHub Actions runner. It does not change
-RockMap behavior, tour state, USGS/Offline Find, Gradle wiring, or the repository's production
-source files. Every replacement is fail-closed and must match the known tour-debug baseline once.
+The tour-debug branch may now contain some diagnostics directly in source. This injector is
+therefore deliberately idempotent: if a requested hook is already present, it leaves it alone;
+otherwise it applies the known baseline replacement exactly once. All edits remain runner-only.
 """
 from pathlib import Path
 import sys
@@ -14,19 +14,24 @@ APP = ROOT / "app/src/main/java/com/rockmap/app/RockMapApplication.java"
 COACH = ROOT / "app/src/main/java/com/rockmap/app/GuidedTourCoach.java"
 
 
-def replace_once(path: Path, old: str, new: str, label: str) -> None:
+def ensure_replace(path: Path, marker: str, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
+    if marker in text:
+        print(f"{label}: already present")
+        return
     count = text.count(old)
     if count != 1:
         raise RuntimeError(
             f"{label}: expected exactly one source match in {path.relative_to(ROOT)}, found {count}"
         )
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    print(f"{label}: injected")
 
 
 def main() -> int:
-    replace_once(
+    ensure_replace(
         APP,
+        "TourDebugLog.install(this);",
         """    @Override public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(this);
@@ -41,8 +46,9 @@ def main() -> int:
         "install TourDebugLog",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        "TourDebugLog.coachClear(activity);",
         """    public static void clear(Activity activity) {
         cancelPendingRequest(activity);
 """,
@@ -53,8 +59,9 @@ def main() -> int:
         "log coach clear",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        "TourDebugLog.coachRequest(activity, requestGeneration, step, total",
         """        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         long requestGeneration = beginPendingRequest(activity);
 """,
@@ -69,8 +76,9 @@ def main() -> int:
         "log coach request",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        "TourDebugLog.coachWait(activity, requestGeneration, step, target);",
         """        if (target != null && !targetReady(target)) {
             requestTargetVisibility(target);
 """,
@@ -81,8 +89,9 @@ def main() -> int:
         "log target wait start",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        '"claim-before-show"',
         """        if (!claimPendingRequest(activity, requestGeneration)) return;
 """,
         """        if (!claimPendingRequest(activity, requestGeneration)) {
@@ -94,8 +103,9 @@ def main() -> int:
         "log failed coach claim",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        '"activity content is not FrameLayout"',
         """            ViewGroup content = activity.findViewById(android.R.id.content);
             if (!(content instanceof FrameLayout)) return;
             root = (FrameLayout) content;
@@ -111,8 +121,9 @@ def main() -> int:
         "log invalid coach root",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        "TourDebugLog.coachShown(activity, requestGeneration, step, total",
         """        card.placeForCurrentStep();
         highlight(target);
         if (target != null) {
@@ -126,13 +137,21 @@ def main() -> int:
         "log coach shown",
     )
 
-    replace_once(
-        COACH,
-        """        if (activity == null || activity.isFinishing() || activity.isDestroyed()
+    # Newer tour-debug source already has generation-aware wait termination. Preserve it instead
+    # of forcing the older combined guard back into the file.
+    coach_text = COACH.read_text(encoding="utf-8")
+    if ("TourDebugLog.coachTimeout(activity, generation, step, target);" in coach_text
+            and '"target-wait"' in coach_text):
+        print("log wait termination: already present")
+    else:
+        ensure_replace(
+            COACH,
+            '"before wait schedule"',
+            """        if (activity == null || activity.isFinishing() || activity.isDestroyed()
                 || target == null || !isPendingRequestCurrent(activity, generation) || attempt >= 250) return;
         View scheduler = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
 """,
-        """        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            """        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
             TourDebugLog.coachAbort(activity, generation, step,
                     "invalid activity while waiting", target);
             return;
@@ -153,11 +172,12 @@ def main() -> int:
         }
         View scheduler = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
 """,
-        "log wait termination",
-    )
+            "log wait termination",
+        )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        '"inside wait callback"',
         """        scheduler.postDelayed(() -> {
             if (!isPendingRequestCurrent(activity, generation)
                     || activity.isFinishing() || activity.isDestroyed()) return;
@@ -179,8 +199,9 @@ def main() -> int:
         "log wait callback termination",
     )
 
-    replace_once(
+    ensure_replace(
         COACH,
+        "TourDebugLog.coachTargetReady(activity, generation, step",
         """            if (targetReady(liveTarget)) {
                 show(activity, hostRoot, step, total, title, message, requiredAction, liveTarget,
 """,
@@ -192,14 +213,19 @@ def main() -> int:
         "log target ready",
     )
 
-    replace_once(
-        COACH,
-        """            } else {
+    coach_text = COACH.read_text(encoding="utf-8")
+    if "TourDebugLog.coachWaitProgress(activity, generation, step" in coach_text:
+        print("log target wait progress: already present")
+    else:
+        ensure_replace(
+            COACH,
+            "TourDebugLog.coachWaitProgress(activity, generation, step",
+            """            } else {
                 waitForTargetAndShow(activity, hostRoot, step, total, title, message,
                         requiredAction, liveTarget, backAction, primaryLabel, primaryAction,
                         skipAction, exitAction, generation, attempt + 1);
 """,
-        """            } else {
+            """            } else {
                 int nextAttempt = attempt + 1;
                 if (nextAttempt == 25 || nextAttempt == 100 || nextAttempt == 200) {
                     TourDebugLog.coachWaitProgress(activity, generation, step,
@@ -209,15 +235,11 @@ def main() -> int:
                         requiredAction, liveTarget, backAction, primaryLabel, primaryAction,
                         skipAction, exitAction, generation, nextAttempt);
 """,
-        "log target wait progress",
-    )
+            "log target wait progress",
+        )
 
     print("Tour debugger injection complete.")
-    print("Modified in runner only:")
-    print(f"  {APP.relative_to(ROOT)}")
-    print(f"  {COACH.relative_to(ROOT)}")
-    print("Added source already present in checkout:")
-    print("  app/src/main/java/com/rockmap/app/TourDebugLog.java")
+    print("Runner-only instrumentation is compatible with source-level tour diagnostics.")
     return 0
 
 
