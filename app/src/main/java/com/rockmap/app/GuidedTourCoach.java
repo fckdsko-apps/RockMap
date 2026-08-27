@@ -45,6 +45,7 @@ public final class GuidedTourCoach {
     private static WeakReference<DialogCoachHost> activeDialogCoachHost = new WeakReference<>(null);
     private static WeakReference<Activity> activeCoachOwner = new WeakReference<>(null);
     private static final WeakHashMap<Activity, Long> requestGenerations = new WeakHashMap<>();
+    private static final WeakHashMap<Activity, float[]> mapInteractionPositions = new WeakHashMap<>();
     private static long requestSequence;
     private static long highlightGeneration;
 
@@ -131,6 +132,17 @@ public final class GuidedTourCoach {
                 backAction, primaryLabel, primaryAction, skipAction, exitAction);
     }
 
+    /** Map-action coach placement keeps the center of the map free across consecutive point steps. */
+    public static void showMapInteraction(Activity activity,
+                                          int step, int total, String title, String message,
+                                          String requiredAction,
+                                          Runnable backAction,
+                                          String primaryLabel, Runnable primaryAction,
+                                          Runnable skipAction, Runnable exitAction) {
+        showInternal(activity, null, step, total, title, message, requiredAction, null,
+                backAction, primaryLabel, primaryAction, skipAction, exitAction, true);
+    }
+
     /** Same coach UI inside an alternate window root such as an AlertDialog. */
     public static void show(Activity activity, FrameLayout hostRoot,
                             int step, int total, String title, String message,
@@ -138,8 +150,19 @@ public final class GuidedTourCoach {
                             Runnable backAction,
                             String primaryLabel, Runnable primaryAction,
                             Runnable skipAction, Runnable exitAction) {
+        showInternal(activity, hostRoot, step, total, title, message, requiredAction, target,
+                backAction, primaryLabel, primaryAction, skipAction, exitAction, false);
+    }
+
+    private static void showInternal(Activity activity, FrameLayout hostRoot,
+                                     int step, int total, String title, String message,
+                                     String requiredAction, View target,
+                                     Runnable backAction, String primaryLabel,
+                                     Runnable primaryAction, Runnable skipAction,
+                                     Runnable exitAction, boolean mapInteractionPlacement) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         long requestGeneration = beginPendingRequest(activity);
+        TourDebugLog.coachRequest(activity, requestGeneration, step, total, title, requiredAction, target);
         // Do not tear down the current coach until the destination target really exists. Several
         // tour actions rebuild panels or cross Activity boundaries asynchronously; clearing first
         // creates a visible dead period and can strand the tour if the replacement target arrives
@@ -170,7 +193,7 @@ public final class GuidedTourCoach {
             activeDialogCoachHost = new WeakReference<>((DialogCoachHost) root);
         }
 
-        DraggableCard card = new DraggableCard(activity, root, target);
+        DraggableCard card = new DraggableCard(activity, root, target, mapInteractionPlacement);
         card.setTag(TAG);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(activity, 12), dp(activity, 9), dp(activity, 12), dp(activity, 9));
@@ -448,6 +471,8 @@ public final class GuidedTourCoach {
         card.setElevation(dp(activity, 96));
         card.bringToFront();
         card.placeForCurrentStep();
+        TourDebugLog.coachShown(activity, requestGeneration, step, total, title, target,
+                root instanceof DialogCoachHost);
         highlight(target);
         if (target != null) {
             final View accessibilityTarget = target;
@@ -465,8 +490,18 @@ public final class GuidedTourCoach {
                                                  Runnable backAction, String primaryLabel,
                                                  Runnable primaryAction, Runnable skipAction,
                                                  Runnable exitAction, long generation, int attempt) {
-        if (activity == null || activity.isFinishing() || activity.isDestroyed()
-                || target == null || !isPendingRequestCurrent(activity, generation) || attempt >= 250) return;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed() || target == null) return;
+        if (!isPendingRequestCurrent(activity, generation)) {
+            TourDebugLog.coachSuperseded(activity, generation, step, "target-wait", target);
+            return;
+        }
+        if (attempt >= 250) {
+            TourDebugLog.coachTimeout(activity, generation, step, target);
+            return;
+        }
+        if (attempt == 0) TourDebugLog.coachWait(activity, generation, step, target);
+        else if (attempt % 25 == 0)
+            TourDebugLog.coachWaitProgress(activity, generation, step, attempt, target);
         View scheduler = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (scheduler == null) scheduler = target;
         scheduler.postDelayed(() -> {
@@ -476,6 +511,7 @@ public final class GuidedTourCoach {
             if (liveTarget == null) liveTarget = target;
             if (!targetReady(liveTarget)) requestTargetVisibility(liveTarget);
             if (targetReady(liveTarget)) {
+                TourDebugLog.coachTargetReady(activity, generation, step, attempt, liveTarget);
                 show(activity, hostRoot, step, total, title, message, requiredAction, liveTarget,
                         backAction, primaryLabel, primaryAction, skipAction, exitAction);
             } else {
@@ -761,8 +797,10 @@ public final class GuidedTourCoach {
     }
 
     private static final class DraggableCard extends LinearLayout {
+        private final Activity activity;
         private final FrameLayout root;
         private final View target;
+        private final boolean mapInteractionPlacement;
         private final int touchSlop;
         private float dragDownRawX;
         private float dragDownRawY;
@@ -777,10 +815,12 @@ public final class GuidedTourCoach {
         private Rect lastAvoidRegion;
         private ViewTreeObserver.OnGlobalLayoutListener globalLayoutListener;
 
-        DraggableCard(Activity activity, FrameLayout root, View target) {
+        DraggableCard(Activity activity, FrameLayout root, View target, boolean mapInteractionPlacement) {
             super(activity);
+            this.activity = activity;
             this.root = root;
             this.target = target;
+            this.mapInteractionPlacement = mapInteractionPlacement;
             this.touchSlop = ViewConfiguration.get(activity).getScaledTouchSlop();
         }
 
@@ -849,6 +889,11 @@ public final class GuidedTourCoach {
                     return;
                 }
                 Rect safe = visibleSafeRect();
+                if (mapInteractionPlacement) {
+                    chooseMapInteractionPosition();
+                    installPlacementTracking();
+                    return;
+                }
                 Rect avoidRegion = findContainingUiRegion(target);
                 if (!denseMode && compactView != null
                         && (getWidth() > safe.width() || getHeight() > safe.height()
@@ -904,10 +949,59 @@ public final class GuidedTourCoach {
             Rect safe = visibleSafeRect();
             boolean outsideUsableScreen = current == null || current.left < safe.left
                     || current.top < safe.top || current.right > safe.right || current.bottom > safe.bottom;
+            if (mapInteractionPlacement) {
+                if (outsideUsableScreen) chooseMapInteractionPosition();
+                return;
+            }
             if (outsideUsableScreen || intersectsExpanded(current, targetRect, dp(this, 12)) || geometryChanged) {
                 // A saved/previous position is never permission to clip the coach under a system
                 // bar or beyond the usable screen, and the required control must remain uncovered.
                 chooseSafePosition(false);
+            }
+        }
+
+        private void chooseMapInteractionPosition() {
+            if (placementRunning || getWidth() <= 0 || getHeight() <= 0) return;
+            placementRunning = true;
+            try {
+                Rect safe = visibleSafeRect();
+                float[] remembered;
+                synchronized (mapInteractionPositions) { remembered = mapInteractionPositions.get(activity); }
+                if (remembered != null && remembered.length >= 2) {
+                    int availableW = Math.max(0, safe.width() - getWidth());
+                    int availableH = Math.max(0, safe.height() - getHeight());
+                    moveTo(safe.left + Math.round(remembered[0] * availableW),
+                            safe.top + Math.round(remembered[1] * availableH), false);
+                    return;
+                }
+
+                ArrayList<Rect> obstacles = new ArrayList<>();
+                collectInteractiveObstacles(root, obstacles);
+                int gap = dp(this, 8);
+                int left = safe.left + gap;
+                int right = safe.right - getWidth() - gap;
+                int top = safe.top + gap;
+                int bottom = safe.bottom - getHeight() - gap;
+                int middle = safe.top + Math.max(0, (safe.height() - getHeight()) / 2);
+                Rect[] candidates = new Rect[]{
+                        rectAt(left, top), rectAt(right, top),
+                        rectAt(left, bottom), rectAt(right, bottom),
+                        rectAt(left, middle), rectAt(right, middle)
+                };
+                Rect best = clampRect(candidates[0], safe);
+                double bestScore = Double.POSITIVE_INFINITY;
+                for (Rect candidate : candidates) {
+                    Rect bounded = clampRect(candidate, safe);
+                    double score = 0d;
+                    for (Rect obstacle : obstacles) score += overlapArea(bounded, obstacle) * 1000000d;
+                    // Prefer the top edge when otherwise equal; all candidates deliberately hug
+                    // a side so the map center remains available for repeated boundary taps.
+                    score += Math.max(0, bounded.top - safe.top) * 0.02d;
+                    if (score < bestScore) { bestScore = score; best = bounded; }
+                }
+                moveTo(best.left, best.top, false);
+            } finally {
+                placementRunning = false;
             }
         }
 
@@ -1253,13 +1347,16 @@ public final class GuidedTourCoach {
                 p.bottomMargin = 0;
                 setLayoutParams(p);
             }
-            if (save) {
-                int availableW = Math.max(0, safe.width() - getWidth());
-                int availableH = Math.max(0, safe.height() - getHeight());
-                float x = availableW <= 0 ? 0f : (safeLeft - safe.left) / (float) availableW;
-                float y = availableH <= 0 ? 0f : (safeTop - safe.top) / (float) availableH;
-                GuidedTourState.saveCoachPosition(getContext(), x, y);
+            int availableW = Math.max(0, safe.width() - getWidth());
+            int availableH = Math.max(0, safe.height() - getHeight());
+            float x = availableW <= 0 ? 0f : (safeLeft - safe.left) / (float) availableW;
+            float y = availableH <= 0 ? 0f : (safeTop - safe.top) / (float) availableH;
+            if (mapInteractionPlacement) {
+                synchronized (mapInteractionPositions) {
+                    mapInteractionPositions.put(activity, new float[]{x, y});
+                }
             }
+            if (save) GuidedTourState.saveCoachPosition(getContext(), x, y);
         }
     }
 }

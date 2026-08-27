@@ -334,6 +334,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void onMappedContextPresentationChanged() {
         saveResearchSession();
+        logMappedResearchPresentation("RESEARCH_PRESENTATION_CHANGED");
         if (!GuidedTourState.isActive(this)) return;
         int step = GuidedTourState.step(this);
         MapContextCloseController context = MapContextCloseController.forMap(mapView);
@@ -4690,6 +4691,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 else advanceTourTo(GuidedTourState.STEP_CONTEXT_CONTROLS);
                 break;
             case GuidedTourState.STEP_CONTEXT_CONTROLS:
+                MapContextCloseController.forMap(mapView).expandControls();
                 advanceTourTo(GuidedTourState.STEP_CONTEXT_COLLAPSE);
                 break;
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
@@ -4715,6 +4717,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void scheduleGuidedTourCoachForCurrentStep() {
         if (!GuidedTourState.isActive(this) || getWindow() == null) return;
         final int expectedStep = GuidedTourState.step(this);
+        prepareMappedResearchTourPresentation(expectedStep);
         if (expectedStep == GuidedTourState.STEP_FIND_MOUNT_ANTERO
                 && !tourTrainingMoveApproved) {
             showTrainingLocationConsent(() -> {
@@ -4749,6 +4752,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
 
+        // Presentation setup is explicit and idempotent. The readiness accessor below remains
+        // observational; if MapLibre was not ready when the step was first scheduled, this retry
+        // can establish the intended mapped-controls state once without waiting for camera idle.
+        prepareMappedResearchTourPresentation(expectedStep);
         View requiredTarget = guidedTourReadinessTarget(expectedStep);
         if (!guidedTourStepNeedsReadyTarget(expectedStep) || tourTargetReady(requiredTarget)) {
             showGuidedTourCoachForCurrentStep();
@@ -4877,19 +4884,42 @@ public final class MainActivity extends Activity implements LocationRepository.L
         return null;
     }
 
+    private void prepareMappedResearchTourPresentation(int step) {
+        if (mapView == null || (step != GuidedTourState.STEP_CONTEXT_CONTROLS
+                && step != GuidedTourState.STEP_CONTEXT_COLLAPSE
+                && step != GuidedTourState.STEP_CONTEXT_REOPEN)) return;
+        MapContextCloseController context = MapContextCloseController.forMap(mapView);
+        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS
+                || step == GuidedTourState.STEP_CONTEXT_COLLAPSE) {
+            context.prepareExpandedControls();
+        } else if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
+            context.prepareCollapsedControls();
+        }
+        logMappedResearchPresentation("RESEARCH_TOUR_PREPARE");
+    }
+
     private View mappedResearchTourTarget(int step) {
-        View root = getWindow() == null ? mainRoot : getWindow().getDecorView();
-        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS) {
-            return findViewByContentDescription(root, "Drag mapped research controls");
-        }
-        if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE) {
-            return findViewByContentDescription(root, "Collapse mapped research controls");
-        }
-        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
-            return findViewByContentDescription(root,
-                    "Open mapped research controls. Drag to move this control.");
-        }
+        if (mapView == null) return null;
+        MapContextCloseController context = MapContextCloseController.forMap(mapView);
+        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS) return context.getDragControl();
+        if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE) return context.getCollapseControl();
+        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) return context.getCollapsedControl();
         return null;
+    }
+
+    private void logMappedResearchPresentation(String event) {
+        if (mapView == null) return;
+        MapContextCloseController context = MapContextCloseController.forMap(mapView);
+        View workspace = null;
+        if (researchAreaPanel != null && researchAreaPanel.isVisible()) {
+            workspace = researchAreaPanel.isCollapsed()
+                    ? researchAreaPanel.getExpandControl() : researchAreaPanel.getCollapseControl();
+        }
+        TourDebugLog.researchPresentation(this, event,
+                "step=" + (GuidedTourState.isActive(this) ? GuidedTourState.step(this) : -1)
+                        + ",collapsed=" + context.isCollapsed(),
+                workspace, context.getDisplayedContainer(), context.getDragControl(),
+                context.getCollapseControl(), context.getCollapsedControl());
     }
 
     private View findViewByContentDescription(View root, String description) {

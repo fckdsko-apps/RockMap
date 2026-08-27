@@ -221,6 +221,43 @@ public final class TourDebugLog {
                         + " target={" + targetSummary(target) + "}");
     }
 
+    /** HUD lifecycle instrumentation. This is strictly observational and never requests layout. */
+    public static void hudLifecycle(Activity activity, String event, long generation,
+                                    String reason, String expandedTool, int measurementCount,
+                                    View hud, View requiredTarget, long startedElapsed) {
+        long elapsedMs = startedElapsed <= 0L ? -1L
+                : Math.max(0L, SystemClock.elapsedRealtime() - startedElapsed);
+        String detail = "gen=" + generation
+                + " activity=" + activityName(activity)
+                + " reason=" + clean(reason, 120)
+                + " expandedTool=" + clean(expandedTool, 80)
+                + " measurementCount=" + measurementCount
+                + " elapsedMs=" + elapsedMs
+                + " main={" + mainSnapshot() + "}"
+                + " field={" + fieldSnapshot() + "}"
+                + " hud={" + targetSummary(hud) + "}"
+                + " requiredTarget={" + targetSummary(requiredTarget) + "}";
+        String type = clean(event, 60);
+        if ("HUD_READY".equals(type) || "HUD_SUPERSEDED".equals(type)
+                || "HUD_RECOVERY".equals(type)) recordImportant(type, detail);
+        else record(type, detail);
+    }
+
+    /** Snapshot the Research workspace/mapped-control presentation without mutating it. */
+    public static void researchPresentation(Activity activity, String event, String state,
+                                            View workspace, View mappedPanel, View dragControl,
+                                            View collapseControl, View collapsedReopen) {
+        recordImportant(clean(event, 60),
+                "activity=" + activityName(activity)
+                        + " state=" + clean(state, 160)
+                        + " main={" + mainSnapshot() + "}"
+                        + " workspace={" + targetSummary(workspace) + "}"
+                        + " mappedPanel={" + targetSummary(mappedPanel) + "}"
+                        + " drag={" + targetSummary(dragControl) + "}"
+                        + " collapse={" + targetSummary(collapseControl) + "}"
+                        + " collapsedReopen={" + targetSummary(collapsedReopen) + "}");
+    }
+
     private static String mainSnapshot() {
         if (mainPrefs == null) return "unavailable";
         return "state=" + mainPrefs.getString("tour_state", "not_offered")
