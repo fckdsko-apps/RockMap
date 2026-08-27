@@ -104,7 +104,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 // MainActivity's normal resume path calls ensurePersistentEntry(). A Field tour
                 // may have been started from FieldActivity immediately before returning here, so
                 // resume the pending tour after the map controls have reattached.
-                controller.main.post(controller::resumeActiveFieldTour);
+                controller.scheduleActiveFieldTourResume(48L);
             }
             if (controller.fieldButton != null) {
                 controller.fieldButton.setVisibility(View.VISIBLE);
@@ -175,7 +175,10 @@ public final class FieldMapController implements LocationRepository.Listener {
     private boolean measureActive;
     private String expandedTool;
     private boolean awaitingMapTap;
+    // Legacy overlay reference is retained only so upgrades can remove an orphaned pre-fix catcher.
+    // New one-shot placement uses MapLibre's click listener, which leaves pan/zoom gestures native.
     private View tapCapture;
+    private MapLibreMap.OnMapClickListener oneShotMapClickListener;
     private boolean measurementDragHandlerInstalled;
     private int draggingMeasurementIndex = -1;
     private Location latestNavigationLocation;
@@ -214,6 +217,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private int collapsedTabsUserTop;
     private String lastFieldTourCoachKey = "";
     private AlertDialog activeFieldMenuDialog;
+    private final Runnable fieldTourResumeRunnable = this::resumeActiveFieldTourNow;
 
     private final Runnable refreshLoop = new Runnable() {
         @Override public void run() {
@@ -282,6 +286,10 @@ public final class FieldMapController implements LocationRepository.Listener {
                 map.addOnCameraMoveStartedListener(reason -> {
                     if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                         beginCameraCommand();
+                        if (awaitingMapTap && measurementPolygonTourStepActive()) {
+                            TourDebugLog.mainTourAction(activity, "MAP_PAN_WHILE_TAP_ARMED",
+                                    "Placement remains armed while the user repositions the map");
+                        }
                     }
                 });
                 cameraMoveListenerInstalled = true;
@@ -304,12 +312,13 @@ public final class FieldMapController implements LocationRepository.Listener {
         refreshNavigationState();
         main.removeCallbacks(refreshLoop);
         main.post(refreshLoop);
-        main.postDelayed(this::resumeActiveFieldTour, 260L);
+        scheduleActiveFieldTourResume(48L);
     }
 
     public void onPause() {
         resumed = false;
         main.removeCallbacks(refreshLoop);
+        main.removeCallbacks(fieldTourResumeRunnable);
         // Invalidate every frame/global-layout continuation owned by the presentation that is
         // leaving the foreground. Anonymous postOnAnimation callbacks may still run, but their
         // generation can no longer mutate or restart this HUD after stop/pause.
@@ -749,10 +758,9 @@ public final class FieldMapController implements LocationRepository.Listener {
             return;
         }
 
-        // Keep the one-shot map catcher attached until the destination HUD has a real layout.
-        // Removing it before the Point-2 render was the device-observed transition where the HUD
-        // became not-shown. Once the HUD is laid out, remove the catcher and verify one final frame
-        // against the hierarchy the user will actually interact with.
+        // Keep one-shot placement ownership until the destination HUD has a real layout. With the
+        // native MapLibre click listener there is no visual catcher to block gestures, but listener
+        // ownership still ends here so Point-2/Point-3 presentation completes deterministically.
         if (releaseCompletedTapCapture()) {
             hud.setVisibility(View.VISIBLE);
             hud.requestLayout();
@@ -803,7 +811,6 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (step >= 10 && step <= 12 && !"map".equals(phase) && !awaitingMapTap) {
                 return hudTourTarget("rockmap-measure-tap-map");
             }
-            if (step == 13) return hudTourTarget("rockmap-measure-drag-note");
             if (step == 14) return hudTourTarget("rockmap-measure-save-area");
         }
         return null;
@@ -858,13 +865,13 @@ public final class FieldMapController implements LocationRepository.Listener {
         hudTourLayoutGeneration = -1L;
     }
 
-    /** True only for the point-placement lessons that need the map to remain the primary surface. */
+    /** True for polygon-tour lessons where the map must remain the primary working surface. */
     private boolean measurementPolygonTourStepActive() {
         if (!FieldTourState.active(activity)) return false;
         String tool = FieldTourState.tool(activity);
         int step = FieldTourState.step(activity);
         return (FieldUiNames.MEASURE.equals(tool) && step >= 11 && step <= 13)
-                || (FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 10 && step <= 12);
+                || (FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 10 && step <= 13);
     }
 
     /**
@@ -1258,10 +1265,11 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
     }
 
-    /** Minimal controls while the guided tour is asking for widely separated map points. */
+    /** Minimal controls while polygon lessons need the map to remain the primary surface. */
     private void addCompactMeasurementTourHud() {
         String tool = FieldTourState.tool(activity);
         int step = FieldTourState.step(activity);
+        boolean adjustingBoundary = FieldUiNames.PROSPECTING_AREAS.equals(tool) && step == 13;
         int ordinal = FieldUiNames.MEASURE.equals(tool) ? step - 10 : step - 9;
         ordinal = Math.max(1, Math.min(3, ordinal));
         String pointLabel = FieldUiNames.MEASURE.equals(tool) ? "Polygon point" : "Boundary point";
@@ -1272,8 +1280,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         header.setMinimumHeight(dp(40));
         header.setOnTouchListener((v, event) -> handleFloatingDrag(hud, v, event));
 
-        TextView title = hudTitle(pointLabel + " " + ordinal + " of 3 · "
-                + measurement.size() + " placed");
+        String compactTitle = adjustingBoundary
+                ? "Adjust boundary · " + measurement.size() + " points"
+                : pointLabel + " " + ordinal + " of 3 · " + measurement.size() + " placed";
+        TextView title = hudTitle(compactTitle);
         title.setPadding(dp(2), 0, dp(4), 0);
         header.addView(title, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1284,6 +1294,13 @@ public final class FieldMapController implements LocationRepository.Listener {
         dragHandle.setTag("rockmap-measure-compact-drag");
         header.addView(dragHandle, new LinearLayout.LayoutParams(dp(40), dp(40)));
         hud.addView(header);
+
+        if (adjustingBoundary) {
+            TextView note = hudText("Drag any boundary point on the map. The polygon updates in place.");
+            note.setTag("rockmap-measure-drag-note");
+            hud.addView(note);
+            return;
+        }
 
         boolean mapTapArmed = awaitingMapTap || "map".equals(FieldTourState.text(activity));
         Button tapMap = hudButton(mapTapArmed ? "Cancel tap" : "Tap map",
@@ -1925,7 +1942,12 @@ public final class FieldMapController implements LocationRepository.Listener {
         return FieldUiNames.PROSPECTING_AREAS.equals(tool) && step >= 3 && step <= 15;
     }
 
-    private void resumeActiveFieldTour() {
+    private void scheduleActiveFieldTourResume(long delayMs) {
+        main.removeCallbacks(fieldTourResumeRunnable);
+        main.postDelayed(fieldTourResumeRunnable, Math.max(0L, delayMs));
+    }
+
+    private void resumeActiveFieldTourNow() {
         if (!FieldTourState.active(activity)) return;
         int step = FieldTourState.step(activity);
         if (step == 1) {
@@ -1933,8 +1955,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             return;
         }
         if (fieldTourOwnsHud()) {
-            renderHud();
-            return;
+            renderHud("tour_resume");
         }
     }
 
@@ -2004,6 +2025,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (step >= 10 && step <= 12) {
                 return !("map".equals(FieldTourState.text(activity)) || awaitingMapTap);
             }
+            if (step == 13) return false; // The draggable polygon itself is the lesson target.
             return step >= 3 && step <= 14;
         }
         return false;
@@ -2476,7 +2498,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 }
                 back = () -> backFromMeasurementPolygon(step, 10);
             } else if (step == 13) {
-                target = hudTourTarget("rockmap-measure-drag-note");
+                target = null;
                 title = "Adjust the boundary";
                 body = "Each boundary point is draggable. Move a vertex to change the polygon before saving it.";
                 action = "Try dragging a boundary point, then Continue.";
@@ -2499,11 +2521,12 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (back == null && step > 1 && !suppressDefaultBack) {
             back = () -> setMapTourStep(Math.max(1, step - 1));
         }
-        boolean mapInteractionStep = (FieldUiNames.MEASURE.equals(tool)
+        boolean mapInteractionStep = ((FieldUiNames.MEASURE.equals(tool)
                 && step >= 11 && step <= 13
                 || FieldUiNames.PROSPECTING_AREAS.equals(tool)
                 && step >= 10 && step <= 12)
-                && ("map".equals(FieldTourState.text(activity)) || awaitingMapTap);
+                && ("map".equals(FieldTourState.text(activity)) || awaitingMapTap))
+                || (FieldUiNames.PROSPECTING_AREAS.equals(tool) && step == 13);
         if (mapInteractionStep) {
             GuidedTourCoach.showMapInteraction(activity, step, total, title, body, action,
                     back, primary, primaryAction, skip == null ? primaryAction : skip,
@@ -2823,7 +2846,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             navigationUpdatesStarted = false;
             if (FieldMapState.TOOL_NAVIGATE.equals(expandedTool)) setExpandedTool(null);
             else {
-                renderHud("resume");
+                if (!fieldTourOwnsHud()) renderHud("resume");
                 applyCachedSources();
             }
             return;
@@ -2842,7 +2865,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 if (message != null) toast(message);
             });
         }
-        renderHud("resume");
+        if (!fieldTourOwnsHud()) renderHud("resume");
         applyCachedSources();
     }
 
@@ -2981,7 +3004,8 @@ public final class FieldMapController implements LocationRepository.Listener {
         FieldMapState.saveMeasurement(activity, measurement, true);
         setExpandedToolValue(FieldMapState.TOOL_MEASURE);
         removeTapCapture();
-        renderHud();
+        if (fieldTourOwnsHud()) scheduleActiveFieldTourResume(0L);
+        else renderHud("measurement_started");
         applyCachedSources();
         toast("Measure is active on the map. Add points with Tap map, GPS, Saved, Field, or Lat/Lon.");
     }
@@ -2989,78 +3013,55 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void beginOneShotMapTap() {
         if (!measureActive || root == null || mapView == null || map == null) return;
         removeTapCapture();
-        FrameLayout catcher = new FrameLayout(activity);
-        catcher.setTag(TAP_CAPTURE_TAG);
-        catcher.setBackgroundColor(Color.TRANSPARENT);
-        catcher.setClickable(true);
-        final float[] down = new float[2];
-        catcher.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                down[0] = event.getRawX();
-                down[1] = event.getRawY();
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                removeTapCapture();
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                v.performClick();
-                float dx = event.getRawX() - down[0];
-                float dy = event.getRawY() - down[1];
-                // The old fixed 18dp test rejected ordinary finger taps on some phones. Use a
-                // deliberately forgiving tap envelope while still treating an unmistakable drag
-                // as the user's request to leave one-shot placement and pan normally.
-                int tapTolerance = Math.max(dp(32), floatingTouchSlop * 2);
-                if (Math.hypot(dx, dy) > tapTolerance) {
-                    removeTapCapture();
-                    if (measurementPolygonTourStepActive()) {
-                        FieldTourState.text(activity, "");
-                        lastFieldTourCoachKey = "";
-                        renderHud("map_tap_drag_cancelled");
-                    }
-                    toast("No point added. Pan the map normally, then tap “Tap map” again.");
-                    return true;
-                }
-                int[] mapLocation = new int[2];
-                mapView.getLocationOnScreen(mapLocation);
-                PointF screen = new PointF(event.getRawX() - mapLocation[0],
-                        event.getRawY() - mapLocation[1]);
-                LatLng latLng = map.getProjection().fromScreenLocation(screen);
-                // This ACTION_UP is owned by the catcher and returns true. Keep the catcher
-                // attached until the destination HUD has completed layout; removing it before the
-                // Point-2 render was the transition that left the required HUD not-shown. The
-                // readiness path releases it before the next coach becomes actionable.
-                awaitingMapTap = false;
-                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
-                return true;
-            }
+
+        oneShotMapClickListener = point -> {
+            if (!awaitingMapTap || point == null) return false;
+            // Keep the listener registered but inert until the destination HUD is ready. This
+            // preserves the deterministic Point-2/Point-3 presentation ownership while avoiding
+            // any visual overlay that would steal pan or zoom gestures from MapLibre.
+            awaitingMapTap = false;
+            addMeasurementPoint(new GeoMath.Point(point.getLatitude(), point.getLongitude()), false);
             return true;
-        });
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        root.addView(catcher, params);
-        tapCapture = catcher;
+        };
+        map.addOnMapClickListener(oneShotMapClickListener);
         awaitingMapTap = true;
         bringFieldUiToFront();
         renderHud("map_tap_armed");
-        toast("Tap once on the map to add the next measurement point. Dragging cancels the tap so you can pan normally afterward.");
+        toast("Pan or zoom as needed, then tap once on the map to add the next measurement point.");
     }
 
-    /** Remove a completed one-shot catcher only after the destination HUD has real geometry. */
+    /** Release one-shot placement ownership after the destination HUD has real geometry. */
     private boolean releaseCompletedTapCapture() {
-        if (tapCapture == null || awaitingMapTap) return false;
-        View completed = tapCapture;
-        tapCapture = null;
-        if (completed.getParent() instanceof ViewGroup) {
-            ((ViewGroup) completed.getParent()).removeView(completed);
+        if (awaitingMapTap) return false;
+        boolean removedVisualOverlay = false;
+        if (tapCapture != null) {
+            View completed = tapCapture;
+            tapCapture = null;
+            if (completed.getParent() instanceof ViewGroup) {
+                ((ViewGroup) completed.getParent()).removeView(completed);
+                removedVisualOverlay = true;
+            }
         }
+        removeOneShotMapClickListener();
         removeOrphanTapCapture();
-        return true;
+        return removedVisualOverlay;
+    }
+
+    private void removeOneShotMapClickListener() {
+        if (map != null && oneShotMapClickListener != null) {
+            try {
+                map.removeOnMapClickListener(oneShotMapClickListener);
+            } catch (RuntimeException ignored) {
+                // MapLibre may be between lifecycle states; clearing our reference still prevents
+                // this controller from treating a stale callback as an active placement.
+            }
+        }
+        oneShotMapClickListener = null;
     }
 
     private void removeTapCapture() {
         awaitingMapTap = false;
+        removeOneShotMapClickListener();
         if (tapCapture != null && tapCapture.getParent() instanceof ViewGroup) {
             ((ViewGroup) tapCapture.getParent()).removeView(tapCapture);
         }
@@ -3118,7 +3119,12 @@ public final class FieldMapController implements LocationRepository.Listener {
                 draggingMeasurementIndex = -1;
                 if (view.getParent() != null) view.getParent().requestDisallowInterceptTouchEvent(false);
                 refreshMeasurementGeometryOnly();
-                renderHud();
+                if (!FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 13)) {
+                    renderHud("measurement_vertex_dragged");
+                } else {
+                    TourDebugLog.mainTourAction(activity, "BOUNDARY_VERTEX_DRAGGED",
+                            "Prospecting step 13 geometry updated without rebuilding HUD/coach");
+                }
                 return true;
             }
             return true;
