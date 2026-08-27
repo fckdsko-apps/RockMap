@@ -2283,7 +2283,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 && step >= 11 && step <= 13
                 || FieldUiNames.PROSPECTING_AREAS.equals(tool)
                 && step >= 10 && step <= 12)
-                && ("map".equals(phase) || awaitingMapTap);
+                && ("map".equals(FieldTourState.text(activity)) || awaitingMapTap);
         if (mapInteractionStep) {
             GuidedTourCoach.showMapInteraction(activity, step, total, title, body, action,
                     back, primary, primaryAction, skip == null ? primaryAction : skip,
