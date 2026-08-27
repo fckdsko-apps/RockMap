@@ -16,6 +16,7 @@ import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewParent;
+import android.view.ViewTreeObserver;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -181,6 +182,8 @@ public final class FieldMapController implements LocationRepository.Listener {
     private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
     private long hudRenderGeneration;
+    private ViewTreeObserver.OnGlobalLayoutListener hudTourLayoutListener;
+    private long hudTourLayoutGeneration = -1L;
     private long lastWaypointRefresh;
     private String trackJson = emptyCollection();
     private String areaJson = emptyCollection();
@@ -296,6 +299,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     public void onPause() {
         resumed = false;
         main.removeCallbacks(refreshLoop);
+        clearHudTourLayoutWait();
         removeTapCapture();
         if (measureActive) FieldMapState.saveMeasurement(activity, measurement, true);
         locationRepository.stop();
@@ -508,6 +512,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void renderHud() {
         if (hud == null) return;
         final long renderGeneration = ++hudRenderGeneration;
+        clearHudTourLayoutWait();
         installCollapsedTabs();
         hud.removeAllViews();
         removeCollapsedTab(TRACK_TAB_TAG);
@@ -590,32 +595,88 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void finishHudRenderWhenLaidOut(long renderGeneration, int attempt) {
         if (renderGeneration != hudRenderGeneration || hud == null) return;
-        if ((hud.isLayoutRequested() || hud.getWidth() <= 0
-                || (hud.getVisibility() == View.VISIBLE && hud.getHeight() <= 0)) && attempt < 30) {
-            hud.postDelayed(() -> finishHudRenderWhenLaidOut(renderGeneration, attempt + 1), 16L);
+
+        // Do not guess how many frames Android will need. The previous 30-frame cutoff could
+        // abandon Measure step 14 while its rebuilt summary was still 0x0, leaving the tour with
+        // no owner until a later lifecycle/refresh happened to rebuild the HUD. Wait for the real
+        // layout event for this exact render generation instead.
+        boolean hudReady = !hud.isLayoutRequested()
+                && hud.getWidth() > 0
+                && (hud.getVisibility() != View.VISIBLE || hud.getHeight() > 0);
+        if (!hudReady) {
+            waitForHudTourLayout(renderGeneration);
             return;
         }
+
         ensureHudWithinUsableBounds();
         bringFieldUiToFront();
         updateMapUiInsets();
-        if (FieldTourState.is(activity, FieldUiNames.MEASURE, 14)) {
-            View summary = hudTourTarget("rockmap-measure-summary");
-            Rect visible = new Rect();
-            boolean ready = summary != null
-                    && summary.isAttachedToWindow()
-                    && summary.isShown()
-                    && summary.getWidth() > 0
-                    && summary.getHeight() > 0
-                    && summary.getGlobalVisibleRect(visible)
-                    && visible.width() > 0
-                    && visible.height() > 0;
-            if (!ready && attempt < 30) {
-                hud.postDelayed(() -> finishHudRenderWhenLaidOut(renderGeneration, attempt + 1), 16L);
+
+        // Polygon point 3 and Distance/area both target controls created by the same HUD rebuild.
+        // Never hand GuidedTourCoach a newborn 0x0 View. The map-tap phase intentionally has no
+        // target, so it is allowed through immediately.
+        View requiredTarget = settledHudTourTarget();
+        if (requiredTarget != null && !hudTourTargetReady(requiredTarget)) {
+            waitForHudTourLayout(renderGeneration);
+            return;
+        }
+
+        clearHudTourLayoutWait();
+        showActiveMapFieldTourCoach();
+    }
+
+    private View settledHudTourTarget() {
+        if (!FieldTourState.active(activity)) return null;
+        String tool = FieldTourState.tool(activity);
+        int step = FieldTourState.step(activity);
+        String phase = FieldTourState.text(activity);
+        if (FieldUiNames.MEASURE.equals(tool)) {
+            if (step == 13 && !"map".equals(phase) && !awaitingMapTap) {
+                return hudTourTarget("rockmap-measure-tap-map");
+            }
+            if (step == 14) return hudTourTarget("rockmap-measure-summary");
+        }
+        return null;
+    }
+
+    private boolean hudTourTargetReady(View target) {
+        if (target == null || !target.isAttachedToWindow() || !target.isShown()
+                || target.getWidth() <= 0 || target.getHeight() <= 0) return false;
+        Rect visible = new Rect();
+        return target.getGlobalVisibleRect(visible) && visible.width() > 0 && visible.height() > 0;
+    }
+
+    private void waitForHudTourLayout(long renderGeneration) {
+        if (hud == null || renderGeneration != hudRenderGeneration) return;
+        if (hudTourLayoutListener != null && hudTourLayoutGeneration == renderGeneration) return;
+        clearHudTourLayoutWait();
+        hudTourLayoutGeneration = renderGeneration;
+        hudTourLayoutListener = () -> {
+            if (renderGeneration != hudRenderGeneration) {
+                clearHudTourLayoutWait();
                 return;
             }
-            if (!ready) return;
+            // One-shot: remove before rechecking. If the target is still not ready, the recheck
+            // installs a fresh listener for the next real layout rather than spinning on a timer.
+            clearHudTourLayoutWait();
+            if (hud != null) hud.post(() -> finishHudRenderWhenLaidOut(renderGeneration, 0));
+        };
+        ViewTreeObserver observer = hud.getViewTreeObserver();
+        if (!observer.isAlive()) {
+            hudTourLayoutListener = null;
+            hudTourLayoutGeneration = -1L;
+            return;
         }
-        showActiveMapFieldTourCoach();
+        observer.addOnGlobalLayoutListener(hudTourLayoutListener);
+    }
+
+    private void clearHudTourLayoutWait() {
+        if (hud != null && hudTourLayoutListener != null) {
+            ViewTreeObserver observer = hud.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnGlobalLayoutListener(hudTourLayoutListener);
+        }
+        hudTourLayoutListener = null;
+        hudTourLayoutGeneration = -1L;
     }
 
     private void ensureHudWithinUsableBounds() {
@@ -1237,13 +1298,22 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (start == null) return;
             start.setOnClickListener(v -> {
                 helpDialog.setOnDismissListener(d -> {
+                    final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
+                            ? fieldDialog[0] : null;
+                    if (fieldMenuTourUsesTrainingArea(guidedTourTool)) {
+                        // The Help & Tours path already asks before moving the map. The contextual
+                        // ? beside Measure/Prospecting Areas/Field Records must do the same thing.
+                        // Do not mark the numbered tour active until Saint Peters Dome is selected.
+                        if (field != null && field.isShowing()) field.dismiss();
+                        main.post(() -> confirmTrainingAreaForFieldMenuTour(guidedTourTool));
+                        return;
+                    }
+
                     // Start only after the help window is gone. The Field menu remains alive
                     // underneath, so its real row can be highlighted without racing two dialogs.
                     FieldTourState.start(activity, guidedTourTool);
                     lastFieldTourCoachKey = "";
                     GuidedTourCoach.clear(activity);
-                    final AlertDialog field = fieldDialog != null && fieldDialog.length > 0
-                            ? fieldDialog[0] : null;
                     main.post(() -> {
                         if (field != null && field.isShowing() && field.getWindow() != null) {
                             View target = field.getWindow().getDecorView()
@@ -1260,6 +1330,28 @@ public final class FieldMapController implements LocationRepository.Listener {
             });
         });
         helpDialog.show();
+    }
+
+    private boolean fieldMenuTourUsesTrainingArea(String tool) {
+        return FieldUiNames.MEASURE.equals(tool)
+                || FieldUiNames.PROSPECTING_AREAS.equals(tool)
+                || FieldUiNames.FIELD_RECORDS.equals(tool);
+    }
+
+    private void confirmTrainingAreaForFieldMenuTour(String tool) {
+        if (!fieldMenuTourUsesTrainingArea(tool)) return;
+        new AlertDialog.Builder(activity)
+                .setTitle("Use a training area?")
+                .setMessage("This guided tour uses Saint Peters Dome as an example so later Research steps have enough mapped mineral evidence to demonstrate the tools properly.\n\nRockMap will move the map there before the numbered tour begins. This changes only the map view; it does not change your GPS location. The example Prospecting Area is intentionally broad because source records can represent approximate localities and general vicinities.")
+                .setPositiveButton("Continue", (d, w) -> {
+                    GuidedTourCoach.clear(activity);
+                    Intent intent = new Intent(activity, MainActivity.class);
+                    intent.putExtra(MainActivity.EXTRA_START_TRAINING_FIELD_TOUR, tool);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    activity.startActivity(intent);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void showNavigateMenu() {
@@ -2919,6 +3011,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, step + 1);
                 lastFieldTourCoachKey = "";
+                GuidedTourCoach.clear(activity);
             }
         } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)) {
             int step = FieldTourState.step(activity);

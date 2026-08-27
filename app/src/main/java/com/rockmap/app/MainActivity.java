@@ -4868,18 +4868,40 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (step == GuidedTourState.STEP_WORKSPACE_REOPEN) {
             return researchAreaPanel.getExpandControl();
         }
-        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS) {
-            MapContextCloseController context = MapContextCloseController.forMap(mapView);
-            View drag = context.getDragControl();
-            return drag == null ? context.getContextMenuView() : drag;
-        }
-        if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE) {
-            return MapContextCloseController.forMap(mapView).getCollapseControl();
-        }
-        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
-            return MapContextCloseController.forMap(mapView).getCollapsedControl();
+        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS
+                || step == GuidedTourState.STEP_CONTEXT_COLLAPSE
+                || step == GuidedTourState.STEP_CONTEXT_REOPEN) {
+            return mappedResearchTourTarget(step);
         }
         if (step == GuidedTourState.STEP_COMPLETE) return mainHelpToursButton;
+        return null;
+    }
+
+    private View mappedResearchTourTarget(int step) {
+        View root = getWindow() == null ? mainRoot : getWindow().getDecorView();
+        if (step == GuidedTourState.STEP_CONTEXT_CONTROLS) {
+            return findViewByContentDescription(root, "Drag mapped research controls");
+        }
+        if (step == GuidedTourState.STEP_CONTEXT_COLLAPSE) {
+            return findViewByContentDescription(root, "Collapse mapped research controls");
+        }
+        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
+            return findViewByContentDescription(root,
+                    "Open mapped research controls. Drag to move this control.");
+        }
+        return null;
+    }
+
+    private View findViewByContentDescription(View root, String description) {
+        if (root == null || description == null) return null;
+        CharSequence contentDescription = root.getContentDescription();
+        if (contentDescription != null && description.contentEquals(contentDescription)) return root;
+        if (!(root instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) root;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View found = findViewByContentDescription(group.getChildAt(i), description);
+            if (found != null) return found;
+        }
         return null;
     }
 
@@ -5040,34 +5062,30 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_CONTEXT_CONTROLS:
-                MapContextCloseController contextController = MapContextCloseController.forMap(mapView);
-                View contextDrag = contextController.getDragControl();
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Mapped Research",
                         "Each labeled row represents research currently displayed on the map. Tap a label to return to its information, use its adjacent × to close that result, and move the control box whenever it covers geography you need to inspect.",
                         "Try moving this box using the drag control.",
-                        contextDrag == null ? contextController.getContextMenuView() : contextDrag,
+                        mappedResearchTourTarget(GuidedTourState.STEP_CONTEXT_CONTROLS),
                         tourBackAction(),
                         "Continue", () -> advanceTourTo(GuidedTourState.STEP_CONTEXT_COLLAPSE),
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
-                MapContextCloseController collapseController = MapContextCloseController.forMap(mapView);
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Collapse mapped Research",
                         "Collapse gets the control box out of the way without closing any mapped result.",
                         "Tap the highlighted collapse arrow “›”.",
-                        collapseController.getCollapseControl(),
+                        mappedResearchTourTarget(GuidedTourState.STEP_CONTEXT_COLLAPSE),
                         tourBackAction(), null, null,
                         this::skipCurrentTourStep, this::exitTour);
                 break;
             case GuidedTourState.STEP_CONTEXT_REOPEN:
-                MapContextCloseController reopenController = MapContextCloseController.forMap(mapView);
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Reopen mapped Research",
                         "The colored dots keep the mapped Research controls available while the full box is tucked away. The collapsed control is draggable too.",
                         "Tap the colored dots to reopen the box.",
-                        reopenController.getCollapsedControl(),
+                        mappedResearchTourTarget(GuidedTourState.STEP_CONTEXT_REOPEN),
                         tourBackAction(), null, null,
                         this::skipCurrentTourStep, this::exitTour);
                 break;
