@@ -20,13 +20,6 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false">
 
-        <!-- Diagnostic-only observer. It never handles external URIs and is not exported. -->
-        <provider
-            android:name=".TourAuditProvider"
-            android:authorities="${applicationId}.touraudit"
-            android:exported="false"
-            android:initOrder="100" />
-
         <activity
             android:name=".SafetyDisclosureActivity"
             android:exported="true"
