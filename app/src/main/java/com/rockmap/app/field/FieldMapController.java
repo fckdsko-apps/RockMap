@@ -5,6 +5,7 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.os.Handler;
