@@ -684,6 +684,13 @@ public final class GuidedTourCoach {
         if (safe.width() <= 0 || safe.height() <= 0) {
             safe.set(0, 0, Math.max(1, width), Math.max(1, height));
         }
+        // Keep the coach visibly above Android navigation/gesture chrome even on OEM builds that
+        // report a zero bottom inset while drawing edge-to-edge. This is a safety margin inside the
+        // already-computed visible frame, not a guessed replacement for WindowInsets.
+        int bottomBreathingRoom = dp(activity, 16);
+        if (safe.height() > bottomBreathingRoom + dp(activity, 120)) {
+            safe.bottom -= bottomBreathingRoom;
+        }
         return safe;
     }
 
@@ -890,6 +897,24 @@ public final class GuidedTourCoach {
                 }
                 Rect safe = visibleSafeRect();
                 if (mapInteractionPlacement) {
+                    // Point-placement lessons should be compact enough to leave a real map working
+                    // area. Dense mode retains the instructions and controls but avoids a tall card
+                    // being clamped into Android/app bottom controls on shorter viewports.
+                    if (!denseMode && compactView != null
+                            && (getHeight() > safe.height() * 0.46f
+                            || getWidth() > safe.width())) {
+                        denseMode = true;
+                        setPadding(dp(this, 6), dp(this, 4), dp(this, 6), dp(this, 4));
+                        for (View normal : normalViews) normal.setVisibility(View.GONE);
+                        compactView.setVisibility(View.VISIBLE);
+                        FrameLayout.LayoutParams compactParams = (FrameLayout.LayoutParams) getLayoutParams();
+                        compactParams.width = Math.max(dp(this, 180),
+                                Math.min(dp(this, 330), safe.width()));
+                        setLayoutParams(compactParams);
+                        requestLayout();
+                        postDelayed(this::placeForCurrentStep, 40L);
+                        return;
+                    }
                     chooseMapInteractionPosition();
                     installPlacementTracking();
                     return;
@@ -953,7 +978,8 @@ public final class GuidedTourCoach {
                 if (outsideUsableScreen) chooseMapInteractionPosition();
                 return;
             }
-            if (outsideUsableScreen || intersectsExpanded(current, targetRect, dp(this, 12)) || geometryChanged) {
+            if (outsideUsableScreen || intersectsExpanded(current, targetRect, dp(this, 12))
+                    || geometryChanged) {
                 // A saved/previous position is never permission to clip the coach under a system
                 // bar or beyond the usable screen, and the required control must remain uncovered.
                 chooseSafePosition(false);
@@ -965,27 +991,37 @@ public final class GuidedTourCoach {
             placementRunning = true;
             try {
                 Rect safe = visibleSafeRect();
+                ArrayList<Rect> obstacles = new ArrayList<>();
+                collectInteractiveObstacles(root, obstacles);
+
                 float[] remembered;
                 synchronized (mapInteractionPositions) { remembered = mapInteractionPositions.get(activity); }
                 if (remembered != null && remembered.length >= 2) {
                     int availableW = Math.max(0, safe.width() - getWidth());
                     int availableH = Math.max(0, safe.height() - getHeight());
-                    moveTo(safe.left + Math.round(remembered[0] * availableW),
-                            safe.top + Math.round(remembered[1] * availableH), false);
-                    return;
+                    Rect rememberedRect = clampRect(rectAt(
+                            safe.left + Math.round(remembered[0] * availableW),
+                            safe.top + Math.round(remembered[1] * availableH)), safe);
+                    // Preserve the user's previous point-step position only while it remains fully
+                    // usable. A newly opened HUD/button is allowed to displace it automatically.
+                    if (!hasMeaningfulObstacleOverlap(rememberedRect, obstacles)) {
+                        moveTo(rememberedRect.left, rememberedRect.top, false);
+                        return;
+                    }
                 }
 
-                ArrayList<Rect> obstacles = new ArrayList<>();
-                collectInteractiveObstacles(root, obstacles);
                 int gap = dp(this, 8);
                 int left = safe.left + gap;
                 int right = safe.right - getWidth() - gap;
                 int top = safe.top + gap;
-                int bottom = safe.bottom - getHeight() - gap;
                 int middle = safe.top + Math.max(0, (safe.height() - getHeight()) / 2);
+                int upperThird = safe.top + Math.max(0, (safe.height() - getHeight()) / 3);
+                // Deliberately omit bottom-edge candidates. They compete with Android navigation
+                // chrome and RockMap's persistent bottom controls and provide no benefit for map
+                // tapping compared with an upper/mid side position.
                 Rect[] candidates = new Rect[]{
                         rectAt(left, top), rectAt(right, top),
-                        rectAt(left, bottom), rectAt(right, bottom),
+                        rectAt(left, upperThird), rectAt(right, upperThird),
                         rectAt(left, middle), rectAt(right, middle)
                 };
                 Rect best = clampRect(candidates[0], safe);
@@ -994,9 +1030,9 @@ public final class GuidedTourCoach {
                     Rect bounded = clampRect(candidate, safe);
                     double score = 0d;
                     for (Rect obstacle : obstacles) score += overlapArea(bounded, obstacle) * 1000000d;
-                    // Prefer the top edge when otherwise equal; all candidates deliberately hug
-                    // a side so the map center remains available for repeated boundary taps.
-                    score += Math.max(0, bounded.top - safe.top) * 0.02d;
+                    // Prefer the upper edge when otherwise equal; all candidates hug a side so the
+                    // center of the map remains available for repeated boundary taps.
+                    score += Math.max(0, bounded.top - safe.top) * 0.04d;
                     if (score < bestScore) { bestScore = score; best = bounded; }
                 }
                 moveTo(best.left, best.top, false);
@@ -1318,6 +1354,15 @@ public final class GuidedTourCoach {
             int bottom = Math.min(a.bottom, b.bottom);
             if (right <= left || bottom <= top) return 0L;
             return (long) (right - left) * (bottom - top);
+        }
+
+        private boolean hasMeaningfulObstacleOverlap(Rect cardRect, List<Rect> obstacles) {
+            if (cardRect == null || obstacles == null) return false;
+            long threshold = (long) dp(this, 12) * dp(this, 12);
+            for (Rect obstacle : obstacles) {
+                if (overlapArea(cardRect, obstacle) > threshold) return true;
+            }
+            return false;
         }
 
         private boolean isDescendantOf(View candidate, View possibleAncestor) {

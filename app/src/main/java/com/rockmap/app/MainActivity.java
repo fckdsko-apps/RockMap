@@ -189,6 +189,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private boolean researchSessionRestored;
     private boolean researchSessionContentRestorePending;
     private long guidedTourScheduleGeneration;
+    private String lastMappedResearchPrepLogKey = "";
+    // Tracks the step actually represented by the currently shown coach. A Research presentation
+    // callback can advance internal state before the replacement coach is drawn; stale Back/Skip
+    // actions must never operate on that newer state.
+    private int lastPresentedGuidedTourStep = -1;
     private String pendingTrainingFieldTool = "";
     private String pendingTrainingMainTopic = "";
     private boolean tourTrainingMoveApproved;
@@ -4533,12 +4538,21 @@ public final class MainActivity extends Activity implements LocationRepository.L
             tourTrainingMoveApproved = trainingLocationReady
                     && GuidedTourState.TOPIC_FIND.equals(topic);
         }
+        lastMappedResearchPrepLogKey = "";
+        lastPresentedGuidedTourStep = -1;
         GuidedTourState.startTopic(this, topic, start, end);
         scheduleGuidedTourCoachForCurrentStep();
     }
 
     private void advanceTourTo(int nextStep) {
+        int before = GuidedTourState.step(this);
         GuidedTourState.advance(this, nextStep);
+        int after = GuidedTourState.step(this);
+        if (before >= GuidedTourState.STEP_WORKSPACE_COLLAPSE
+                || after >= GuidedTourState.STEP_WORKSPACE_COLLAPSE) {
+            TourDebugLog.mainTourAction(this, "RESEARCH_TOUR_ADVANCE",
+                    "step=" + before + "->" + after + " requested=" + nextStep);
+        }
         scheduleGuidedTourCoachForCurrentStep();
     }
 
@@ -4550,7 +4564,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void backCurrentTourStep() {
         if (!GuidedTourState.isActive(this)) return;
         int step = GuidedTourState.step(this);
+        if (lastPresentedGuidedTourStep > 0 && step != lastPresentedGuidedTourStep) {
+            TourDebugLog.mainTourAction(this, "RESEARCH_TOUR_STALE_ACTION",
+                    "action=back shownStep=" + lastPresentedGuidedTourStep + " currentStep=" + step);
+            scheduleGuidedTourCoachForCurrentStep();
+            return;
+        }
         if (step <= GuidedTourState.startStep(this)) return;
+        if (step >= GuidedTourState.STEP_WORKSPACE_COLLAPSE) {
+            TourDebugLog.mainTourAction(this, "RESEARCH_TOUR_BACK", "fromStep=" + step);
+        }
 
         switch (step) {
             case GuidedTourState.STEP_MINERAL_EVIDENCE:
@@ -4587,17 +4610,17 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 return;
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_CONTROLS);
-                MapContextCloseController.forMap(mapView).expandControls();
+                MapContextCloseController.forMap(mapView).prepareExpandedControls();
                 scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_CONTEXT_REOPEN:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_COLLAPSE);
-                MapContextCloseController.forMap(mapView).expandControls();
+                MapContextCloseController.forMap(mapView).prepareExpandedControls();
                 scheduleGuidedTourCoachForCurrentStep();
                 return;
             case GuidedTourState.STEP_COMPLETE:
                 GuidedTourState.setStep(this, GuidedTourState.STEP_CONTEXT_REOPEN);
-                MapContextCloseController.forMap(mapView).collapseControls();
+                MapContextCloseController.forMap(mapView).prepareCollapsedControls();
                 scheduleGuidedTourCoachForCurrentStep();
                 return;
             default:
@@ -4624,12 +4647,22 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void exitTour() {
         GuidedTourState.exit(this);
+        lastPresentedGuidedTourStep = -1;
         GuidedTourCoach.clear(this);
     }
 
     private void skipCurrentTourStep() {
         if (!GuidedTourState.isActive(this)) return;
         int step = GuidedTourState.step(this);
+        if (lastPresentedGuidedTourStep > 0 && step != lastPresentedGuidedTourStep) {
+            TourDebugLog.mainTourAction(this, "RESEARCH_TOUR_STALE_ACTION",
+                    "action=skip shownStep=" + lastPresentedGuidedTourStep + " currentStep=" + step);
+            scheduleGuidedTourCoachForCurrentStep();
+            return;
+        }
+        if (step >= GuidedTourState.STEP_WORKSPACE_COLLAPSE) {
+            TourDebugLog.mainTourAction(this, "RESEARCH_TOUR_SKIP", "fromStep=" + step);
+        }
         switch (step) {
             case GuidedTourState.STEP_CENTER_GPS:
                 advanceTourTo(GuidedTourState.STEP_SAVE_GPS);
@@ -4691,21 +4724,24 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 else advanceTourTo(GuidedTourState.STEP_CONTEXT_CONTROLS);
                 break;
             case GuidedTourState.STEP_CONTEXT_CONTROLS:
-                MapContextCloseController.forMap(mapView).expandControls();
+                MapContextCloseController.forMap(mapView).prepareExpandedControls();
                 advanceTourTo(GuidedTourState.STEP_CONTEXT_COLLAPSE);
                 break;
             case GuidedTourState.STEP_CONTEXT_COLLAPSE:
                 GuidedTourState.advance(this, GuidedTourState.STEP_CONTEXT_REOPEN);
-                MapContextCloseController.forMap(mapView).collapseControls();
+                MapContextCloseController.forMap(mapView).prepareCollapsedControls();
                 scheduleGuidedTourCoachForCurrentStep();
                 break;
             case GuidedTourState.STEP_CONTEXT_REOPEN:
-                // expandControls() triggers the presentation-state callback, which advances to
-                // completion and redraws the coach. Let that single owner perform the transition.
-                MapContextCloseController.forMap(mapView).expandControls();
+                // Skip is an explicit tour action. Establish the next UI presentation directly and
+                // advance to the real final lesson instead of depending on a presentation callback
+                // that may not fire when the box was already expanded.
+                MapContextCloseController.forMap(mapView).prepareExpandedControls();
+                advanceTourTo(GuidedTourState.STEP_COMPLETE);
                 break;
             case GuidedTourState.STEP_COMPLETE:
                 GuidedTourState.complete(this);
+                lastPresentedGuidedTourStep = -1;
                 GuidedTourCoach.clear(this);
                 break;
             default:
@@ -4717,7 +4753,6 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void scheduleGuidedTourCoachForCurrentStep() {
         if (!GuidedTourState.isActive(this) || getWindow() == null) return;
         final int expectedStep = GuidedTourState.step(this);
-        prepareMappedResearchTourPresentation(expectedStep);
         if (expectedStep == GuidedTourState.STEP_FIND_MOUNT_ANTERO
                 && !tourTrainingMoveApproved) {
             showTrainingLocationConsent(() -> {
@@ -4756,6 +4791,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         // observational; if MapLibre was not ready when the step was first scheduled, this retry
         // can establish the intended mapped-controls state once without waiting for camera idle.
         prepareMappedResearchTourPresentation(expectedStep);
+        if (!mappedResearchPresentationReadyForTour(expectedStep)) {
+            retryGuidedTourCoach(expectedStep, generation, attempt);
+            return;
+        }
         View requiredTarget = guidedTourReadinessTarget(expectedStep);
         if (!guidedTourStepNeedsReadyTarget(expectedStep) || tourTargetReady(requiredTarget)) {
             showGuidedTourCoachForCurrentStep();
@@ -4787,13 +4826,15 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 || step == GuidedTourState.STEP_WORKSPACE_REOPEN
                 || step == GuidedTourState.STEP_CONTEXT_CONTROLS
                 || step == GuidedTourState.STEP_CONTEXT_COLLAPSE
-                || step == GuidedTourState.STEP_CONTEXT_REOPEN
-                || step == GuidedTourState.STEP_COMPLETE;
+                || step == GuidedTourState.STEP_CONTEXT_REOPEN;
     }
 
     private boolean guidedTourStepNeedsResearchSessionRestore(int step) {
+        // The mapped-control lessons depend on the same restored Research session as the workspace.
+        // Letting steps 17-19 run before restore allowed a default-expanded context box to replace
+        // the collapsed presentation after the "reopen" coach was already shown.
         return step >= GuidedTourState.STEP_MINERAL_EVIDENCE
-                && step <= GuidedTourState.STEP_WORKSPACE_REOPEN;
+                && step <= GuidedTourState.STEP_CONTEXT_REOPEN;
     }
 
     private boolean guidedTourStepNeedsRestoredResearchContent(int step) {
@@ -4895,7 +4936,27 @@ public final class MainActivity extends Activity implements LocationRepository.L
         } else if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
             context.prepareCollapsedControls();
         }
-        logMappedResearchPresentation("RESEARCH_TOUR_PREPARE");
+        String logKey = step + ":" + context.isCollapsed() + ":"
+                + (context.getDisplayedContainer() == null ? "none"
+                : context.getDisplayedContainer().getVisibility());
+        if (!logKey.equals(lastMappedResearchPrepLogKey)) {
+            lastMappedResearchPrepLogKey = logKey;
+            logMappedResearchPresentation("RESEARCH_TOUR_PREPARE");
+        }
+    }
+
+    private boolean mappedResearchPresentationReadyForTour(int step) {
+        if (step != GuidedTourState.STEP_CONTEXT_CONTROLS
+                && step != GuidedTourState.STEP_CONTEXT_COLLAPSE
+                && step != GuidedTourState.STEP_CONTEXT_REOPEN) return true;
+        if (mapView == null) return false;
+        MapContextCloseController context = MapContextCloseController.forMap(mapView);
+        View displayed = context.getDisplayedContainer();
+        if (displayed == null || !tourTargetReady(displayed)) return false;
+        if (step == GuidedTourState.STEP_CONTEXT_REOPEN) {
+            return context.isCollapsed() && displayed == context.getCollapsedControl();
+        }
+        return !context.isCollapsed() && displayed == context.getExpandedContainer();
     }
 
     private View mappedResearchTourTarget(int step) {
@@ -4950,10 +5011,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     private void showGuidedTourCoachForCurrentStep() {
         if (!GuidedTourState.isActive(this)) {
+            lastPresentedGuidedTourStep = -1;
             GuidedTourCoach.clear(this);
             return;
         }
         int step = GuidedTourState.step(this);
+        // Set this only when a coach is actually about to be rendered. If internal state changes
+        // before its replacement appears, Back/Skip on the old card are recognized as stale.
+        lastPresentedGuidedTourStep = step;
         int displayStep = GuidedTourState.displayStep(this);
         int displayTotal = GuidedTourState.displayTotal(this);
         switch (step) {
@@ -5123,10 +5188,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 GuidedTourCoach.show(this, displayStep, displayTotal,
                         "Tour complete",
                         "You can restart the full tour or any individual topic at any time from the small ? help button above the main map controls. Field Tools also have their own ? explainers and feature tours.",
-                        "Tap Finish.", mainHelpToursButton,
+                        "Tap Finish.", tourTargetReady(mainHelpToursButton) ? mainHelpToursButton : null,
                         tourBackAction(),
                         "Finish", () -> {
                             GuidedTourState.complete(this);
+                            lastPresentedGuidedTourStep = -1;
                             GuidedTourCoach.clear(this);
                         }, this::skipCurrentTourStep, this::exitTour);
                 break;

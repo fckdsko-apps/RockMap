@@ -44,14 +44,17 @@ public final class TourDebugLog {
     private static final String STORAGE_URI = "downloads_uri";
     private static final String FILE_NAME = "RockMap-Tour-Debug.txt";
 
-    private static final long MAX_INTERNAL_BYTES = 512L * 1024L;
-    private static final int KEEP_INTERNAL_BYTES = 384 * 1024;
+    private static final long MAX_INTERNAL_BYTES = 2L * 1024L * 1024L;
+    private static final int KEEP_INTERNAL_BYTES = 1536 * 1024;
     private static final long MIRROR_DELAY_MS = 400L;
 
     private static final AtomicBoolean INSTALLED = new AtomicBoolean();
     private static final AtomicBoolean MIRROR_SCHEDULED = new AtomicBoolean();
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final Object FILE_LOCK = new Object();
+    private static final Object HUD_EVENT_LOCK = new Object();
+    private static long lastHudFrameGeneration = Long.MIN_VALUE;
+    private static long lastHudWaitGeneration = Long.MIN_VALUE;
 
     private static final ScheduledExecutorService IO =
             Executors.newSingleThreadScheduledExecutor(r -> {
@@ -225,6 +228,19 @@ public final class TourDebugLog {
     public static void hudLifecycle(Activity activity, String event, long generation,
                                     String reason, String expandedTool, int measurementCount,
                                     View hud, View requiredTarget, long startedElapsed) {
+        String type = clean(event, 60);
+        // Frame/global-layout polling used to evict the user actions we actually needed to debug.
+        // Keep one frame and one wait record per render generation; terminal and state-changing
+        // events remain lossless and are mirrored immediately below.
+        synchronized (HUD_EVENT_LOCK) {
+            if ("HUD_FRAME_RECHECK".equals(type)) {
+                if (lastHudFrameGeneration == generation) return;
+                lastHudFrameGeneration = generation;
+            } else if ("HUD_LAYOUT_WAIT".equals(type)) {
+                if (lastHudWaitGeneration == generation) return;
+                lastHudWaitGeneration = generation;
+            }
+        }
         long elapsedMs = startedElapsed <= 0L ? -1L
                 : Math.max(0L, SystemClock.elapsedRealtime() - startedElapsed);
         String detail = "gen=" + generation
@@ -237,10 +253,35 @@ public final class TourDebugLog {
                 + " field={" + fieldSnapshot() + "}"
                 + " hud={" + targetSummary(hud) + "}"
                 + " requiredTarget={" + targetSummary(requiredTarget) + "}";
-        String type = clean(event, 60);
         if ("HUD_READY".equals(type) || "HUD_SUPERSEDED".equals(type)
-                || "HUD_RECOVERY".equals(type)) recordImportant(type, detail);
-        else record(type, detail);
+                || "HUD_RECOVERY".equals(type) || "HUD_PASSIVE_IGNORED".equals(type)) {
+            recordImportant(type, detail);
+        } else record(type, detail);
+    }
+
+    /** Durable action-level evidence for Measure/Prospecting point transitions. */
+    public static void measurementPoint(Activity activity, String event,
+                                        int beforeCount, int afterCount,
+                                        String beforeTool, int beforeStep, String beforePhase,
+                                        String afterTool, int afterStep, String afterPhase,
+                                        double latitude, double longitude) {
+        recordImportant(clean(event, 60),
+                "activity=" + activityName(activity)
+                        + " count=" + beforeCount + "->" + afterCount
+                        + " tour=" + clean(beforeTool, 60) + ":" + beforeStep
+                        + "/" + clean(beforePhase, 60)
+                        + "->" + clean(afterTool, 60) + ":" + afterStep
+                        + "/" + clean(afterPhase, 60)
+                        + " point=" + String.format(Locale.US, "%.6f,%.6f", latitude, longitude)
+                        + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
+    }
+
+    /** Durable main-tour button/state transition evidence. */
+    public static void mainTourAction(Activity activity, String event, String detail) {
+        recordImportant(clean(event, 60),
+                "activity=" + activityName(activity)
+                        + " detail=" + clean(detail, 600)
+                        + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
     }
 
     /** Snapshot the Research workspace/mapped-control presentation without mutating it. */
@@ -294,10 +335,17 @@ public final class TourDebugLog {
 
             Rect visible = new Rect();
             boolean globalVisible = false;
-            try {
-                globalVisible = target.getGlobalVisibleRect(visible)
-                        && visible.width() > 0 && visible.height() > 0;
-            } catch (Throwable ignored) {
+            boolean logicallyVisible = target.isAttachedToWindow()
+                    && target.getVisibility() == View.VISIBLE
+                    && target.isShown() && target.getAlpha() >= 0.05f;
+            if (logicallyVisible) {
+                try {
+                    globalVisible = target.getGlobalVisibleRect(visible)
+                            && visible.width() > 0 && visible.height() > 0;
+                } catch (Throwable ignored) {
+                    visible.setEmpty();
+                }
+            } else {
                 visible.setEmpty();
             }
 

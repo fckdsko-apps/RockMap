@@ -186,6 +186,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private long hudRenderGeneration;
     private long unresolvedHudRenderGeneration = -1L;
     private String unresolvedHudRenderReason = "";
+    private long lastPassiveHudSkipGeneration = -1L;
     private ViewTreeObserver.OnGlobalLayoutListener hudTourLayoutListener;
     private long hudTourLayoutGeneration = -1L;
     private long lastWaypointRefresh;
@@ -303,6 +304,13 @@ public final class FieldMapController implements LocationRepository.Listener {
     public void onPause() {
         resumed = false;
         main.removeCallbacks(refreshLoop);
+        // Invalidate every frame/global-layout continuation owned by the presentation that is
+        // leaving the foreground. Anonymous postOnAnimation callbacks may still run, but their
+        // generation can no longer mutate or restart this HUD after stop/pause.
+        hudRenderGeneration++;
+        unresolvedHudRenderGeneration = -1L;
+        unresolvedHudRenderReason = "";
+        lastPassiveHudSkipGeneration = -1L;
         clearHudTourLayoutWait();
         removeTapCapture();
         if (measureActive) FieldMapState.saveMeasurement(activity, measurement, true);
@@ -518,27 +526,38 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void renderHud(String reason) {
-        if (hud == null) return;
-        final long renderGeneration = ++hudRenderGeneration;
-        final long renderStarted = SystemClock.elapsedRealtime();
+        if (hud == null || !resumed || activity.isFinishing() || activity.isDestroyed()) return;
         final String renderReason = reason == null ? "state_change" : reason;
 
-        if (unresolvedHudRenderGeneration >= 0L && unresolvedHudRenderGeneration != renderGeneration
-                && ("resume".equals(renderReason) || "periodic_refresh".equals(renderReason)
-                || "camera_context_refresh".equals(renderReason))) {
-            TourDebugLog.hudLifecycle(activity, "HUD_RECOVERY", renderGeneration,
-                    renderReason + " rescued=" + unresolvedHudRenderReason
-                            + "#" + unresolvedHudRenderGeneration,
-                    expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
+        // Resume/camera/periodic work is not allowed to become the mechanism that repairs an
+        // unresolved user-action render. The originating action keeps ownership until it settles
+        // or a newer user/state action legitimately replaces it.
+        if (unresolvedHudRenderGeneration >= 0L && isPassiveHudRenderReason(renderReason)) {
+            if (lastPassiveHudSkipGeneration != unresolvedHudRenderGeneration) {
+                TourDebugLog.hudLifecycle(activity, "HUD_PASSIVE_IGNORED",
+                        unresolvedHudRenderGeneration,
+                        renderReason + " ignored while waiting for " + unresolvedHudRenderReason,
+                        expandedTool, measurement.size(), hud, settledHudTourTarget(),
+                        SystemClock.elapsedRealtime());
+                lastPassiveHudSkipGeneration = unresolvedHudRenderGeneration;
+            }
+            return;
         }
+
+        final long renderGeneration = ++hudRenderGeneration;
+        final long renderStarted = SystemClock.elapsedRealtime();
         if (unresolvedHudRenderGeneration >= 0L && unresolvedHudRenderGeneration != renderGeneration) {
             TourDebugLog.hudLifecycle(activity, "HUD_SUPERSEDED", unresolvedHudRenderGeneration,
                     unresolvedHudRenderReason, expandedTool, measurement.size(), hud,
                     settledHudTourTarget(), renderStarted);
         }
-        unresolvedHudRenderGeneration = -1L;
-        unresolvedHudRenderReason = "";
+        unresolvedHudRenderGeneration = renderGeneration;
+        unresolvedHudRenderReason = renderReason;
+        lastPassiveHudSkipGeneration = -1L;
 
+        // A generation owns the HUD from the moment rendering starts, not only after the first
+        // frame discovers pending layout. This closes the small race where a passive refresh could
+        // otherwise replace a user-action render between removeAllViews() and its next-frame check.
         TourDebugLog.hudLifecycle(activity, "HUD_RENDER_START", renderGeneration, renderReason,
                 expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
         clearHudTourLayoutWait();
@@ -610,10 +629,27 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         bringFieldUiToFront();
         positionFieldButton();
+        View requiredTarget = settledHudTourTarget();
+        TourDebugLog.hudLifecycle(activity, "HUD_RENDER_BUILT", renderGeneration, renderReason,
+                expandedTool, measurement.size(), hud, requiredTarget, renderStarted);
+
+        // GONE is a valid terminal presentation when no Field HUD should be displayed. Never wait
+        // for geometry on an intentionally hidden View; Android does not lay GONE views out, which
+        // was the source of the endless HUD_LAYOUT_WAIT loop seen in the device log.
+        if (hud.getVisibility() != View.VISIBLE) {
+            unresolvedHudRenderGeneration = -1L;
+            unresolvedHudRenderReason = "";
+            clearHudTourLayoutWait();
+            updateMapUiInsets();
+            TourDebugLog.hudLifecycle(activity, "HUD_READY", renderGeneration,
+                    renderReason + " terminal=hidden", expandedTool, measurement.size(), hud,
+                    requiredTarget, renderStarted);
+            showActiveMapFieldTourCoach();
+            return;
+        }
+
         hud.requestLayout();
         hud.invalidate();
-        TourDebugLog.hudLifecycle(activity, "HUD_RENDER_BUILT", renderGeneration, renderReason,
-                expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
         // Recheck on the next choreographer frame. If geometry is still pending, the one-shot
         // global-layout listener below owns the continuation for this exact render generation.
         hud.postOnAnimation(() -> finishHudRenderWhenLaidOut(
@@ -622,7 +658,9 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void finishHudRenderWhenLaidOut(long renderGeneration, String reason,
                                              long renderStarted, int frameAttempt) {
-        if (renderGeneration != hudRenderGeneration || hud == null) {
+        if (!resumed || activity.isFinishing() || activity.isDestroyed() || hud == null
+                || !hud.isAttachedToWindow()) return;
+        if (renderGeneration != hudRenderGeneration) {
             TourDebugLog.hudLifecycle(activity, "HUD_SUPERSEDED", renderGeneration, reason,
                     expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
             return;
@@ -630,9 +668,22 @@ public final class FieldMapController implements LocationRepository.Listener {
         TourDebugLog.hudLifecycle(activity, "HUD_FRAME_RECHECK", renderGeneration, reason,
                 expandedTool, measurement.size(), hud, settledHudTourTarget(), renderStarted);
 
+        if (hud.getVisibility() != View.VISIBLE) {
+            unresolvedHudRenderGeneration = -1L;
+            unresolvedHudRenderReason = "";
+            clearHudTourLayoutWait();
+            updateMapUiInsets();
+            TourDebugLog.hudLifecycle(activity, "HUD_READY", renderGeneration,
+                    reason + " terminal=hidden-after-frame", expandedTool, measurement.size(), hud,
+                    null, renderStarted);
+            showActiveMapFieldTourCoach();
+            return;
+        }
+
         boolean hudReady = !hud.isLayoutRequested()
+                && hud.isShown()
                 && hud.getWidth() > 0
-                && (hud.getVisibility() != View.VISIBLE || hud.getHeight() > 0);
+                && hud.getHeight() > 0;
         if (!hudReady) {
             unresolvedHudRenderGeneration = renderGeneration;
             unresolvedHudRenderReason = reason;
@@ -696,7 +747,9 @@ public final class FieldMapController implements LocationRepository.Listener {
     }
 
     private void waitForHudTourLayout(long renderGeneration, String reason, long renderStarted) {
-        if (hud == null || renderGeneration != hudRenderGeneration) return;
+        if (hud == null || !resumed || activity.isFinishing() || activity.isDestroyed()
+                || hud.getVisibility() != View.VISIBLE
+                || renderGeneration != hudRenderGeneration) return;
         if (hudTourLayoutListener != null && hudTourLayoutGeneration == renderGeneration) return;
         clearHudTourLayoutWait();
         hudTourLayoutGeneration = renderGeneration;
@@ -718,6 +771,11 @@ public final class FieldMapController implements LocationRepository.Listener {
             return;
         }
         observer.addOnGlobalLayoutListener(hudTourLayoutListener);
+    }
+
+    private boolean isPassiveHudRenderReason(String reason) {
+        return "resume".equals(reason) || "periodic_refresh".equals(reason)
+                || "camera_context_refresh".equals(reason);
     }
 
     private void clearHudTourLayoutWait() {
@@ -1116,8 +1174,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             FieldTourState.text(activity, "map");
             lastFieldTourCoachKey = "";
         }
+        // beginOneShotMapTap() owns the one state-driven HUD rebuild for this transition. A
+        // second immediate removeAllViews()/render cycle here could supersede that generation
+        // before its first frame and recreate the same race the tour lifecycle is meant to avoid.
         beginOneShotMapTap();
-        renderHud();
     }
 
     private void advanceMeasurementTourAfterUndo() {
@@ -2802,12 +2862,12 @@ public final class FieldMapController implements LocationRepository.Listener {
                 PointF screen = new PointF(event.getRawX() - mapLocation[0],
                         event.getRawY() - mapLocation[1]);
                 LatLng latLng = map.getProjection().fromScreenLocation(screen);
-                // Mark one-shot mode complete before renderHud() runs, but keep the catcher View
-                // physically attached until the point is committed so this same gesture cannot
-                // leak through to the map's normal feature-tap handler and open Location information.
+                // This ACTION_UP is already owned by the catcher and will return true, so remove
+                // the transient full-screen catcher before rebuilding the HUD/coach. The new lesson
+                // is then laid out against the final view hierarchy instead of a disappearing overlay.
                 awaitingMapTap = false;
-                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
                 removeTapCapture();
+                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
                 return true;
             }
             return true;
@@ -3042,6 +3102,10 @@ public final class FieldMapController implements LocationRepository.Listener {
 
     private void addMeasurementPoint(GeoMath.Point point, boolean centerIfFirst) {
         if (point == null) return;
+        int beforeCount = measurement.size();
+        String beforeTool = FieldTourState.tool(activity);
+        int beforeStep = FieldTourState.step(activity);
+        String beforePhase = FieldTourState.text(activity);
         if (!measureActive) measureActive = true;
         ArrayList<GeoMath.Point> candidate = new ArrayList<>(measurement);
         candidate.add(point);
@@ -3072,7 +3136,8 @@ public final class FieldMapController implements LocationRepository.Listener {
                 FieldTourState.text(activity, "");
                 FieldTourState.step(activity, step + 1);
                 lastFieldTourCoachKey = "";
-                GuidedTourCoach.clear(activity);
+                // Keep the current coach visible until the rebuilt HUD exposes the next real
+                // destination. GuidedTourCoach replaces it atomically when that target is ready.
             }
         } else if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)) {
             int step = FieldTourState.step(activity);
@@ -3083,6 +3148,18 @@ public final class FieldMapController implements LocationRepository.Listener {
                 lastFieldTourCoachKey = "";
             }
         }
+
+        // Polygon lessons own the Measure HUD. Reassert that ownership in the same transaction as
+        // the point/state update so Point 2 cannot leave the geometry committed while the panel is
+        // collapsed or unowned until some later lifecycle refresh.
+        if (FieldTourState.is(activity, FieldUiNames.MEASURE)
+                || FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS)) {
+            setExpandedToolValue(FieldMapState.TOOL_MEASURE);
+        }
+        TourDebugLog.measurementPoint(activity, "MEASUREMENT_POINT_ADDED",
+                beforeCount, measurement.size(), beforeTool, beforeStep, beforePhase,
+                FieldTourState.tool(activity), FieldTourState.step(activity),
+                FieldTourState.text(activity), point.lat, point.lon);
         applyCachedSources();
         renderHud("measurement_point_added");
     }

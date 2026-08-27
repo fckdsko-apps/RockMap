@@ -249,8 +249,16 @@ public final class MapContextCloseController {
 
     public void prepareCollapsedControls() {
         if (menuCollapsed && collapsedTab != null && collapsedTab.isShown()) return;
-        prepareExpandedControls();
-        collapseMenu();
+        // Tour preparation is state establishment, not a simulated user click. Set the logical
+        // presentation first so a later asynchronous rebuild cannot reopen the full box after the
+        // coach has already moved to the "reopen" lesson.
+        menuCollapsed = true;
+        if (menu != null) menu.setVisibility(View.GONE);
+        if (map != null) refreshNow();
+        else {
+            ensureViews();
+            if (collapsedTab != null) showCollapsedTab();
+        }
     }
 
     public void clearHistoricTarget() {
