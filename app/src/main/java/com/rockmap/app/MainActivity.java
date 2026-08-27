@@ -41,6 +41,7 @@ import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.field.FieldActivity;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.FieldMapController;
+import com.rockmap.app.field.FieldTourState;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaResearchStore;
 import com.rockmap.app.field.ProspectingAreaCreator;
@@ -84,6 +85,7 @@ import org.json.JSONObject;
 import org.maplibre.android.MapLibre;
 import org.maplibre.android.camera.CameraUpdateFactory;
 import org.maplibre.android.geometry.LatLng;
+import org.maplibre.android.maps.MapLibreMap;
 import org.maplibre.android.maps.MapView;
 import org.maplibre.android.style.layers.Layer;
 import org.maplibre.android.style.layers.CircleLayer;
@@ -102,6 +104,8 @@ import java.util.List;
 import java.util.Locale;
 
 public final class MainActivity extends Activity implements LocationRepository.Listener, MapController.Listener {
+    public static final String EXTRA_START_TRAINING_FIELD_TOUR = "rockmap.training.field_tour";
+
     private static final int LOCATION_PERMISSION_REQUEST = 501;
     private static final int EXPORT_WAYPOINTS_REQUEST = 502;
     private static final int IMPORT_WAYPOINTS_REQUEST = 503;
@@ -185,6 +189,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private boolean researchSessionRestored;
     private boolean researchSessionContentRestorePending;
     private long guidedTourScheduleGeneration;
+    private String pendingTrainingFieldTool = "";
+    private String pendingTrainingMainTopic = "";
+    private boolean tourTrainingMoveApproved;
+    private boolean tourTrainingConsentVisible;
+    private boolean researchTourEmptyRecoveryVisible;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -203,6 +212,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
         if (getIntent() != null && getIntent().hasExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID)) {
             skipSessionRestoreOnce = true;
+        }
+        if (getIntent() != null && getIntent().hasExtra(EXTRA_START_TRAINING_FIELD_TOUR)) {
+            String requestedTool = getIntent().getStringExtra(EXTRA_START_TRAINING_FIELD_TOUR);
+            getIntent().removeExtra(EXTRA_START_TRAINING_FIELD_TOUR);
+            if (requestedTool != null) pendingTrainingFieldTool = requestedTool.trim();
         }
 
         MapLibre.getInstance(this);
@@ -300,6 +314,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
             long areaId = launchIntent.getLongExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID, -1L);
             launchIntent.removeExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID);
             if (areaId > 0L) mapView.post(() -> openSavedProspectingAreaResearch(areaId));
+        }
+        if (!pendingTrainingFieldTool.isEmpty()) {
+            mapView.post(this::beginPendingTrainingLocationSetup);
         }
         // SafetyDisclosureActivity is the hard first-run gate. Only after it has been accepted
         // do we offer offline-data setup and, when the required packs are ready, the optional tour.
@@ -653,9 +670,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     ResearchAreaPanelController.VIEW_MINERALS,
                     "Mineral Evidence",
                     activeResearchMineralMessage);
+            if (GuidedTourState.isActive(this)
+                    && GuidedTourState.step(this) == GuidedTourState.STEP_MINERAL_EVIDENCE) {
+                GuidedTourCoach.clear(this);
+                showResearchTourEmptyRecovery();
+            }
             return;
         }
 
+        if (GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_MINERAL_EVIDENCE) {
+            GuidedTourState.advance(this, GuidedTourState.STEP_CHOOSE_MINERAL);
+        }
         String statusText = result.minerals.size() + " minerals & materials found in this area.";
         showResearchAreaPanel(ResearchAreaPanelController.VIEW_MINERALS, statusText);
         configureMineralOverview(result);
@@ -1897,12 +1923,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     private void showFindSearch() {
+        final boolean trainingSetup = hasPendingTrainingLocationSetup();
+        final boolean guidedTrainingFind = GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO;
+        final boolean trainingFlow = trainingSetup || guidedTrainingFind;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(4), dp(20), 0);
 
         TextView help = new TextView(this);
-        help.setText("Search offline for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs — or paste latitude/longitude. Name search is approximate.\n\nRoads, rivers, trails, parks, addresses, businesses and general landmarks are not dependable by name.\n\nExamples: Mount Antero, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
+        help.setText(trainingSetup
+                ? "Training setup: use Find to move the map to Saint Peters Dome before the numbered tour begins. This changes only the map view, not your GPS location.\n\nThe place name is filled in below. Tap Find, then select Saint Peters Dome in El Paso County."
+                : "Search offline for Colorado towns/localities, peaks and mountain features, and named lakes/reservoirs — or paste latitude/longitude. Name search is approximate.\n\nRoads, rivers, trails, parks, addresses, businesses and general landmarks are not dependable by name.\n\nExamples: Saint Peters Dome, Buena Vista, Twin Lakes, or 39.290719, -106.212474.\n\nSource: USGS National Map Gazetteer. Results are locators, not routing or access guidance.");
         help.setTextSize(13f);
         help.setTextColor(Color.rgb(65, 65, 65));
         help.setPadding(0, 0, 0, dp(8));
@@ -1911,22 +1943,40 @@ public final class MainActivity extends Activity implements LocationRepository.L
         EditText input = new EditText(this);
         input.setHint("Town, peak, lake, or coordinates");
         input.setSingleLine(true);
+        if (trainingSetup) {
+            input.setText(TourTrainingArea.PLACE_NAME);
+            input.setSelection(input.getText().length());
+        }
         box.addView(input);
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this)
-                .setTitle("Find on map")
+                .setTitle(trainingSetup ? "Find training area" : "Find on map")
                 .setView(box)
                 .setPositiveButton("Find", null)
-                .setNegativeButton("Close", null);
-        if (activePlaceTarget != null) {
+                .setNegativeButton(trainingFlow ? "Cancel tour" : "Close", (d, w) -> {
+                    if (trainingSetup) cancelPendingTrainingLocationSetup();
+                    else if (guidedTrainingFind) exitTour();
+                });
+        if (activePlaceTarget != null && !trainingFlow) {
             builder.setNeutralButton("Clear pin", (d, w) -> clearPlaceSearchTarget());
         }
         AlertDialog dialog = builder.create();
+        if (trainingFlow) {
+            dialog.setOnCancelListener(d -> {
+                if (trainingSetup) cancelPendingTrainingLocationSetup();
+                else if (guidedTrainingFind) exitTour();
+            });
+        }
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
                 .setOnClickListener(v -> {
                     String query = input.getText().toString().trim();
                     if (query.length() < 2) {
                         input.setError("Enter at least 2 characters.");
+                        return;
+                    }
+                    if ((trainingSetup || guidedTrainingFind)
+                            && !TourTrainingArea.matchesPlaceName(query)) {
+                        input.setError("Use Saint Peters Dome for this guided-tour example.");
                         return;
                     }
                     if (looksLikeCoordinates(query)) {
@@ -1970,7 +2020,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
                 @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
                     String entered = value == null ? "" : value.toString().trim();
-                    if (!findTargetShown && "Mount Antero".equalsIgnoreCase(entered)) {
+                    if (!findTargetShown && TourTrainingArea.matchesPlaceName(entered)) {
                         findTargetShown = true;
                         Button findButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
                         showFindDialogTour(dialog, findButton);
@@ -2022,7 +2072,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 finding
                         ? "Find searches the installed offline place index. Run the search after entering the place name."
                         : "Find searches the installed offline place index for named places and map features.",
-                finding ? "Tap “Find”." : "Enter “Mount Antero”.",
+                finding ? "Tap “Find”." : "Enter “Saint Peters Dome”.",
                 target, dialogTourBack(dialog), null, null,
                 dialogTourSkip(dialog), dialogTourExit(dialog));
     }
@@ -2035,7 +2085,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         GuidedTourCoach.show(this, host, GuidedTourState.displayStep(this), GuidedTourState.displayTotal(this),
                 "Find",
                 "Search results identify matching offline places. Select the place you want to view on the map.",
-                "Select “Mount Antero”.", target, dialogTourBack(dialog), null, null,
+                "Select “Saint Peters Dome”.", target, dialogTourBack(dialog), null, null,
                 dialogTourSkip(dialog), dialogTourExit(dialog));
     }
 
@@ -2075,15 +2125,30 @@ public final class MainActivity extends Activity implements LocationRepository.L
         }
 
         if (supported.isEmpty()) {
-            new AlertDialog.Builder(this)
+            boolean guidedTrainingFind = GuidedTourState.isActive(this)
+                    && GuidedTourState.step(this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO;
+            boolean trainingFlow = hasPendingTrainingLocationSetup() || guidedTrainingFind;
+            AlertDialog noMatchDialog = new AlertDialog.Builder(this)
                     .setTitle("No supported offline place match")
                     .setMessage("RockMap did not find a dependable name-search result for “" + query
                             + "”. Offline Find is best for cities/towns/localities, peaks and mountain features, and named lakes/reservoirs.\n\n"
                             + "Roads/highways, rivers/streams, trails, parks/monuments, venues, addresses, businesses, and general landmarks are not included as dependable Find categories.\n\n"
-                            + "Name search is imperfect and may only get you close. For the most accurate result, find the GPS latitude/longitude for the location you want and paste those coordinates into Find.")
+                            + (trainingFlow
+                            ? "This guided example specifically needs Saint Peters Dome. Search again to continue, or cancel the tour without moving the map."
+                            : "Name search is imperfect and may only get you close. For the most accurate result, find the GPS latitude/longitude for the location you want and paste those coordinates into Find."))
                     .setPositiveButton("Search again", (d, w) -> showFindSearch())
-                    .setNegativeButton("Close", null)
-                    .show();
+                    .setNegativeButton(trainingFlow ? "Cancel tour" : "Close", (d, w) -> {
+                        if (hasPendingTrainingLocationSetup()) cancelPendingTrainingLocationSetup();
+                        else if (guidedTrainingFind) exitTour();
+                    })
+                    .create();
+            if (trainingFlow) {
+                noMatchDialog.setOnCancelListener(d -> {
+                    if (hasPendingTrainingLocationSetup()) cancelPendingTrainingLocationSetup();
+                    else if (guidedTrainingFind) exitTour();
+                });
+            }
+            noMatchDialog.show();
             return;
         }
 
@@ -2092,7 +2157,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.setPadding(dp(4), 0, dp(4), 0);
 
         TextView instruction = new TextView(this);
-        instruction.setText(supported.size() + (supported.size() == 1 ? " match" : " matches")
+        instruction.setText(hasPendingTrainingLocationSetup()
+                ? "Training setup · Select Saint Peters Dome in El Paso County to continue."
+                : supported.size() + (supported.size() == 1 ? " match" : " matches")
                 + " · Tap a result to view it, or + Trip to save it.");
         instruction.setTextSize(12.5f);
         instruction.setTextColor(Color.rgb(75, 75, 75));
@@ -2195,8 +2262,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         if (record != null) {
                             row.setContentDescription(record.name + ". "
                                     + detailText + ". View on map or add to trip.");
-                            if ("Mount Antero".equalsIgnoreCase(record.name)) {
-                                row.setTag("rockmap-tour-find-mount-antero-result");
+                            if (TourTrainingArea.matchesPlaceName(record.name)) {
+                                row.setTag("rockmap-tour-find-training-result");
                             }
                         }
                         return row;
@@ -2209,25 +2276,50 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dialogListHeight(listHeightDp)));
 
+        final boolean guidedTrainingFindAtResults = GuidedTourState.isActive(this)
+                && GuidedTourState.step(this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO;
+        final boolean trainingFlowAtResults = hasPendingTrainingLocationSetup()
+                || guidedTrainingFindAtResults;
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Find: " + query)
                 .setView(box)
                 .setPositiveButton("Search again", (d, w) -> showFindSearch())
-                .setNegativeButton("Close", null)
+                .setNegativeButton(trainingFlowAtResults ? "Cancel tour" : "Close", (d, w) -> {
+                    if (hasPendingTrainingLocationSetup()) cancelPendingTrainingLocationSetup();
+                    else if (guidedTrainingFindAtResults) exitTour();
+                })
                 .create();
+        if (trainingFlowAtResults) {
+            dialog.setOnCancelListener(d -> {
+                if (hasPendingTrainingLocationSetup()) cancelPendingTrainingLocationSetup();
+                else if (guidedTrainingFindAtResults) exitTour();
+            });
+        }
 
         list.setOnItemClickListener((parent, view, position, id) -> {
             if (position < 0 || position >= supported.size()) return;
             PlaceRecord selected = supported.get(position).record;
-            dialog.dismiss();
-            showPlaceTarget(selected);
-            if (GuidedTourState.isActive(MainActivity.this)
-                    && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO
-                    && selected != null && "Mount Antero".equalsIgnoreCase(selected.name)) {
-                GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_OPEN_RESEARCH);
-                GuidedTourCoach.clear(MainActivity.this);
-                scheduleGuidedTourCoachForCurrentStep();
+            boolean guidedTrainingFind = GuidedTourState.isActive(MainActivity.this)
+                    && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_FIND_MOUNT_ANTERO;
+            if ((hasPendingTrainingLocationSetup() || guidedTrainingFind)
+                    && (selected == null || !TourTrainingArea.matchesPlaceName(selected.name))) {
+                showMessage("Select Saint Peters Dome to continue this guided-tour example.");
+                return;
             }
+            dialog.dismiss();
+            if (hasPendingTrainingLocationSetup()) {
+                centerOnTrainingPlace(selected, MainActivity.this::completePendingTrainingLocationSetup);
+                return;
+            }
+            if (guidedTrainingFind) {
+                GuidedTourCoach.clear(MainActivity.this);
+                centerOnTrainingPlace(selected, () -> {
+                    GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_OPEN_RESEARCH);
+                    scheduleGuidedTourCoachForCurrentStep();
+                });
+                return;
+            }
+            showPlaceTarget(selected);
         });
 
         dialog.show();
@@ -2237,7 +2329,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             int mountIndex = -1;
             for (int i = 0; i < supported.size(); i++) {
                 PlaceRecord candidate = supported.get(i).record;
-                if (candidate != null && "Mount Antero".equalsIgnoreCase(candidate.name)) {
+                if (candidate != null && TourTrainingArea.matchesPlaceName(candidate.name)) {
                     mountIndex = i;
                     break;
                 }
@@ -2277,6 +2369,49 @@ public final class MainActivity extends Activity implements LocationRepository.L
         activePlaceTarget = record;
         renderPlaceSearchTarget(true);
         showMessage("Showing " + record.name + " — " + record.kind + ".");
+    }
+
+    private void centerOnTrainingPlace(PlaceRecord record, Runnable onSettled) {
+        if (record == null || mapView == null) return;
+        activePlaceTarget = record;
+        renderPlaceSearchTarget(false);
+        moveToTrainingCamera(record.latitude, record.longitude, onSettled);
+        showMessage("Showing " + TourTrainingArea.PLACE_NAME
+                + " for the guided-tour example. Your GPS location has not changed.");
+    }
+
+    private void centerTrainingCoordinates(Runnable onSettled) {
+        moveToTrainingCamera(
+                TourTrainingArea.LATITUDE, TourTrainingArea.LONGITUDE, onSettled);
+    }
+
+    private void moveToTrainingCamera(double latitude, double longitude, Runnable onSettled) {
+        if (mapView == null) return;
+        mapView.getMapAsync(mapLibreMap -> {
+            if (trainingCameraReady(mapLibreMap, latitude, longitude)) {
+                if (onSettled != null) mapView.post(onSettled);
+                return;
+            }
+            MapLibreMap.OnCameraIdleListener listener = new MapLibreMap.OnCameraIdleListener() {
+                @Override public void onCameraIdle() {
+                    if (!trainingCameraReady(mapLibreMap, latitude, longitude)) return;
+                    mapLibreMap.removeOnCameraIdleListener(this);
+                    if (onSettled != null) mapView.post(onSettled);
+                }
+            };
+            mapLibreMap.addOnCameraIdleListener(listener);
+            mapLibreMap.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                    new LatLng(latitude, longitude), TourTrainingArea.MAP_ZOOM));
+        });
+    }
+
+    private boolean trainingCameraReady(MapLibreMap mapLibreMap, double latitude, double longitude) {
+        if (mapLibreMap == null || mapLibreMap.getCameraPosition() == null
+                || mapLibreMap.getCameraPosition().target == null) return false;
+        LatLng target = mapLibreMap.getCameraPosition().target;
+        return Math.abs(target.getLatitude() - latitude) <= 0.0002d
+                && Math.abs(target.getLongitude() - longitude) <= 0.0002d
+                && Math.abs(mapLibreMap.getCameraPosition().zoom - TourTrainingArea.MAP_ZOOM) <= 0.05d;
     }
 
     private void renderPlaceSearchTarget(boolean centerCamera) {
@@ -4109,6 +4244,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void runPostDisclaimerOnboarding() {
         if (isFinishing() || isDestroyed()) return;
         if (!SafetyAcknowledgement.isAccessAllowed(this)) return;
+        // A user-approved training setup owns the screen until Find either completes or is
+        // cancelled. Never stack automatic onboarding/tour prompts on top of that explicit flow.
+        if (hasPendingTrainingLocationSetup()) return;
         if (!GuidedTourState.initialDataSetupSeen(this)) {
             showOfflineDataManager(true);
             return;
@@ -4246,7 +4384,74 @@ public final class MainActivity extends Activity implements LocationRepository.L
         startTourTopic(GuidedTourState.TOPIC_FULL);
     }
 
+    private boolean topicNeedsTrainingLocationBeforeStart(String topic) {
+        return GuidedTourState.TOPIC_RESEARCH.equals(topic)
+                || GuidedTourState.TOPIC_GEOLOGY.equals(topic)
+                || GuidedTourState.TOPIC_MINERAL_EVIDENCE.equals(topic)
+                || GuidedTourState.TOPIC_HISTORIC_MINES.equals(topic)
+                || GuidedTourState.TOPIC_RESEARCH_WORKSPACE.equals(topic);
+    }
+
+    private void showTrainingLocationConsent(Runnable continueAction, boolean cancelActiveTour) {
+        if (tourTrainingConsentVisible) return;
+        tourTrainingConsentVisible = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Use a training area?")
+                .setMessage("This guided tour uses Saint Peters Dome as an example so the Research steps have enough mapped mineral evidence to demonstrate the tools properly.\n\nRockMap will move the map to that area. This changes only the map view; it does not change your GPS location. Prospecting Areas in the example are intentionally broad because source records can represent approximate localities and general vicinities.")
+                .setPositiveButton("Continue", (d, w) -> {
+                    tourTrainingConsentVisible = false;
+                    if (continueAction != null) continueAction.run();
+                })
+                .setNegativeButton(cancelActiveTour ? "Cancel tour" : "Cancel", (d, w) -> {
+                    tourTrainingConsentVisible = false;
+                    if (cancelActiveTour) exitTour();
+                })
+                .create();
+        dialog.setOnCancelListener(d -> {
+            tourTrainingConsentVisible = false;
+            if (cancelActiveTour) exitTour();
+        });
+        dialog.show();
+    }
+
+    private boolean hasPendingTrainingLocationSetup() {
+        return !pendingTrainingFieldTool.isEmpty() || !pendingTrainingMainTopic.isEmpty();
+    }
+
+    private void beginPendingTrainingLocationSetup() {
+        if (!hasPendingTrainingLocationSetup()) return;
+        GuidedTourCoach.clear(this);
+        showFindSearch();
+    }
+
+    private void cancelPendingTrainingLocationSetup() {
+        pendingTrainingFieldTool = "";
+        pendingTrainingMainTopic = "";
+        GuidedTourCoach.clear(this);
+    }
+
+    private void completePendingTrainingLocationSetup() {
+        if (!pendingTrainingFieldTool.isEmpty()) {
+            String tool = pendingTrainingFieldTool;
+            pendingTrainingFieldTool = "";
+            pendingTrainingMainTopic = "";
+            FieldTourState.start(this, tool);
+            GuidedTourCoach.clear(this);
+            FieldMapController.ensurePersistentEntry(this);
+            return;
+        }
+        if (!pendingTrainingMainTopic.isEmpty()) {
+            String topic = pendingTrainingMainTopic;
+            pendingTrainingMainTopic = "";
+            startTourTopic(topic, true);
+        }
+    }
+
     private void startTourTopic(String topic) {
+        startTourTopic(topic, false);
+    }
+
+    private void startTourTopic(String topic, boolean trainingLocationReady) {
         int start = GuidedTourState.STEP_CENTER_GPS;
         int end = GuidedTourState.STEP_CONTEXT_REOPEN;
         boolean needsCore = false;
@@ -4307,7 +4512,26 @@ public final class MainActivity extends Activity implements LocationRepository.L
             return;
         }
 
+        if (!trainingLocationReady && GuidedTourState.TOPIC_FIND.equals(topic)) {
+            showTrainingLocationConsent(() -> startTourTopic(topic, true), false);
+            return;
+        }
+        if (!trainingLocationReady && topicNeedsTrainingLocationBeforeStart(topic)) {
+            showTrainingLocationConsent(() -> {
+                pendingTrainingMainTopic = topic;
+                beginPendingTrainingLocationSetup();
+            }, false);
+            return;
+        }
+
         if (researchAreaPanel != null && researchAreaPanel.isVisible()) researchAreaPanel.closePanel();
+        if (start <= GuidedTourState.STEP_FIND_MOUNT_ANTERO
+                && end >= GuidedTourState.STEP_FIND_MOUNT_ANTERO) {
+            // A standalone Find tour has already received movement consent. The full tour has not:
+            // it asks when it actually reaches Find so GPS/map-basics lessons stay where they began.
+            tourTrainingMoveApproved = trainingLocationReady
+                    && GuidedTourState.TOPIC_FIND.equals(topic);
+        }
         GuidedTourState.startTopic(this, topic, start, end);
         scheduleGuidedTourCoachForCurrentStep();
     }
@@ -4425,14 +4649,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 advanceTourTo(GuidedTourState.STEP_FIND_MOUNT_ANTERO);
                 break;
             case GuidedTourState.STEP_FIND_MOUNT_ANTERO:
-                focusTourOnMountAnteroForSkip();
+                focusTourOnTrainingAreaForSkip();
                 break;
             case GuidedTourState.STEP_OPEN_RESEARCH:
                 showResearch();
                 break;
             case GuidedTourState.STEP_MINERAL_EVIDENCE:
                 if (activeResearchBounds != null) {
-                    GuidedTourState.advance(this, GuidedTourState.STEP_CHOOSE_MINERAL);
+                    GuidedTourCoach.clear(this);
                     showMineralEvidenceForBounds(activeResearchBounds);
                 } else {
                     advanceTourTo(GuidedTourState.STEP_COMPLETE);
@@ -4491,6 +4715,14 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private void scheduleGuidedTourCoachForCurrentStep() {
         if (!GuidedTourState.isActive(this) || getWindow() == null) return;
         final int expectedStep = GuidedTourState.step(this);
+        if (expectedStep == GuidedTourState.STEP_FIND_MOUNT_ANTERO
+                && !tourTrainingMoveApproved) {
+            showTrainingLocationConsent(() -> {
+                tourTrainingMoveApproved = true;
+                scheduleGuidedTourCoachForCurrentStep();
+            }, true);
+            return;
+        }
         final long generation = ++guidedTourScheduleGeneration;
         View scheduler = getWindow().getDecorView();
         scheduler.post(() -> showGuidedTourCoachWhenReady(expectedStep, generation, 0));
@@ -4728,9 +4960,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 break;
             case GuidedTourState.STEP_FIND_MOUNT_ANTERO:
                 GuidedTourCoach.show(this, displayStep, displayTotal,
-                        "Find Mount Antero",
-                        "Find searches the installed offline place index for named places and map features.",
-                        "Tap “Find”, search for “Mount Antero”, then tap the Mount Antero result.", mainFindButton,
+                        "Find Saint Peters Dome",
+                        "Find searches the installed offline place index for named places and map features. Saint Peters Dome gives the later Research lessons a consistent area with enough mapped mineral evidence.",
+                        "Tap “Find”, search for “Saint Peters Dome”, then select the Saint Peters Dome result in El Paso County.", mainFindButton,
                         tourBackAction(),
                         null, null, this::skipCurrentTourStep, this::exitTour);
                 break;
@@ -4857,39 +5089,33 @@ public final class MainActivity extends Activity implements LocationRepository.L
     }
 
     /** Used only when the user explicitly presses Skip step on the Find lesson. */
-    private void focusTourOnMountAnteroForSkip() {
+    private void focusTourOnTrainingAreaForSkip() {
         if (!placeIndexRepository.isReady()) {
-            showMessage("Mount Antero needs the Core Offline Map & Research Data place index. Open Offline Data if it is not installed yet.");
+            showMessage("Saint Peters Dome needs the Core Offline Map & Research Data place index. Open Offline Data if it is not installed yet.");
             return;
         }
         GuidedTourCoach.clear(this);
-        placeIndexRepository.search("Mount Antero", PLACE_SEARCH_LIMIT, new PlaceIndexRepository.Callback() {
+        placeIndexRepository.search(TourTrainingArea.PLACE_NAME, PLACE_SEARCH_LIMIT, new PlaceIndexRepository.Callback() {
             @Override public void onResult(List<PlaceSearchEngine.Match> matches) {
                 PlaceRecord best = null;
                 if (matches != null) {
                     for (PlaceSearchEngine.Match match : matches) {
                         if (match == null || match.record == null || !isSupportedFindResult(match.record)) continue;
-                        if ("Mount Antero".equalsIgnoreCase(match.record.name)) {
+                        if (TourTrainingArea.matchesPlaceName(match.record.name)) {
                             best = match.record;
                             break;
                         }
-                        if (best == null) best = match.record;
                     }
                 }
                 if (best == null) {
-                    showMessage("Mount Antero was not found in the installed offline place index. The tour has not moved your map.");
+                    showMessage("Saint Peters Dome was not found in the installed offline place index. The tour has not moved your map.");
                     scheduleGuidedTourCoachForCurrentStep();
                     return;
                 }
-                showPlaceTarget(best);
-                PlaceRecord target = best;
-                mapView.getMapAsync(mapLibreMap -> mapLibreMap.animateCamera(
-                        CameraUpdateFactory.newLatLngZoom(
-                                new LatLng(target.latitude, target.longitude), 11.1)));
-                advanceTourTo(GuidedTourState.STEP_OPEN_RESEARCH);
+                centerOnTrainingPlace(best, () -> advanceTourTo(GuidedTourState.STEP_OPEN_RESEARCH));
             }
             @Override public void onError(String message) {
-                showMessage(message == null ? "Offline place search could not open Mount Antero." : message);
+                showMessage(message == null ? "Offline place search could not open Saint Peters Dome." : message);
                 scheduleGuidedTourCoachForCurrentStep();
             }
         });
@@ -4904,6 +5130,16 @@ public final class MainActivity extends Activity implements LocationRepository.L
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (intent != null && intent.hasExtra(EXTRA_START_TRAINING_FIELD_TOUR)) {
+            String requestedTool = intent.getStringExtra(EXTRA_START_TRAINING_FIELD_TOUR);
+            intent.removeExtra(EXTRA_START_TRAINING_FIELD_TOUR);
+            pendingTrainingFieldTool = requestedTool == null ? "" : requestedTool.trim();
+            pendingTrainingMainTopic = "";
+            if (!pendingTrainingFieldTool.isEmpty()) {
+                mapView.post(this::beginPendingTrainingLocationSetup);
+            }
+            return;
+        }
         if (intent != null && intent.hasExtra(ProspectingAreaCreator.EXTRA_OPEN_RESEARCH_AREA_ID)) {
             // An explicit post-save Research action always wins over an older restorable session.
             skipSessionRestoreOnce = true;
@@ -4975,7 +5211,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 if (activeResearchBounds == null) return;
                 if (GuidedTourState.isActive(MainActivity.this)
                         && GuidedTourState.step(MainActivity.this) == GuidedTourState.STEP_MINERAL_EVIDENCE) {
-                    GuidedTourState.advance(MainActivity.this, GuidedTourState.STEP_CHOOSE_MINERAL);
+                    // Stay on the Mineral Evidence step until analysis proves that a selectable
+                    // mineral/material row actually exists. The result callback owns the advance.
                     GuidedTourCoach.clear(MainActivity.this);
                 }
                 if (activeMineralAreaAnalysis != null
@@ -5044,6 +5281,36 @@ public final class MainActivity extends Activity implements LocationRepository.L
         if (configureView) configureResearchPanelForView(activeResearchView);
         saveResearchSession();
         FieldMapController.ensurePersistentEntry(this);
+    }
+
+    private void showResearchTourEmptyRecovery() {
+        if (researchTourEmptyRecoveryVisible || !GuidedTourState.isActive(this)
+                || GuidedTourState.step(this) != GuidedTourState.STEP_MINERAL_EVIDENCE) return;
+        researchTourEmptyRecoveryVisible = true;
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("No mineral evidence in this area")
+                .setMessage("This guided lesson needs a broad area with mapped mineral evidence. Source locations can be approximate, so a very small or unrelated area may return no sortable minerals/materials.\n\nUse the Saint Peters Dome training area to retry, or exit the tour.")
+                .setPositiveButton("Use training area", (d, w) -> {
+                    researchTourEmptyRecoveryVisible = false;
+                    activeMineralAreaAnalysis = null;
+                    activeResearchMineralKey = "";
+                    activeResearchMineralLabel = "";
+                    GuidedTourState.setStep(this, GuidedTourState.STEP_OPEN_RESEARCH);
+                    if (researchAreaPanel != null && researchAreaPanel.isVisible()) {
+                        researchAreaPanel.closePanel();
+                    }
+                    centerTrainingCoordinates(this::scheduleGuidedTourCoachForCurrentStep);
+                })
+                .setNegativeButton("Exit tour", (d, w) -> {
+                    researchTourEmptyRecoveryVisible = false;
+                    exitTour();
+                })
+                .create();
+        dialog.setOnCancelListener(d -> {
+            researchTourEmptyRecoveryVisible = false;
+            exitTour();
+        });
+        dialog.show();
     }
 
     private void showResearchEmptyState(String view, String subject, String detail) {
@@ -6133,7 +6400,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     @Override
     public void onMapSafetyState(boolean verified, String message) {
         // The bundled Protomaps style already contains named peak labels, but its inherited
-        // zoom-10 floor hides useful regional landmarks such as Mount Antero. Prominent peaks
+        // zoom-10 floor hides useful regional landmarks such as Saint Peters Dome. Prominent peaks
         // are already ranked by the basemap; expose that existing offline layer from zoom 6.5.
         mapView.getMapAsync(mapLibreMap -> mapLibreMap.getStyle(loadedStyle -> {
             Layer peakLabels = loadedStyle.getLayer(MapController.LABEL_PEAK);

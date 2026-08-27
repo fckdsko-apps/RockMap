@@ -27,6 +27,7 @@ import android.widget.Toast;
 import com.rockmap.app.MainActivity;
 import com.rockmap.app.GuidedTourCoach;
 import com.rockmap.app.RockMapDragHandle;
+import com.rockmap.app.TourTrainingArea;
 import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.waypoints.WaypointEntity;
@@ -596,6 +597,23 @@ public final class FieldMapController implements LocationRepository.Listener {
         ensureHudWithinUsableBounds();
         bringFieldUiToFront();
         updateMapUiInsets();
+        if (FieldTourState.is(activity, FieldUiNames.MEASURE, 14)) {
+            View summary = hudTourTarget("rockmap-measure-summary");
+            Rect visible = new Rect();
+            boolean ready = summary != null
+                    && summary.isAttachedToWindow()
+                    && summary.isShown()
+                    && summary.getWidth() > 0
+                    && summary.getHeight() > 0
+                    && summary.getGlobalVisibleRect(visible)
+                    && visible.width() > 0
+                    && visible.height() > 0;
+            if (!ready && attempt < 30) {
+                hud.postDelayed(() -> finishHudRenderWhenLaidOut(renderGeneration, attempt + 1), 16L);
+                return;
+            }
+            if (!ready) return;
+        }
         showActiveMapFieldTourCoach();
     }
 
@@ -853,6 +871,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         tapMap.setTag(awaitingMapTap ? "rockmap-measure-cancel-tap" : "rockmap-measure-tap-map");
         first.addView(tapMap, weight());
         Button addGps = hudButton("Add GPS", v -> {
+            if (FieldTourState.is(activity, FieldUiNames.MEASURE, 8)) {
+                setMapTourStep(9);
+                return;
+            }
             if (FieldTourState.is(activity, FieldUiNames.PROSPECTING_AREAS, 4)) {
                 setMapTourStep(5);
                 return;
@@ -1575,13 +1597,21 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void addMapCenterMeasurementPointForTour() {
         if (map == null || map.getCameraPosition() == null || map.getCameraPosition().target == null) return;
         LatLng center = map.getCameraPosition().target;
-        int index = measurement.size();
-        double delta = 0.00055d * Math.max(1, index);
+        int index = measurement.size() % 3;
         double lat = center.getLatitude();
         double lon = center.getLongitude();
-        if (index % 3 == 1) lon += delta;
-        else if (index % 3 == 2) lat += delta;
-        else if (index > 0) lon -= delta;
+        // Skip-step geometry must teach the same vicinity-scale behavior as manual placement.
+        // This triangle is roughly 1–1.5 km across near the Colorado training latitude and keeps
+        // the map center inside the Prospecting Area instead of creating a tiny pinpoint polygon.
+        if (index == 0) {
+            lat -= 0.0065d;
+            lon -= 0.0085d;
+        } else if (index == 1) {
+            lat -= 0.0065d;
+            lon += 0.0085d;
+        } else {
+            lat += 0.0075d;
+        }
         addMeasurementPoint(new GeoMath.Point(lat, lon), false);
     }
 
@@ -1936,19 +1966,11 @@ public final class FieldMapController implements LocationRepository.Listener {
                 final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(8); };
                 back = () -> setMapTourStep(6);
             } else if (step == 8) {
-                if ("undo".equals(phase)) {
-                    target = hudTourTarget("rockmap-measure-undo");
-                    title = "Remove the GPS example";
-                    body = "The GPS position was added as a real measurement point. Undo removes this example before the next point source.";
-                    action = "Tap “Undo”.";
-                    final View t = target; skip = () -> { if (t != null) t.performClick(); else setMapTourStep(9); };
-                } else {
-                    target = hudTourTarget("rockmap-measure-add-gps");
-                    title = "Add GPS";
-                    body = "Add GPS requests a fresh precise GPS fix and uses your current position as the next measurement point.";
-                    action = "Tap “Add GPS”.";
-                    skip = () -> setMapTourStep(9);
-                }
+                target = hudTourTarget("rockmap-measure-add-gps");
+                title = "Add GPS";
+                body = "Add GPS uses your real current GPS position as the next measurement point. We will not add it during this training example because the example polygon is being built around Saint Peters Dome.";
+                action = "Review “Add GPS”, then Continue.";
+                primary = "Continue"; primaryAction = () -> setMapTourStep(9); skip = primaryAction;
                 back = () -> setMapTourStep(7);
             } else if (step == 9) {
                 target = hudTourTarget("rockmap-measure-saved");
@@ -1966,15 +1988,20 @@ public final class FieldMapController implements LocationRepository.Listener {
                 back = () -> setMapTourStep(9);
             } else if (step >= 11 && step <= 13) {
                 int ordinal = step - 10;
+                String placement = ordinal == 1
+                        ? "Place the first boundary point well to one side of Saint Peters Dome."
+                        : (ordinal == 2
+                        ? "Place the second point well away from the first, on the other side of the visible vicinity."
+                        : "Place the third point on the opposite side so Saint Peters Dome sits inside a broad triangle.");
                 if ("map".equals(phase) || awaitingMapTap) {
                     title = "Polygon point " + ordinal;
-                    body = "Choose the next boundary point on the map. Three points are enough to calculate an area and enable saving a Prospecting Area.";
-                    action = "Tap a location on the map.";
+                    body = placement + " Prospecting Areas are broad research areas: source records can be approximate, so a tiny polygon can miss evidence from the same general vicinity.";
+                    action = "Tap a widely separated boundary location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
                     title = "Polygon point " + ordinal;
-                    body = "Use Tap map for the next polygon vertex.";
+                    body = placement + " Keep the points spread out rather than clustering them around one spot.";
                     action = "Tap “Tap map”.";
                     final View t = target; skip = () -> {
                         if (t != null) t.performClick();
@@ -1985,7 +2012,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             } else if (step == 14) {
                 target = hudTourTarget("rockmap-measure-summary");
                 title = "Distance and area";
-                body = "With two or more points RockMap measures the path. With three or more points it also calculates polygon area. Drag any vertex to adjust the shape.";
+                body = "With two or more points RockMap measures the path. With three or more points it also calculates polygon area. For prospecting research, treat the polygon as a general vicinity rather than a precision target: mineral and historic source locations can be approximate. Drag any vertex to adjust the broad area.";
                 action = "Review the measurements and try moving a vertex.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(15); skip = primaryAction;
                 back = () -> backFromMeasurementPolygon(14, 11);
@@ -2009,7 +2036,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             if (step == 3) {
                 target = hudTourTarget("rockmap-measure-header");
                 title = "Define the area with Measure";
-                body = "Measure builds the boundary of a Prospecting Area. Add points from the map, GPS, Saved Locations, Field Records, or coordinates, then save the finished polygon.";
+                body = "Measure builds the boundary of a Prospecting Area. Prospecting Areas should represent a useful general vicinity, not a pinpoint boundary: mineral and historic records can be approximate. Add widely separated points from the map, GPS, Saved Locations, Field Records, or coordinates, then save the finished polygon.";
                 action = "Review the Measure panel, then Continue.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(4); skip = primaryAction;
                 back = () -> {
@@ -2023,7 +2050,7 @@ public final class FieldMapController implements LocationRepository.Listener {
             } else if (step == 4) {
                 target = hudTourTarget("rockmap-measure-add-gps");
                 title = "Add GPS";
-                body = "Add GPS uses a fresh GPS fix as the next boundary point.";
+                body = "Add GPS uses your real current GPS position as the next boundary point. We will not add it during this training example because the example Prospecting Area is being built around Saint Peters Dome.";
                 action = "Review “Add GPS”, then Continue.";
                 primary = "Continue"; primaryAction = () -> setMapTourStep(5); skip = primaryAction;
                 back = () -> setMapTourStep(3);
@@ -2064,15 +2091,20 @@ public final class FieldMapController implements LocationRepository.Listener {
                 back = () -> setMapTourStep(8);
             } else if (step >= 10 && step <= 12) {
                 int ordinal = step - 9;
+                String placement = ordinal == 1
+                        ? "Start well to one side of Saint Peters Dome."
+                        : (ordinal == 2
+                        ? "Put the second boundary point well away from the first."
+                        : "Put the third point on the opposite side so the training location is enclosed by a broad triangle.");
                 if ("map".equals(phase) || awaitingMapTap) {
                     title = "Boundary point " + ordinal;
-                    body = "Tap the map to place this Prospecting Area boundary point.";
-                    action = "Tap a location on the map.";
+                    body = placement + " The goal is a general research vicinity large enough to catch approximate mineral and historic records.";
+                    action = "Tap a widely separated boundary location on the map.";
                     skip = () -> { removeTapCapture(); addMapCenterMeasurementPointForTour(); };
                 } else {
                     target = hudTourTarget("rockmap-measure-tap-map");
                     title = "Boundary point " + ordinal;
-                    body = "Use Tap map to place the next boundary vertex.";
+                    body = placement + " Do not cluster the tutorial points tightly around the center.";
                     action = "Tap “Tap map”.";
                     final View t = target; skip = () -> {
                         if (t != null) t.performClick();
@@ -2620,7 +2652,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 // physically attached until the point is committed so this same gesture cannot
                 // leak through to the map's normal feature-tap handler and open Location information.
                 awaitingMapTap = false;
-                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), true);
+                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
                 removeTapCapture();
                 return true;
             }
@@ -2869,7 +2901,11 @@ public final class FieldMapController implements LocationRepository.Listener {
         }
         measurement.add(point);
         FieldMapState.saveMeasurement(activity, measurement, true);
-        if (centerIfFirst && measurement.size() == 1) centerExplicit(point, 16d);
+        if (centerIfFirst && measurement.size() == 1) {
+            double currentZoom = map != null && map.getCameraPosition() != null
+                    ? map.getCameraPosition().zoom : TourTrainingArea.MAP_ZOOM;
+            centerExplicit(point, currentZoom);
+        }
 
         if (FieldTourState.is(activity, FieldUiNames.MEASURE)) {
             int step = FieldTourState.step(activity);

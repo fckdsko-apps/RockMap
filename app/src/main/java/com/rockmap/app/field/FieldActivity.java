@@ -241,6 +241,28 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 .show();
     }
 
+    private boolean usesTrainingArea(String tool) {
+        return FieldUiNames.MEASURE.equals(tool)
+                || FieldUiNames.PROSPECTING_AREAS.equals(tool)
+                || FieldUiNames.FIELD_RECORDS.equals(tool);
+    }
+
+    private void confirmTrainingAreaAndReturnToMap(String tool) {
+        new AlertDialog.Builder(this)
+                .setTitle("Use a training area?")
+                .setMessage("This guided tour uses Saint Peters Dome as an example so later Research steps have enough mapped mineral evidence to demonstrate the tools properly.\n\nRockMap will move the map there before the numbered tour begins. This changes only the map view; it does not change your GPS location. The example Prospecting Area is intentionally broad because source records can represent approximate localities and general vicinities.")
+                .setPositiveButton("Continue", (d, w) -> {
+                    GuidedTourCoach.clear(FieldActivity.this);
+                    Intent intent = new Intent(FieldActivity.this, MainActivity.class);
+                    intent.putExtra(MainActivity.EXTRA_START_TRAINING_FIELD_TOUR, tool);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    startActivity(intent);
+                    finish();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void startFieldTourByName(String tool) {
         if (tool == null || tool.trim().isEmpty()) return;
         if (FieldUiNames.SAVED_LOCATIONS.equals(tool)) {
@@ -255,6 +277,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
                     () -> startResearch(new Intent(this, ResearchActivity.class)), false);
             return;
         }
+        if (usesTrainingArea(tool)) {
+            confirmTrainingAreaAndReturnToMap(tool);
+            return;
+        }
         FieldTourState.start(this, tool);
         GuidedTourCoach.clear(this);
         returnToMap();
@@ -265,6 +291,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         // All actual Field Tools now enter the same map-first interactive tour engine used by the
         // main Field menu. Saved Locations and Research retain their small local walkthroughs.
         if (!FieldUiNames.SAVED_LOCATIONS.equals(tool) && !"Research".equals(tool)) {
+            if (usesTrainingArea(tool)) {
+                confirmTrainingAreaAndReturnToMap(tool);
+                return;
+            }
             FieldTourState.start(this, tool);
             GuidedTourCoach.clear(this);
             returnToMap();
@@ -716,7 +746,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
         root.addView(title(FieldUiNames.FIELD_RECORDS));
         LinearLayout add = row();
         Button newGps = small("New at GPS", v -> {
-            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) GuidedTourCoach.clear(this);
+            if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) {
+                toast("This guided example uses Saint Peters Dome coordinates so the later Research steps stay in the training area. New at GPS remains available outside the tour.");
+                getWindow().getDecorView().post(this::showFieldRecordsTourCoach);
+                return;
+            }
             newFieldAtGps();
         });
         Button newCoords = small("New at coordinates", v -> {
@@ -774,6 +808,10 @@ public final class FieldActivity extends Activity implements LocationRepository.
         EditText input = new EditText(this);
         input.setHint("Latitude, longitude");
         input.setSingleLine(true);
+        if (FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) {
+            input.setText(com.rockmap.app.TourTrainingArea.COORDINATES);
+            input.setSelection(input.getText().length());
+        }
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("New field record at coordinates")
                 .setView(input)
@@ -818,9 +856,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                 || !FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 3)) return;
         boolean readyForContinue = "field-coordinate-continue".equals(FieldTourState.text(this));
         if (!readyForContinue) {
-            showDialogCoach(dialog, 3, FieldUiNames.FIELD_RECORDS, "Enter a location",
-                    "Use coordinates when the observation is somewhere other than your current GPS position.",
-                    "Enter latitude and longitude.", input,
+            showDialogCoach(dialog, 3, FieldUiNames.FIELD_RECORDS, "Use the training location",
+                    "This guided example uses Saint Peters Dome instead of your real GPS position so the later Research steps stay in a known evidence-rich vicinity. The training coordinates are filled in for you.",
+                    "Review the coordinates, then Continue.", input,
                     () -> {
                         dialog.setOnDismissListener(null);
                         dialog.dismiss();
@@ -831,11 +869,9 @@ public final class FieldActivity extends Activity implements LocationRepository.
                         FieldTourState.text(this, "field-coordinate-continue");
                         showFieldRecordCoordinateTour(dialog, input, cont);
                     }, () -> {
-                        dialog.setOnDismissListener(null);
-                        dialog.dismiss();
-                        FieldTourState.text(this, "");
-                        FieldTourState.step(this, 2);
-                        newFieldAtGps();
+                        // Skip still uses the deterministic training coordinates; it must never
+                        // substitute the phone's real GPS position into this guided example.
+                        cont.performClick();
                     });
         } else {
             showDialogCoach(dialog, 3, FieldUiNames.FIELD_RECORDS, "Use these coordinates",
@@ -1107,17 +1143,18 @@ public final class FieldActivity extends Activity implements LocationRepository.
 
     private void showFieldRecordsTourCoach() {
         if (!FieldTourState.is(this, FieldUiNames.FIELD_RECORDS, 2)) return;
-        View target = findViewById(android.R.id.content).findViewWithTag("rockmap-field-record-create-choice");
+        View target = findViewById(android.R.id.content).findViewWithTag("rockmap-field-record-new-coordinates");
         showFieldCoach(2, FieldUiNames.FIELD_RECORDS, "Create a Field Record",
-                "Field Records save detailed observations at a location. Start one from your current GPS position or from coordinates you enter.",
-                "Choose “New at GPS” or “New at coordinates”.", target,
+                "Field Records can start from GPS or entered coordinates. For this guided example, use coordinates so the record stays at the Saint Peters Dome training area instead of jumping back to your real GPS location.",
+                "Tap “New at coordinates”.", target,
                 () -> {
                     FieldTourState.step(this, 1);
                     returnToMap();
                 }, null, null,
                 () -> {
-                    View gps = findViewById(android.R.id.content).findViewWithTag("rockmap-field-record-new-gps");
-                    if (gps != null) gps.performClick();
+                    View coordinates = findViewById(android.R.id.content)
+                            .findViewWithTag("rockmap-field-record-new-coordinates");
+                    if (coordinates != null) coordinates.performClick();
                 });
     }
 
