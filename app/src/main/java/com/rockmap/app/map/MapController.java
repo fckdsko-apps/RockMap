@@ -1,6 +1,10 @@
 package com.rockmap.app.map;
 
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.location.Location;
@@ -19,6 +23,8 @@ import org.maplibre.android.maps.Style;
 import org.maplibre.android.style.layers.CircleLayer;
 import org.maplibre.android.style.layers.FillLayer;
 import org.maplibre.android.style.layers.Layer;
+import org.maplibre.android.style.layers.Property;
+import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.sources.GeoJsonSource;
 import org.maplibre.android.style.sources.VectorSource;
 import org.maplibre.geojson.Feature;
@@ -37,6 +43,11 @@ import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColo
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
 import static org.maplibre.android.style.layers.PropertyFactory.fillColor;
 import static org.maplibre.android.style.layers.PropertyFactory.fillOpacity;
+import static org.maplibre.android.style.layers.PropertyFactory.iconAllowOverlap;
+import static org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement;
+import static org.maplibre.android.style.layers.PropertyFactory.iconImage;
+import static org.maplibre.android.style.layers.PropertyFactory.iconRotate;
+import static org.maplibre.android.style.layers.PropertyFactory.iconRotationAlignment;
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
 public final class MapController {
@@ -56,6 +67,8 @@ public final class MapController {
     public static final String CLAIM_FILL = "rockmap-claim-fill";
     public static final String CLAIM_OUTLINE = "rockmap-claim-outline";
     public static final String CURRENT_SOURCE = "rockmap-current-location-source";
+    public static final String CURRENT_HEADING_LAYER = "rockmap-current-heading-layer";
+    private static final String CURRENT_HEADING_ICON = "rockmap-current-heading-icon";
     public static final String CURRENT_LAYER = "rockmap-current-location-layer";
     public static final String WAYPOINT_SOURCE = "rockmap-waypoint-source";
     public static final String WAYPOINT_LAYER = "rockmap-waypoint-layer";
@@ -73,6 +86,7 @@ public final class MapController {
     private MapLibreMap map;
     private Style style;
     private Location currentLocation;
+    private Float currentHeadingDegrees;
     private List<WaypointEntity> waypoints = new ArrayList<>();
     private boolean landVisible = true;
     private boolean claimsVisible = true;
@@ -384,6 +398,11 @@ public final class MapController {
         renderCurrentLocation();
     }
 
+    public void updateCurrentHeading(Float headingDegrees) {
+        currentHeadingDegrees = headingDegrees == null ? null : normalizeHeading(headingDegrees);
+        renderCurrentHeading();
+    }
+
     public void setWaypoints(List<WaypointEntity> items) {
         waypoints = items == null ? new ArrayList<>() : new ArrayList<>(items);
         renderWaypoints();
@@ -436,6 +455,21 @@ public final class MapController {
                     circleStrokeWidth(3f));
             style.addLayer(current);
         }
+        if (style.getImage(CURRENT_HEADING_ICON) == null) {
+            style.addImage(CURRENT_HEADING_ICON, createCurrentHeadingIcon());
+        }
+        if (style.getLayer(CURRENT_HEADING_LAYER) == null) {
+            SymbolLayer heading = new SymbolLayer(CURRENT_HEADING_LAYER, CURRENT_SOURCE);
+            heading.setProperties(
+                    iconImage(CURRENT_HEADING_ICON),
+                    iconAllowOverlap(true),
+                    iconIgnorePlacement(true),
+                    iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+                    iconRotate(currentHeadingDegrees == null ? 0f : currentHeadingDegrees),
+                    visibility(currentHeadingDegrees == null ? NONE : VISIBLE));
+            style.addLayerBelow(heading, CURRENT_LAYER);
+        }
+        renderCurrentHeading();
         // Keep a nearly invisible land-status hit-test layer independent of the visual land toggle.
         // It lets a mineral marker report mapped management at its coordinate even when the user
         // has hidden the colored land layer. This remains management/status mapping, not parcel data.
@@ -459,6 +493,50 @@ public final class MapController {
                     circleStrokeWidth(2f));
             style.addLayer(saved);
         }
+    }
+
+    private void renderCurrentHeading() {
+        if (style == null) return;
+        Layer layer = style.getLayer(CURRENT_HEADING_LAYER);
+        if (!(layer instanceof SymbolLayer)) return;
+        SymbolLayer heading = (SymbolLayer) layer;
+        if (currentHeadingDegrees == null) {
+            heading.setProperties(visibility(NONE));
+            return;
+        }
+        heading.setProperties(
+                iconRotate(currentHeadingDegrees),
+                visibility(VISIBLE));
+    }
+
+    private Bitmap createCurrentHeadingIcon() {
+        final int size = 48;
+        final float center = size / 2f;
+        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bitmap);
+        Path arrow = new Path();
+        arrow.moveTo(center, 2f);
+        arrow.lineTo(center + 11f, center + 1f);
+        arrow.lineTo(center - 11f, center + 1f);
+        arrow.close();
+
+        Paint outline = new Paint(Paint.ANTI_ALIAS_FLAG);
+        outline.setStyle(Paint.Style.STROKE);
+        outline.setStrokeJoin(Paint.Join.ROUND);
+        outline.setStrokeWidth(4f);
+        outline.setColor(Color.WHITE);
+        canvas.drawPath(arrow, outline);
+
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setStyle(Paint.Style.FILL);
+        fill.setColor(Color.rgb(20, 90, 230));
+        canvas.drawPath(arrow, fill);
+        return bitmap;
+    }
+
+    private static float normalizeHeading(float headingDegrees) {
+        float normalized = headingDegrees % 360f;
+        return normalized < 0f ? normalized + 360f : normalized;
     }
 
     private void renderCurrentLocation() {

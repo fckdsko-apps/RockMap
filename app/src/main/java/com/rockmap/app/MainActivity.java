@@ -45,6 +45,7 @@ import com.rockmap.app.field.FieldTourState;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaResearchStore;
 import com.rockmap.app.field.ProspectingAreaCreator;
+import com.rockmap.app.location.HeadingRepository;
 import com.rockmap.app.location.LocationRepository;
 import com.rockmap.app.map.LandStatusCatalog;
 import com.rockmap.app.map.MapContextCloseController;
@@ -103,7 +104,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-public final class MainActivity extends Activity implements LocationRepository.Listener, MapController.Listener {
+public final class MainActivity extends Activity implements LocationRepository.Listener, HeadingRepository.Listener, MapController.Listener {
     public static final String EXTRA_START_TRAINING_FIELD_TOUR = "rockmap.training.field_tour";
 
     private static final int LOCATION_PERMISSION_REQUEST = 501;
@@ -146,6 +147,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
     private MapView mapView;
     private MapController mapController;
     private LocationRepository locationRepository;
+    private HeadingRepository headingRepository;
     private WaypointRepository waypointRepository;
     private TripRepository tripRepository;
     private OfflineDataManager offlineDataManager;
@@ -230,6 +232,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         waypointRepository = new WaypointRepository(this);
         tripRepository = new TripRepository(this);
         locationRepository = new LocationRepository(this, this);
+        headingRepository = new HeadingRepository(this, this);
 
         FrameLayout root = new FrameLayout(this);
         mainRoot = root;
@@ -6503,7 +6506,18 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override
     public void onLocation(Location location) {
+        headingRepository.updateLocation(location);
         mapController.updateCurrentLocation(location);
+    }
+
+    @Override
+    public void onHeading(float headingDegrees) {
+        mapController.updateCurrentHeading(headingDegrees);
+    }
+
+    @Override
+    public void onHeadingUnavailable() {
+        mapController.updateCurrentHeading(null);
     }
 
     @Override
@@ -6729,6 +6743,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         super.onStart();
         started = true;
         mapView.onStart();
+        headingRepository.start();
         if (locationRepository.hasCoarsePermission()) locationRepository.start();
     }
 
@@ -6757,6 +6772,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
         saveResearchSession();
         started = false;
         locationRepository.stop();
+        headingRepository.stop();
         mapView.onStop();
         super.onStop();
     }
@@ -6775,6 +6791,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override protected void onDestroy() {
         clearUpdateObserver();
+        headingRepository.stop();
         placeIndexRepository.close();
         waypointRepository.close();
         tripRepository.close();
