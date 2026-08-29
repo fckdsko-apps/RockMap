@@ -175,10 +175,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private boolean measureActive;
     private String expandedTool;
     private boolean awaitingMapTap;
-    // Legacy overlay reference is retained only so upgrades can remove an orphaned pre-fix catcher.
-    // New one-shot placement uses MapLibre's click listener, which leaves pan/zoom gestures native.
     private View tapCapture;
-    private MapLibreMap.OnMapClickListener oneShotMapClickListener;
     private boolean measurementDragHandlerInstalled;
     private int draggingMeasurementIndex = -1;
     private Location latestNavigationLocation;
@@ -286,10 +283,6 @@ public final class FieldMapController implements LocationRepository.Listener {
                 map.addOnCameraMoveStartedListener(reason -> {
                     if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                         beginCameraCommand();
-                        if (awaitingMapTap && measurementPolygonTourStepActive()) {
-                            TourDebugLog.mainTourAction(activity, "MAP_PAN_WHILE_TAP_ARMED",
-                                    "Placement remains armed while the user repositions the map");
-                        }
                     }
                 });
                 cameraMoveListenerInstalled = true;
@@ -758,9 +751,9 @@ public final class FieldMapController implements LocationRepository.Listener {
             return;
         }
 
-        // Keep one-shot placement ownership until the destination HUD has a real layout. With the
-        // native MapLibre click listener there is no visual catcher to block gestures, but listener
-        // ownership still ends here so Point-2/Point-3 presentation completes deterministically.
+        // Keep the proven one-shot catcher attached until the destination HUD has real layout.
+        // Releasing it here preserves the Point-2/Point-3 transition without letting a later map
+        // movement, resume, or passive refresh become the recovery mechanism.
         if (releaseCompletedTapCapture()) {
             hud.setVisibility(View.VISIBLE);
             hud.requestLayout();
@@ -3014,54 +3007,138 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (!measureActive || root == null || mapView == null || map == null) return;
         removeTapCapture();
 
-        oneShotMapClickListener = point -> {
-            if (!awaitingMapTap || point == null) return false;
-            // Keep the listener registered but inert until the destination HUD is ready. This
-            // preserves the deterministic Point-2/Point-3 presentation ownership while avoiding
-            // any visual overlay that would steal pan or zoom gestures from MapLibre.
-            awaitingMapTap = false;
-            addMeasurementPoint(new GeoMath.Point(point.getLatitude(), point.getLongitude()), false);
+        FrameLayout catcher = new FrameLayout(activity);
+        catcher.setTag(TAP_CAPTURE_TAG);
+        catcher.setBackgroundColor(Color.TRANSPARENT);
+        catcher.setClickable(true);
+
+        final float[] down = new float[2];
+        final MotionEvent[] capturedDown = new MotionEvent[1];
+        final boolean[] forwardingPan = new boolean[1];
+
+        catcher.setOnTouchListener((v, event) -> {
+            if (event == null) return true;
+            int action = event.getActionMasked();
+
+            if (action == MotionEvent.ACTION_DOWN) {
+                down[0] = event.getRawX();
+                down[1] = event.getRawY();
+                if (capturedDown[0] != null) capturedDown[0].recycle();
+                capturedDown[0] = MotionEvent.obtain(event);
+                forwardingPan[0] = false;
+                return true;
+            }
+
+            float dx = event.getRawX() - down[0];
+            float dy = event.getRawY() - down[1];
+            int tapTolerance = Math.max(dp(32), floatingTouchSlop * 2);
+            boolean multiTouch = event.getPointerCount() > 1
+                    || action == MotionEvent.ACTION_POINTER_DOWN
+                    || action == MotionEvent.ACTION_POINTER_UP;
+
+            if (!forwardingPan[0]
+                    && (multiTouch || Math.hypot(dx, dy) > tapTolerance)) {
+                forwardingPan[0] = true;
+                TourDebugLog.mainTourAction(activity, "MAP_TOUCH_PAN_BEGIN",
+                        "Point placement remains armed while the captured gesture is forwarded to MapLibre");
+                if (capturedDown[0] != null) {
+                    forwardCapturedMapGesture(v, capturedDown[0]);
+                }
+            }
+
+            if (forwardingPan[0]) {
+                forwardCapturedMapGesture(v, event);
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    if (capturedDown[0] != null) {
+                        capturedDown[0].recycle();
+                        capturedDown[0] = null;
+                    }
+                    forwardingPan[0] = false;
+                    TourDebugLog.mainTourAction(activity, "MAP_TOUCH_PAN_END_REARMED",
+                            "Point placement stayed armed; the next map tap will place the point");
+                }
+                return true;
+            }
+
+            if (action == MotionEvent.ACTION_CANCEL) {
+                if (capturedDown[0] != null) {
+                    capturedDown[0].recycle();
+                    capturedDown[0] = null;
+                }
+                // A system cancellation is not a request to abandon the polygon lesson.
+                // Keep the transparent catcher and awaitingMapTap state intact.
+                return true;
+            }
+
+            if (action == MotionEvent.ACTION_UP) {
+                v.performClick();
+                if (capturedDown[0] != null) {
+                    capturedDown[0].recycle();
+                    capturedDown[0] = null;
+                }
+                int[] mapLocation = new int[2];
+                mapView.getLocationOnScreen(mapLocation);
+                PointF screen = new PointF(event.getRawX() - mapLocation[0],
+                        event.getRawY() - mapLocation[1]);
+                LatLng latLng = map.getProjection().fromScreenLocation(screen);
+                TourDebugLog.mainTourAction(activity, "MAP_TOUCH_TAP",
+                        "Captured map tap accepted for the armed measurement point");
+                // Keep the catcher attached until the destination HUD has completed layout.
+                // This is the proven Point-2/Point-3 lifecycle from the previous working APK.
+                awaitingMapTap = false;
+                addMeasurementPoint(new GeoMath.Point(latLng.getLatitude(), latLng.getLongitude()), false);
+                return true;
+            }
             return true;
-        };
-        map.addOnMapClickListener(oneShotMapClickListener);
+        });
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        root.addView(catcher, params);
+        tapCapture = catcher;
         awaitingMapTap = true;
+        TourDebugLog.mainTourAction(activity, "MAP_TAP_ARMED",
+                "Transparent catcher armed; pan/zoom gestures are forwarded without disarming");
         bringFieldUiToFront();
         renderHud("map_tap_armed");
         toast("Pan or zoom as needed, then tap once on the map to add the next measurement point.");
     }
 
-    /** Release one-shot placement ownership after the destination HUD has real geometry. */
-    private boolean releaseCompletedTapCapture() {
-        if (awaitingMapTap) return false;
-        boolean removedVisualOverlay = false;
-        if (tapCapture != null) {
-            View completed = tapCapture;
-            tapCapture = null;
-            if (completed.getParent() instanceof ViewGroup) {
-                ((ViewGroup) completed.getParent()).removeView(completed);
-                removedVisualOverlay = true;
-            }
+    /**
+     * Forward a captured pan/zoom gesture into the real MapView while the transparent point-tap
+     * catcher remains installed. This preserves the proven one-shot tap path without forcing a
+     * user to press Tap map again after repositioning the map.
+     */
+    private void forwardCapturedMapGesture(View catcher, MotionEvent source) {
+        if (catcher == null || source == null || mapView == null) return;
+        MotionEvent forwarded = MotionEvent.obtain(source);
+        try {
+            int[] catcherLocation = new int[2];
+            int[] mapLocation = new int[2];
+            catcher.getLocationOnScreen(catcherLocation);
+            mapView.getLocationOnScreen(mapLocation);
+            forwarded.offsetLocation(catcherLocation[0] - mapLocation[0],
+                    catcherLocation[1] - mapLocation[1]);
+            mapView.dispatchTouchEvent(forwarded);
+        } finally {
+            forwarded.recycle();
         }
-        removeOneShotMapClickListener();
-        removeOrphanTapCapture();
-        return removedVisualOverlay;
     }
 
-    private void removeOneShotMapClickListener() {
-        if (map != null && oneShotMapClickListener != null) {
-            try {
-                map.removeOnMapClickListener(oneShotMapClickListener);
-            } catch (RuntimeException ignored) {
-                // MapLibre may be between lifecycle states; clearing our reference still prevents
-                // this controller from treating a stale callback as an active placement.
-            }
+    /** Remove a completed one-shot catcher only after the destination HUD has real geometry. */
+    private boolean releaseCompletedTapCapture() {
+        if (tapCapture == null || awaitingMapTap) return false;
+        View completed = tapCapture;
+        tapCapture = null;
+        if (completed.getParent() instanceof ViewGroup) {
+            ((ViewGroup) completed.getParent()).removeView(completed);
         }
-        oneShotMapClickListener = null;
+        removeOrphanTapCapture();
+        return true;
     }
 
     private void removeTapCapture() {
         awaitingMapTap = false;
-        removeOneShotMapClickListener();
         if (tapCapture != null && tapCapture.getParent() instanceof ViewGroup) {
             ((ViewGroup) tapCapture.getParent()).removeView(tapCapture);
         }
