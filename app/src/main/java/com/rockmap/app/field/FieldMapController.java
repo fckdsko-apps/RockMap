@@ -349,6 +349,18 @@ public final class FieldMapController implements LocationRepository.Listener {
         waypointRepository.close();
     }
 
+    /** Apply persisted Field-layer visibility immediately without changing tool/data state. */
+    public static void refreshLayerVisibility(Activity activity) {
+        if (activity == null) return;
+        WeakReference<FieldMapController> ref;
+        synchronized (INSTANCES) { ref = INSTANCES.get(activity); }
+        FieldMapController controller = ref == null ? null : ref.get();
+        if (controller == null || controller.map == null) return;
+        activity.runOnUiThread(() -> controller.map.getStyle(style -> {
+            if (style != null) controller.syncVisibility(style);
+        }));
+    }
+
     /**
      * Keep the Field entry anchored above MainActivity's real bottom tray. The tray height changes
      * after window insets/layout settle, so a one-time guessed margin can briefly overlap a button

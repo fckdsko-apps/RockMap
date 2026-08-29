@@ -41,6 +41,7 @@ import com.rockmap.app.coordinates.CoordinateParser;
 import com.rockmap.app.field.FieldActivity;
 import com.rockmap.app.field.FieldDatabase;
 import com.rockmap.app.field.FieldMapController;
+import com.rockmap.app.field.FieldMapState;
 import com.rockmap.app.field.FieldTourState;
 import com.rockmap.app.field.GeoMath;
 import com.rockmap.app.field.ProspectingAreaResearchStore;
@@ -2695,6 +2696,9 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 geologyResultAvailable && geologyOverlayController.isVisible());
 
         CheckBox saved = checkbox("Saved Locations", mapController.isWaypointsVisible());
+        CheckBox tracks = checkbox("Tracks", FieldMapState.tracksVisible(this));
+        CheckBox fieldRecords = checkbox("Field Records", FieldMapState.fieldRecordsVisible(this));
+        fieldRecords.setContentDescription("Field Records — purple points and labels");
         boolean mineralsAvailable = mineralOverlayController.hasResults();
         CheckBox minerals = checkbox(
                 mineralsAvailable
@@ -2729,6 +2733,8 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(historicMines);
         box.addView(geology);
         box.addView(saved);
+        box.addView(tracks);
+        box.addView(fieldRecords);
         box.addView(minerals);
         box.addView(heatmap);
 
@@ -2777,6 +2783,11 @@ public final class MainActivity extends Activity implements LocationRepository.L
                     mapController.setLandVisible(landAvailable && land.isChecked());
                     mapController.setClaimsVisible(claimsAvailable && claims.isChecked());
                     mapController.setWaypointsVisible(saved.isChecked());
+                    FieldMapState.setTracksVisible(MainActivity.this, tracks.isChecked());
+                    FieldMapState.setFieldRecordsVisible(MainActivity.this, fieldRecords.isChecked());
+                    TourDebugLog.mapDiagnostic("FIELD_LAYER_VISIBILITY",
+                            "tracks=" + tracks.isChecked() + " fieldRecords=" + fieldRecords.isChecked());
+                    FieldMapController.refreshLayerVisibility(MainActivity.this);
                     mineralOverlayController.setVisible(
                             mineralOverlayController.hasResults() && minerals.isChecked());
                     mineralOverlayController.setHeatmapVisible(
