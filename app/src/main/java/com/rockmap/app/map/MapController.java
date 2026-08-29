@@ -89,6 +89,9 @@ public final class MapController {
     private Style style;
     private Location currentLocation;
     private Float currentHeadingDegrees;
+    // Visual-only location state. Raw GPS remains in currentLocation for navigation/saved data.
+    private double displayedLatitude = Double.NaN;
+    private double displayedLongitude = Double.NaN;
     private long lastCompassDebugElapsedMs;
     private String lastCompassDebugState = "";
     private List<WaypointEntity> waypoints = new ArrayList<>();
@@ -538,20 +541,23 @@ public final class MapController {
     }
 
     private Bitmap createCurrentHeadingIcon() {
-        final int size = 48;
+        // Keep the pointer below the GPS dot, but make enough of it extend past the dot to remain
+        // obvious on high-density phones. The first 48 px version was technically rendered yet
+        // could be almost completely occluded by the dot on dense displays.
+        final int size = 96;
         final float center = size / 2f;
         Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bitmap);
         Path arrow = new Path();
-        arrow.moveTo(center, 2f);
-        arrow.lineTo(center + 11f, center + 1f);
-        arrow.lineTo(center - 11f, center + 1f);
+        arrow.moveTo(center, 3f);
+        arrow.lineTo(center + 18f, center + 5f);
+        arrow.lineTo(center - 18f, center + 5f);
         arrow.close();
 
         Paint outline = new Paint(Paint.ANTI_ALIAS_FLAG);
         outline.setStyle(Paint.Style.STROKE);
         outline.setStrokeJoin(Paint.Join.ROUND);
-        outline.setStrokeWidth(4f);
+        outline.setStrokeWidth(7f);
         outline.setColor(Color.WHITE);
         canvas.drawPath(arrow, outline);
 
@@ -579,14 +585,58 @@ public final class MapController {
         }
         if (currentLocation == null) {
             source.setGeoJson(emptyCollection());
+            displayedLatitude = Double.NaN;
+            displayedLongitude = Double.NaN;
             return;
         }
+
+        double rawLatitude = currentLocation.getLatitude();
+        double rawLongitude = currentLocation.getLongitude();
+        double renderLatitude = rawLatitude;
+        double renderLongitude = rawLongitude;
+        String displayMode = "raw-initial";
+        float rawToDisplayMeters = 0f;
+
+        if (Double.isFinite(displayedLatitude) && Double.isFinite(displayedLongitude)) {
+            float[] distance = new float[1];
+            Location.distanceBetween(
+                    displayedLatitude, displayedLongitude, rawLatitude, rawLongitude, distance);
+            rawToDisplayMeters = distance[0];
+
+            float accuracy = currentLocation.hasAccuracy() ? currentLocation.getAccuracy() : Float.NaN;
+            float speed = currentLocation.hasSpeed() ? currentLocation.getSpeed() : Float.NaN;
+            boolean preciseEnoughToFilter = Float.isFinite(accuracy) && accuracy <= 15f;
+            boolean nearlyStationary = Float.isFinite(speed) && speed <= 0.35f;
+            boolean walkingSpeed = Float.isFinite(speed) && speed > 0.35f && speed < 2.5f;
+
+            if (preciseEnoughToFilter && nearlyStationary
+                    && rawToDisplayMeters <= Math.max(3.5f, accuracy)) {
+                // GNSS commonly wanders a few metres while a stationary phone reports zero speed.
+                // Hold only the map puck; currentLocation keeps the untouched raw fix.
+                renderLatitude = displayedLatitude;
+                renderLongitude = displayedLongitude;
+                displayMode = "stationary-hold";
+            } else if (preciseEnoughToFilter && walkingSpeed && rawToDisplayMeters < 20f) {
+                // At walking speed, soften each 3-second visual step without introducing the large
+                // lag that smoothing would cause in a vehicle. Raw location remains untouched.
+                final double alpha = 0.65d;
+                renderLatitude = displayedLatitude + (rawLatitude - displayedLatitude) * alpha;
+                renderLongitude = displayedLongitude + (rawLongitude - displayedLongitude) * alpha;
+                displayMode = "walking-blend";
+            } else {
+                displayMode = "raw";
+            }
+        }
+
+        displayedLatitude = renderLatitude;
+        displayedLongitude = renderLongitude;
+
         try {
             JSONObject geometry = new JSONObject();
             geometry.put("type", "Point");
             JSONArray coords = new JSONArray();
-            coords.put(currentLocation.getLongitude());
-            coords.put(currentLocation.getLatitude());
+            coords.put(renderLongitude);
+            coords.put(renderLatitude);
             geometry.put("coordinates", coords);
             JSONObject feature = new JSONObject();
             feature.put("type", "Feature");
@@ -598,9 +648,23 @@ public final class MapController {
             collection.put("type", "FeatureCollection");
             collection.put("features", new JSONArray().put(feature));
             source.setGeoJson(collection.toString());
+
+            TourDebugLog.mapDiagnostic("GPS_DISPLAY_FILTER",
+                    "mode=" + displayMode
+                            + " rawLat=" + rawLatitude
+                            + " rawLon=" + rawLongitude
+                            + " displayLat=" + renderLatitude
+                            + " displayLon=" + renderLongitude
+                            + " rawToPreviousDisplayM=" + rawToDisplayMeters
+                            + " speedMps=" + (currentLocation.hasSpeed()
+                                ? currentLocation.getSpeed() : -1f)
+                            + " accuracyM=" + (currentLocation.hasAccuracy()
+                                ? currentLocation.getAccuracy() : -1f));
             TourDebugLog.mapDiagnostic("GPS_RENDER",
-                    "state=rendered lat=" + currentLocation.getLatitude()
-                            + " lon=" + currentLocation.getLongitude()
+                    "state=rendered lat=" + renderLatitude
+                            + " lon=" + renderLongitude
+                            + " rawLat=" + rawLatitude
+                            + " rawLon=" + rawLongitude
                             + " accuracyM=" + (currentLocation.hasAccuracy()
                                 ? currentLocation.getAccuracy() : -1f));
         } catch (JSONException error) {
