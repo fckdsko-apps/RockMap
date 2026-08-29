@@ -8,7 +8,9 @@ import android.graphics.Path;
 import android.graphics.PointF;
 import android.graphics.RectF;
 import android.location.Location;
+import android.os.SystemClock;
 
+import com.rockmap.app.TourDebugLog;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.waypoints.WaypointEntity;
 
@@ -87,6 +89,8 @@ public final class MapController {
     private Style style;
     private Location currentLocation;
     private Float currentHeadingDegrees;
+    private long lastCompassDebugElapsedMs;
+    private String lastCompassDebugState = "";
     private List<WaypointEntity> waypoints = new ArrayList<>();
     private boolean landVisible = true;
     private boolean claimsVisible = true;
@@ -469,6 +473,12 @@ public final class MapController {
                     visibility(currentHeadingDegrees == null ? NONE : VISIBLE));
             style.addLayerBelow(heading, CURRENT_LAYER);
         }
+        TourDebugLog.mapDiagnostic("COMPASS_LAYER_INSTALL",
+                "source=" + (style.getSource(CURRENT_SOURCE) != null)
+                        + " dotLayer=" + (style.getLayer(CURRENT_LAYER) != null)
+                        + " icon=" + (style.getImage(CURRENT_HEADING_ICON) != null)
+                        + " headingLayer=" + (style.getLayer(CURRENT_HEADING_LAYER) != null)
+                        + " heading=" + (currentHeadingDegrees == null ? "none" : currentHeadingDegrees));
         renderCurrentHeading();
         // Keep a nearly invisible land-status hit-test layer independent of the visual land toggle.
         // It lets a mineral marker report mapped management at its coordinate even when the user
@@ -496,17 +506,35 @@ public final class MapController {
     }
 
     private void renderCurrentHeading() {
-        if (style == null) return;
+        if (style == null) {
+            debugCompass("style-null", "heading=" + currentHeadingDegrees);
+            return;
+        }
         Layer layer = style.getLayer(CURRENT_HEADING_LAYER);
-        if (!(layer instanceof SymbolLayer)) return;
+        if (!(layer instanceof SymbolLayer)) {
+            debugCompass("layer-missing", "layer=" + (layer == null ? "null" : layer.getClass().getSimpleName()));
+            return;
+        }
         SymbolLayer heading = (SymbolLayer) layer;
         if (currentHeadingDegrees == null) {
             heading.setProperties(visibility(NONE));
+            debugCompass("hidden-no-heading", "icon=" + (style.getImage(CURRENT_HEADING_ICON) != null));
             return;
         }
         heading.setProperties(
                 iconRotate(currentHeadingDegrees),
                 visibility(VISIBLE));
+        debugCompass("visible", "headingDeg=" + currentHeadingDegrees
+                + " icon=" + (style.getImage(CURRENT_HEADING_ICON) != null));
+    }
+
+    private void debugCompass(String state, String detail) {
+        long now = SystemClock.elapsedRealtime();
+        boolean stateChanged = !state.equals(lastCompassDebugState);
+        if (!stateChanged && now - lastCompassDebugElapsedMs < 1000L) return;
+        lastCompassDebugState = state;
+        lastCompassDebugElapsedMs = now;
+        TourDebugLog.mapDiagnostic("COMPASS_RENDER", "state=" + state + " " + detail);
     }
 
     private Bitmap createCurrentHeadingIcon() {
@@ -540,9 +568,15 @@ public final class MapController {
     }
 
     private void renderCurrentLocation() {
-        if (style == null) return;
+        if (style == null) {
+            TourDebugLog.mapDiagnostic("GPS_RENDER", "state=style-null");
+            return;
+        }
         GeoJsonSource source = style.getSourceAs(CURRENT_SOURCE);
-        if (source == null) return;
+        if (source == null) {
+            TourDebugLog.mapDiagnostic("GPS_RENDER", "state=source-null");
+            return;
+        }
         if (currentLocation == null) {
             source.setGeoJson(emptyCollection());
             return;
@@ -564,7 +598,14 @@ public final class MapController {
             collection.put("type", "FeatureCollection");
             collection.put("features", new JSONArray().put(feature));
             source.setGeoJson(collection.toString());
-        } catch (JSONException ignored) {
+            TourDebugLog.mapDiagnostic("GPS_RENDER",
+                    "state=rendered lat=" + currentLocation.getLatitude()
+                            + " lon=" + currentLocation.getLongitude()
+                            + " accuracyM=" + (currentLocation.hasAccuracy()
+                                ? currentLocation.getAccuracy() : -1f));
+        } catch (JSONException error) {
+            TourDebugLog.mapDiagnostic("GPS_RENDER",
+                    "state=json-error error=" + error.getClass().getSimpleName());
         }
     }
 

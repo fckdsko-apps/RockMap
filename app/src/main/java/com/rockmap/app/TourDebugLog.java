@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.location.Location;
 import android.os.Build;
 import android.os.Environment;
 import android.os.SystemClock;
@@ -53,6 +54,8 @@ public final class TourDebugLog {
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final Object FILE_LOCK = new Object();
     private static final Object HUD_EVENT_LOCK = new Object();
+    private static final Object GPS_EVENT_LOCK = new Object();
+    private static Location lastGpsFix;
     private static long lastHudFrameGeneration = Long.MIN_VALUE;
     private static long lastHudWaitGeneration = Long.MIN_VALUE;
 
@@ -282,6 +285,93 @@ public final class TourDebugLog {
                 "activity=" + activityName(activity)
                         + " detail=" + clean(detail, 600)
                         + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
+    }
+
+    /** Observational compass diagnostics. Does not alter heading, sensors, map state, or lifecycle. */
+    public static void headingDiagnostic(Activity activity, String event, String detail) {
+        record(clean(event, 60),
+                "activity=" + activityName(activity) + " " + clean(detail, 1800));
+    }
+
+    /** Observational MapLibre compass/GPS-render diagnostics. */
+    public static void mapDiagnostic(String event, String detail) {
+        record(clean(event, 60), clean(detail, 1800));
+    }
+
+    /**
+     * Records every live GPS fix that reaches MainActivity plus displacement from the prior fix.
+     * This is diagnostic only: no location is rejected, filtered, substituted, or modified here.
+     */
+    public static void gpsFix(Activity activity, Location location) {
+        if (location == null) {
+            recordImportant("GPS_FIX_NULL", "activity=" + activityName(activity));
+            return;
+        }
+
+        Location previous;
+        synchronized (GPS_EVENT_LOCK) {
+            previous = lastGpsFix == null ? null : new Location(lastGpsFix);
+            lastGpsFix = new Location(location);
+        }
+
+        long ageMs = -1L;
+        long elapsedNanos = location.getElapsedRealtimeNanos();
+        if (elapsedNanos > 0L) {
+            long ageNanos = SystemClock.elapsedRealtimeNanos() - elapsedNanos;
+            if (ageNanos >= 0L) ageMs = ageNanos / 1_000_000L;
+        }
+
+        float moveMeters = -1f;
+        long intervalMs = -1L;
+        float impliedSpeedMps = -1f;
+        float previousAccuracy = -1f;
+        if (previous != null) {
+            try {
+                moveMeters = previous.distanceTo(location);
+            } catch (RuntimeException ignored) {
+                moveMeters = -1f;
+            }
+            long previousElapsed = previous.getElapsedRealtimeNanos();
+            if (elapsedNanos > 0L && previousElapsed > 0L && elapsedNanos >= previousElapsed) {
+                intervalMs = (elapsedNanos - previousElapsed) / 1_000_000L;
+                if (intervalMs > 0L && moveMeters >= 0f) {
+                    impliedSpeedMps = moveMeters / (intervalMs / 1000f);
+                }
+            }
+            if (previous.hasAccuracy()) previousAccuracy = previous.getAccuracy();
+        }
+
+        float accuracy = location.hasAccuracy() ? location.getAccuracy() : -1f;
+        float accuracyBudget = accuracy >= 0f && previousAccuracy >= 0f
+                ? accuracy + previousAccuracy : -1f;
+        boolean outsideAccuracyBudget = moveMeters >= 0f && accuracyBudget >= 0f
+                && intervalMs > 0L && intervalMs <= 10_000L
+                && moveMeters > Math.max(10f, accuracyBudget);
+
+        String detail = String.format(Locale.US,
+                "activity=%s provider=%s lat=%.6f lon=%.6f accuracyM=%s ageMs=%d intervalMs=%d "
+                        + "moveM=%s impliedSpeedMps=%s reportedSpeedMps=%s speedAccuracyMps=%s "
+                        + "bearingDeg=%s bearingAccuracyDeg=%s altitudeM=%s previousAccuracyM=%s "
+                        + "accuracyBudgetM=%s outsideAccuracyBudget=%s mock=%s",
+                activityName(activity),
+                clean(location.getProvider(), 80),
+                location.getLatitude(), location.getLongitude(),
+                numberOrNa(accuracy), ageMs, intervalMs,
+                numberOrNa(moveMeters), numberOrNa(impliedSpeedMps),
+                numberOrNa(location.hasSpeed() ? location.getSpeed() : -1f),
+                numberOrNa(location.hasSpeedAccuracy() ? location.getSpeedAccuracyMetersPerSecond() : -1f),
+                numberOrNa(location.hasBearing() ? location.getBearing() : -1f),
+                numberOrNa(location.hasBearingAccuracy() ? location.getBearingAccuracyDegrees() : -1f),
+                location.hasAltitude() ? String.format(Locale.US, "%.1f", location.getAltitude()) : "n/a",
+                numberOrNa(previousAccuracy), numberOrNa(accuracyBudget),
+                outsideAccuracyBudget, location.isFromMockProvider());
+        if (outsideAccuracyBudget) recordImportant("GPS_FIX_JUMP", detail);
+        else record("GPS_FIX", detail);
+    }
+
+    private static String numberOrNa(float value) {
+        return Float.isFinite(value) && value >= 0f
+                ? String.format(Locale.US, "%.2f", value) : "n/a";
     }
 
     /** Snapshot the Research workspace/mapped-control presentation without mutating it. */

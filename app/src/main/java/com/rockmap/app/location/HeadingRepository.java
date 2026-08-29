@@ -10,6 +10,8 @@ import android.location.Location;
 import android.os.SystemClock;
 import android.view.Surface;
 
+import com.rockmap.app.TourDebugLog;
+
 public final class HeadingRepository implements SensorEventListener {
     public interface Listener {
         void onHeading(float headingDegrees);
@@ -45,6 +47,8 @@ public final class HeadingRepository implements SensorEventListener {
     private long lastEmitElapsedMs;
     private int lastSource = SOURCE_NONE;
     private boolean unavailableEmitted;
+    private long lastSensorDebugElapsedMs;
+    private int lastAccuracy = Integer.MIN_VALUE;
 
     public HeadingRepository(Activity activity, Listener listener) {
         this.activity = activity;
@@ -55,6 +59,9 @@ public final class HeadingRepository implements SensorEventListener {
             sensor = sensorManager.getDefaultSensor(Sensor.TYPE_GEOMAGNETIC_ROTATION_VECTOR);
         }
         headingSensor = sensor;
+        TourDebugLog.headingDiagnostic(activity, "HEADING_INIT",
+                "manager=" + (sensorManager != null)
+                        + " sensor=" + sensorSummary(headingSensor));
     }
 
     public void start() {
@@ -65,7 +72,13 @@ public final class HeadingRepository implements SensorEventListener {
         if (sensorManager != null && headingSensor != null) {
             sensorRegistered = sensorManager.registerListener(
                     this, headingSensor, SensorManager.SENSOR_DELAY_UI);
+            TourDebugLog.headingDiagnostic(activity, "HEADING_START",
+                    "registered=" + sensorRegistered + " sensor=" + sensorSummary(headingSensor));
             if (sensorRegistered) return;
+        } else {
+            TourDebugLog.headingDiagnostic(activity, "HEADING_START",
+                    "registered=false manager=" + (sensorManager != null)
+                            + " sensor=" + sensorSummary(headingSensor));
         }
         emitCourseFallbackOrUnavailable();
     }
@@ -81,11 +94,18 @@ public final class HeadingRepository implements SensorEventListener {
         lastEmitElapsedMs = 0L;
         lastSource = SOURCE_NONE;
         unavailableEmitted = false;
+        lastSensorDebugElapsedMs = 0L;
+        lastAccuracy = Integer.MIN_VALUE;
+        TourDebugLog.headingDiagnostic(activity, "HEADING_STOP", "sensor listener stopped");
     }
 
     public void updateLocation(Location location) {
         latestLocation = location == null ? null : new Location(location);
         declinationDegrees = calculateDeclination(latestLocation);
+        TourDebugLog.headingDiagnostic(activity, "HEADING_GPS_CONTEXT",
+                locationSummary(latestLocation) + " declinationDeg=" + format(declinationDegrees)
+                        + " running=" + running + " registered=" + sensorRegistered
+                        + " unreliable=" + sensorUnreliable);
         if (!running) return;
 
         if (!sensorRegistered || sensorUnreliable) {
@@ -112,13 +132,30 @@ public final class HeadingRepository implements SensorEventListener {
 
         float magneticHeading = normalize360((float) Math.toDegrees(orientation[0]));
         lastMagneticHeading = magneticHeading;
-        acceptHeading(toTrueHeading(magneticHeading), SOURCE_SENSOR);
+        float trueHeading = toTrueHeading(magneticHeading);
+        long now = SystemClock.elapsedRealtime();
+        if (lastSensorDebugElapsedMs == 0L || now - lastSensorDebugElapsedMs >= 750L) {
+            lastSensorDebugElapsedMs = now;
+            TourDebugLog.headingDiagnostic(activity, "HEADING_SENSOR_SAMPLE",
+                    "accuracy=" + event.accuracy
+                            + " magneticDeg=" + format(magneticHeading)
+                            + " declinationDeg=" + format(declinationDegrees)
+                            + " trueDeg=" + format(trueHeading)
+                            + " displayRotation=" + activity.getWindowManager().getDefaultDisplay().getRotation());
+        }
+        acceptHeading(trueHeading, SOURCE_SENSOR);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
         if (sensor == null || sensor != headingSensor) return;
         sensorUnreliable = accuracy == SensorManager.SENSOR_STATUS_UNRELIABLE;
+        if (accuracy != lastAccuracy) {
+            lastAccuracy = accuracy;
+            TourDebugLog.headingDiagnostic(activity, "HEADING_ACCURACY",
+                    "accuracy=" + accuracy + " unreliable=" + sensorUnreliable
+                            + " sensor=" + sensorSummary(sensor));
+        }
         if (sensorUnreliable) emitCourseFallbackOrUnavailable();
     }
 
@@ -171,20 +208,28 @@ public final class HeadingRepository implements SensorEventListener {
                 && location.getSpeed() >= MIN_COURSE_SPEED_MPS
                 && (!location.hasBearingAccuracy()
                     || location.getBearingAccuracyDegrees() <= MAX_COURSE_BEARING_ACCURACY_DEGREES)) {
+            TourDebugLog.headingDiagnostic(activity, "HEADING_COURSE_FALLBACK",
+                    locationSummary(location));
             acceptHeading(location.getBearing(), SOURCE_COURSE);
             return;
         }
         if (!unavailableEmitted) {
             unavailableEmitted = true;
+            TourDebugLog.headingDiagnostic(activity, "HEADING_UNAVAILABLE",
+                    "registered=" + sensorRegistered + " unreliable=" + sensorUnreliable
+                            + " " + locationSummary(location));
             listener.onHeadingUnavailable();
         }
     }
 
     private void acceptHeading(float rawHeading, int source) {
         float heading = normalize360(rawHeading);
-        if (source != lastSource || filteredHeading == null) {
+        boolean sourceChanged = source != lastSource || filteredHeading == null;
+        if (sourceChanged) {
             filteredHeading = heading;
             lastSource = source;
+            TourDebugLog.headingDiagnostic(activity, "HEADING_SOURCE",
+                    "source=" + sourceName(source) + " headingDeg=" + format(heading));
         } else {
             float delta = shortestDelta(filteredHeading, heading);
             filteredHeading = normalize360(filteredHeading + delta * FILTER_GAIN);
@@ -202,6 +247,34 @@ public final class HeadingRepository implements SensorEventListener {
         lastEmittedHeading = filteredHeading;
         lastEmitElapsedMs = now;
         listener.onHeading(filteredHeading);
+    }
+
+    private static String sourceName(int source) {
+        if (source == SOURCE_SENSOR) return "sensor";
+        if (source == SOURCE_COURSE) return "gps-course";
+        return "none";
+    }
+
+    private static String sensorSummary(Sensor sensor) {
+        if (sensor == null) return "none";
+        return sensor.getName() + "/type=" + sensor.getType()
+                + "/vendor=" + sensor.getVendor()
+                + "/resolution=" + format(sensor.getResolution())
+                + "/powerMa=" + format(sensor.getPower());
+    }
+
+    private static String locationSummary(Location location) {
+        if (location == null) return "location=none";
+        return "provider=" + location.getProvider()
+                + " accuracyM=" + (location.hasAccuracy() ? format(location.getAccuracy()) : "n/a")
+                + " speedMps=" + (location.hasSpeed() ? format(location.getSpeed()) : "n/a")
+                + " bearingDeg=" + (location.hasBearing() ? format(location.getBearing()) : "n/a")
+                + " bearingAccuracyDeg=" + (location.hasBearingAccuracy()
+                    ? format(location.getBearingAccuracyDegrees()) : "n/a");
+    }
+
+    private static String format(float value) {
+        return Float.isFinite(value) ? String.format(java.util.Locale.US, "%.2f", value) : "n/a";
     }
 
     private static float normalize360(float degrees) {

@@ -6506,6 +6506,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
     @Override
     public void onLocation(Location location) {
+        TourDebugLog.gpsFix(this, location);
         headingRepository.updateLocation(location);
         mapController.updateCurrentLocation(location);
     }
