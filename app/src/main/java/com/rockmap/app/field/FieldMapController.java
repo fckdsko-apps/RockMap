@@ -356,9 +356,62 @@ public final class FieldMapController implements LocationRepository.Listener {
         synchronized (INSTANCES) { ref = INSTANCES.get(activity); }
         FieldMapController controller = ref == null ? null : ref.get();
         if (controller == null || controller.map == null) return;
-        activity.runOnUiThread(() -> controller.map.getStyle(style -> {
-            if (style != null) controller.syncVisibility(style);
-        }));
+        activity.runOnUiThread(() -> {
+            // Match Field > Visibility's proven path first: ensure sources/layers are present and
+            // apply the newly persisted visibility state instead of only touching layer flags.
+            controller.applyCachedSources();
+            // Then rebuild Field Records from the database once. This makes turning the layer back
+            // on self-healing if its cached GeoJSON was empty/stale and gives tour-debug a precise
+            // source/layer diagnostic if the points still fail to render.
+            controller.refreshFieldRecordLayerAfterVisibilityChange();
+        });
+    }
+
+    private void refreshFieldRecordLayerAfterVisibilityChange() {
+        worker.execute(() -> {
+            final String refreshedRecords = buildFieldRecordJson();
+            final int recordCount = geoJsonFeatureCount(refreshedRecords);
+            main.post(() -> {
+                fieldRecordJson = refreshedRecords;
+                if (map == null) return;
+                map.getStyle(style -> {
+                    if (style == null) return;
+                    ensureLayers(style);
+                    setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
+                    syncVisibility(style);
+                    Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
+                    Layer labelLayer = style.getLayer(FIELD_RECORD_LABEL);
+                    TourDebugLog.mapDiagnostic("FIELD_RECORD_LAYER_STATE",
+                            "records=" + recordCount
+                                    + " requestedVisible=" + FieldMapState.fieldRecordsVisible(activity)
+                                    + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
+                                    + " pointLayer=" + (pointLayer != null)
+                                    + " pointVisibility=" + layerVisibilityValue(pointLayer)
+                                    + " labelLayer=" + (labelLayer != null)
+                                    + " labelVisibility=" + layerVisibilityValue(labelLayer));
+                });
+            });
+        });
+    }
+
+    private static int geoJsonFeatureCount(String geoJson) {
+        if (geoJson == null || geoJson.isEmpty()) return 0;
+        try {
+            JSONArray features = new JSONObject(geoJson).optJSONArray("features");
+            return features == null ? 0 : features.length();
+        } catch (JSONException ignored) {
+            return -1;
+        }
+    }
+
+    private static String layerVisibilityValue(Layer layer) {
+        if (layer == null) return "missing";
+        try {
+            String value = layer.getVisibility().getValue();
+            return value == null ? "null" : value;
+        } catch (RuntimeException ignored) {
+            return "error";
+        }
     }
 
     /**
