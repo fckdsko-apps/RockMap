@@ -137,7 +137,9 @@ public final class SafetyDisclosureActivity extends Activity {
     }
 
     private void openRockMap() {
-        Intent intent = new Intent(this, MainActivity.class);
+        Intent intent = InitialDataSetupActivity.shouldShow(this)
+                ? new Intent(this, InitialDataSetupActivity.class)
+                : new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
         startActivity(intent);
         finish();

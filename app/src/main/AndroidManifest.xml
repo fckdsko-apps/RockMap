@@ -31,6 +31,11 @@
         </activity>
 
         <activity
+            android:name=".InitialDataSetupActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+
+        <activity
             android:name=".MainActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
