@@ -54,5 +54,10 @@
             android:name=".PrivacySafetyActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
+
+        <activity
+            android:name=".DataSourcesLicensesActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
     </application>
 </manifest>

@@ -23,7 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.Date;
 
-/** In-app permanent access to RockMap's safety limitations, privacy policy, and local acknowledgment. */
+/** In-app permanent access to RockMap's safety, source/license, privacy, and acknowledgment information. */
 public final class PrivacySafetyActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,6 +39,17 @@ public final class PrivacySafetyActivity extends Activity {
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
+
+        Button sources = button("Data sources & licenses");
+        sources.setContentDescription("Open RockMap data sources and licenses");
+        sources.setOnClickListener(v ->
+                startActivity(new Intent(this, DataSourcesLicensesActivity.class)));
+        content.addView(sources, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView sourcesHint = body("Attribution, license links, source-specific notices, and bundled map-text licensing.");
+        sourcesHint.setPadding(0, 0, 0, dp(8));
+        content.addView(sourcesHint);
 
         TextView safetyHeading = heading("Safety & data limitations", 17f);
         safetyHeading.setPadding(0, dp(4), 0, dp(6));

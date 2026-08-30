@@ -34,6 +34,8 @@ Depending on the installed RockMap data pack and feature, RockMap uses or derive
 
 Source coverage changes over time. A source being listed here does not mean every RockMap build contains every source, nor does it make the source authoritative for a particular legal, surveying, navigation, or field-safety purpose.
 
+Full source attributions, license links, and source-specific notices are permanently available in RockMap under Data > Safety & privacy > Data sources & licenses.
+
 GEOLOGY DATA
 RockMap's queryable Colorado geology is a fixed local research snapshot derived from the USGS State Geologic Map Compilation (SGMC). Geologic contacts and unit polygons are generalized and interpretive source mapping, not surveyed parcel, access, hazard, or claim boundaries. RockMap's local spatial-query results show which installed mapped polygons intersect a selected area or radius; they do not prove the rock exposed at a specific spot, the presence of a collectible mineral, safe access, or permission to collect.
 

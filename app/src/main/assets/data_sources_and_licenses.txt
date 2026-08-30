@@ -1,0 +1,89 @@
+ROCKMAP DATA SOURCES & LICENSES
+
+This document identifies third-party data and bundled font resources used by current RockMap builds. Installed data packs vary, so a source listed here may not be present in every installation. RockMap transforms source material into offline map, search, and research products; those transformations do not make RockMap an authoritative survey, legal record, navigation product, or field-safety source. Listing a source does not imply endorsement of RockMap by that source agency or project.
+
+OPENSTREETMAP / PROTOMAPS BASEMAP
+RockMap's offline basemap is derived from the Protomaps Basemap, a general-purpose vector basemap derived from OpenStreetMap and distributed by Protomaps as an Open Database License (ODbL) Produced Work.
+
+Required map attribution:
+© OpenStreetMap contributors
+
+OpenStreetMap data license and attribution information:
+https://www.openstreetmap.org/copyright
+https://osmfoundation.org/wiki/Licence/Attribution_Guidelines
+https://opendatacommons.org/licenses/odbl/1-0/
+
+Protomaps basemap information:
+https://docs.protomaps.com/basemaps/downloads
+
+RockMap presents the OpenStreetMap attribution for at least five seconds when the OSM-derived basemap first renders during an app process. The complete origin and license information remains available here.
+
+U.S. GEOLOGICAL SURVEY (USGS)
+RockMap uses or derives information from USGS-produced sources including:
+• The National Map / GNIS-style geographic-name and Gazetteer data used by offline Find.
+• Mineral Resources Data System (MRDS) records.
+• MAS/MILS records, including Colorado records published through USGS Open-File Report 03-090.
+• State Geologic Map Compilation (SGMC), DOI 10.5066/F7WH2N65, used for RockMap's fixed Colorado geology research snapshot.
+• Reviewed USGS mineral and gemstone references incorporated into compact offline evidence data.
+
+Source of these RockMap-derived USGS data products: U.S. Geological Survey.
+
+USGS states that USGS-authored or USGS-produced data and information are generally in the U.S. public domain and asks users to provide proper credit. RockMap does not use the USGS identifier or logo to imply sponsorship or endorsement.
+
+USGS credit and copyright guidance:
+https://www.usgs.gov/information-policies-and-instructions/acknowledging-or-crediting-usgs
+https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits
+
+BUREAU OF LAND MANAGEMENT (BLM)
+RockMap uses or derives information from:
+• BLM Colorado Surface Management Agency mapping.
+• BLM Mineral & Land Records System (MLRS), including Mining Claims — Not Closed records.
+
+Source: Bureau of Land Management, U.S. Department of the Interior.
+
+BLM public GIS data are public data and may contain errors or omissions. BLM describes public data as provided "as is" and notes that the information is dynamic, can change over time, and can vary in scale and accuracy. RockMap's transformed offline layers are not surveyed property or claim boundaries and are not a legal determination of ownership, access, claim validity, or collecting permission.
+
+BLM digital-rights policy and standardized public-data disclaimer:
+https://www.blm.gov/info/notices/drctp-policy
+https://www.blm.gov/sites/blm.gov/files/uploads/IM2014-029_att1.pdf
+
+COLORADO DEPARTMENT OF TRANSPORTATION (CDOT)
+RockMap's bundled offline Find index may use CDOT state-highway route information as optional enrichment alongside the USGS core place-name index.
+
+Source: Colorado Department of Transportation (CDOT), including Division of Transportation Development GIS services.
+
+The CDOT highway information used by RockMap is reference data. CDOT does not warrant the accuracy, reliability, timeliness, completeness, or fitness of information published through its services, and users are responsible for verifying information before relying on it.
+
+CDOT GIS program:
+https://www.codot.gov/programs/gis
+
+Current RockMap build-time highway service fallbacks include:
+https://dtdapps.coloradodot.info/arcgis/rest/services/CPLAN/HighwayBackground_RouteSign/MapServer/0
+https://dtdapps.coloradodot.info/arcgis/rest/services/CPLAN/HighwaySegments/MapServer/1
+
+COLORADO GEOLOGICAL SURVEY (CGS)
+RockMap uses or derives information from public CGS GIS services and publications, including:
+• Radioactive-mineral occurrence data derived from Bulletin 40 / ON-B-40D.
+• Nonmetallic and industrial-mineral mine inventory data including MS-17 / IS-62 lineage.
+• CGS / U.S. Forest Service abandoned-mine inventory data including ON-008-04D.
+• Historic metal-mining district data including ON-007-08D.
+• Reviewed official CGS gemstone and mineral-locality references included in RockMap's compact offline evidence sets.
+
+Source: Colorado Geological Survey.
+
+CGS describes its REST services as public-domain datasets. CGS states that data and information are supplied without warranty and that CGS is not responsible or liable for damages arising from their use. Historic and abandoned-mine locations can be estimated, generalized, incomplete, or outdated and are not a substitute for a site-specific hazard assessment or field verification.
+
+CGS GIS portal and disclaimer:
+https://coloradogeologicalsurvey.org/geology/gis-data-map-portal/
+
+NOTO SANS OFFLINE TEXT RESOURCES
+RockMap's offline map-label resources include generated font/glyph assets derived from Noto Sans Regular.
+
+Copyright 2022 The Noto Project Authors.
+License: SIL Open Font License 1.1.
+
+The complete SIL Open Font License text is bundled in RockMap at:
+rockmap-glyphs/OFL.txt
+
+GENERAL SOURCE NOTICE
+Government or public-domain status does not mean source information is complete, current, surveyed, risk-free, or suitable for a particular use. Source datasets can contain approximate locations, generalized geometries, stale status, missing records, or errors. RockMap's Safety & Data Limitations remain controlling product guidance for how RockMap information should and should not be used.

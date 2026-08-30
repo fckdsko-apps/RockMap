@@ -16,6 +16,7 @@ import java.util.WeakHashMap;
 public final class RockMapApplication extends Application implements Application.ActivityLifecycleCallbacks {
     private final WeakHashMap<Activity, FieldMapController> controllers = new WeakHashMap<>();
     private final WeakHashMap<Activity, FieldMapPolishController> polishControllers = new WeakHashMap<>();
+    private final WeakHashMap<Activity, TransientMapAttributionController> attributionControllers = new WeakHashMap<>();
 
     @Override public void onCreate() {
         super.onCreate();
@@ -42,11 +43,23 @@ public final class RockMapApplication extends Application implements Application
         return controller;
     }
 
+    private TransientMapAttributionController attribution(Activity activity) {
+        if (!(activity instanceof MainActivity)) return null;
+        TransientMapAttributionController controller = attributionControllers.get(activity);
+        if (controller == null) {
+            controller = new TransientMapAttributionController(activity);
+            attributionControllers.put(activity, controller);
+        }
+        return controller;
+    }
+
     private void attach(Activity activity) {
         FieldMapController controller = controller(activity);
         if (controller != null) controller.attach();
         FieldMapPolishController polish = polish(activity);
         if (polish != null) polish.attach();
+        TransientMapAttributionController attribution = attribution(activity);
+        if (attribution != null) attribution.attach();
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
@@ -64,6 +77,8 @@ public final class RockMapApplication extends Application implements Application
             if (controller != null) controller.onResume();
             FieldMapPolishController polish = polish(activity);
             if (polish != null) polish.onResume();
+            TransientMapAttributionController attribution = attribution(activity);
+            if (attribution != null) attribution.attach();
         });
     }
 
@@ -82,5 +97,7 @@ public final class RockMapApplication extends Application implements Application
         if (controller != null) controller.destroy();
         FieldMapPolishController polish = polishControllers.remove(activity);
         if (polish != null) polish.destroy();
+        TransientMapAttributionController attribution = attributionControllers.remove(activity);
+        if (attribution != null) attribution.destroy();
     }
 }
