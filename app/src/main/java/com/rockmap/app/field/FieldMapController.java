@@ -181,6 +181,7 @@ public final class FieldMapController implements LocationRepository.Listener {
     private Location latestNavigationLocation;
     private boolean navigationUpdatesStarted;
     private boolean cameraMoveListenerInstalled;
+    private MapView.OnDidFinishLoadingStyleListener fieldStyleLoadedListener;
     private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
     private long hudRenderGeneration;
@@ -243,6 +244,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (mapView == null) return;
         root = findMapRoot(mapView);
         if (root == null) return;
+        installFieldStyleReloadRecovery();
         // A controller/activity recreation can outlive the Java reference to a one-shot Measure
         // catcher. Remove any orphaned transparent catcher before wiring controls so stale tour
         // state can never leave Measure visible but the map/HUD untouchable after a restart.
@@ -330,6 +332,27 @@ public final class FieldMapController implements LocationRepository.Listener {
         navigationUpdatesStarted = false;
     }
 
+    /**
+     * Runtime Field layers are not part of RockMap's base style JSON. Rebind them only after
+     * MapLibre reports that a replacement style has finished loading so a startup/style swap
+     * cannot briefly show a Field Record and then wipe it away.
+     */
+    private void installFieldStyleReloadRecovery() {
+        if (mapView == null || fieldStyleLoadedListener != null) return;
+        fieldStyleLoadedListener = () -> main.post(() -> {
+            if (activity.isFinishing() || activity.isDestroyed()) return;
+            TourDebugLog.mapDiagnostic("FIELD_STYLE_RELOAD",
+                    "recordsVisible=" + FieldMapState.fieldRecordsVisible(activity)
+                            + " cachedRecords=" + geoJsonFeatureCount(fieldRecordJson));
+            applyCachedSources();
+            refreshFieldSnapshot();
+            if (FieldMapState.fieldRecordsVisible(activity)) {
+                refreshFieldRecordLayerAfterVisibilityChange();
+            }
+        });
+        mapView.addOnDidFinishLoadingStyleListener(fieldStyleLoadedListener);
+    }
+
     public void destroy() {
         synchronized (INSTANCES) {
             WeakReference<FieldMapController> ref = INSTANCES.get(activity);
@@ -344,6 +367,10 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (mapView != null && measurementDragHandlerInstalled) {
             mapView.setOnTouchListener(null);
             measurementDragHandlerInstalled = false;
+        }
+        if (mapView != null && fieldStyleLoadedListener != null) {
+            mapView.removeOnDidFinishLoadingStyleListener(fieldStyleLoadedListener);
+            fieldStyleLoadedListener = null;
         }
         worker.shutdownNow();
         waypointRepository.close();
@@ -376,14 +403,19 @@ public final class FieldMapController implements LocationRepository.Listener {
                 if (map == null) return;
                 map.getStyle(style -> {
                     if (style == null) return;
-                    ensureLayers(style);
-                    setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
-                    syncVisibility(style);
+                    boolean requestedVisible = FieldMapState.fieldRecordsVisible(activity);
+                    if (requestedVisible) {
+                        rebuildFieldRecordRenderStack(style);
+                    } else {
+                        ensureLayers(style);
+                        setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
+                        syncVisibility(style);
+                    }
                     Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
                     Layer labelLayer = style.getLayer(FIELD_RECORD_LABEL);
                     TourDebugLog.mapDiagnostic("FIELD_RECORD_LAYER_STATE",
                             "records=" + recordCount
-                                    + " requestedVisible=" + FieldMapState.fieldRecordsVisible(activity)
+                                    + " requestedVisible=" + requestedVisible
                                     + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
                                     + " pointLayer=" + (pointLayer != null)
                                     + " pointVisibility=" + layerVisibilityValue(pointLayer)
@@ -392,6 +424,43 @@ public final class FieldMapController implements LocationRepository.Listener {
                 });
             });
         });
+    }
+
+    /**
+     * A hidden Field Record layer has proven capable of reporting VISIBLE without drawing again.
+     * Recreate only this small GeoJSON render stack when visibility is restored. Saved records,
+     * database state, camera state, GPS, tracks, and every other map layer remain untouched.
+     */
+    private void rebuildFieldRecordRenderStack(Style style) {
+        if (style == null) return;
+        try {
+            if (style.getLayer(FIELD_RECORD_LABEL) != null) style.removeLayer(FIELD_RECORD_LABEL);
+            if (style.getLayer(FIELD_RECORD_LAYER) != null) style.removeLayer(FIELD_RECORD_LAYER);
+            if (style.getSource(FIELD_RECORD_SOURCE) != null) style.removeSource(FIELD_RECORD_SOURCE);
+
+            style.addSource(new GeoJsonSource(FIELD_RECORD_SOURCE,
+                    fieldRecordJson == null ? emptyCollection() : fieldRecordJson));
+
+            CircleLayer circle = new CircleLayer(FIELD_RECORD_LAYER, FIELD_RECORD_SOURCE);
+            circle.setProperties(circleColor(Color.rgb(120, 70, 160)), circleRadius(6f),
+                    circleStrokeColor(Color.WHITE), circleStrokeWidth(2f));
+            style.addLayer(circle);
+
+            SymbolLayer labels = labelLayer(FIELD_RECORD_LABEL, FIELD_RECORD_SOURCE, 10.5f);
+            style.addLayer(labels);
+            syncVisibility(style);
+
+            TourDebugLog.mapDiagnostic("FIELD_RECORD_RENDER_REBUILT",
+                    "records=" + geoJsonFeatureCount(fieldRecordJson)
+                            + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
+                            + " pointLayer=" + (style.getLayer(FIELD_RECORD_LAYER) != null)
+                            + " labelLayer=" + (style.getLayer(FIELD_RECORD_LABEL) != null));
+        } catch (RuntimeException ex) {
+            // A style can be replaced between callback scheduling and execution. The style-finished
+            // listener will retry against the new style; keep the current map usable in the meantime.
+            TourDebugLog.mapDiagnostic("FIELD_RECORD_RENDER_REBUILD_FAILED",
+                    ex.getClass().getSimpleName() + ": " + String.valueOf(ex.getMessage()));
+        }
     }
 
     private static int geoJsonFeatureCount(String geoJson) {
@@ -1911,7 +1980,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                     FieldMapState.setAreasVisible(activity, areas.isChecked());
                     FieldMapState.setFieldRecordsVisible(activity, records.isChecked());
                     FieldMapState.setLabelsVisible(activity, labels.isChecked());
-                    applyCachedSources();
+                    refreshLayerVisibility(activity);
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
