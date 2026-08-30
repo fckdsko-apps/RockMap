@@ -108,6 +108,32 @@ import java.util.Locale;
 public final class MainActivity extends Activity implements LocationRepository.Listener, HeadingRepository.Listener, MapController.Listener {
     public static final String EXTRA_START_TRAINING_FIELD_TOUR = "rockmap.training.field_tour";
 
+    private enum MineralSortMode {
+        POPULARITY,
+        RECORD_COUNT,
+        ALPHABETICAL
+    }
+
+    /**
+     * Editorial rockhound-interest order only. This is intentionally a fixed priority list, not
+     * a calculated score. Minerals/materials not listed here remain available and sort A-Z after
+     * the priority items when Popularity is selected.
+     */
+    private static final String[] ROCKHOUND_PRIORITY_MINERALS = new String[]{
+            "gold", "diamond", "emerald", "ruby", "sapphire", "aquamarine",
+            "topaz", "tourmaline", "rhodochrosite", "amethyst", "opal", "turquoise",
+            "fluorite", "garnet", "azurite", "malachite", "native copper", "copper",
+            "silver", "platinum", "smoky quartz", "rose quartz", "citrine", "quartz",
+            "agate", "chalcedony", "jasper", "amazonite", "moonstone", "labradorite",
+            "sunstone", "peridot", "olivine", "spinel", "corundum", "beryl",
+            "spodumene", "kunzite", "hiddenite", "chrysoberyl", "chrysocolla",
+            "variscite", "wulfenite", "vanadinite", "dioptase", "celestite",
+            "barite", "calcite", "aragonite", "apophyllite", "prehnite", "epidote",
+            "kyanite", "andalusite", "staurolite", "zircon", "apatite", "pyrite",
+            "bornite", "realgar", "orpiment", "cinnabar", "galena", "sphalerite",
+            "hematite", "magnetite", "obsidian", "petrified wood"
+    };
+
     private static final int LOCATION_PERMISSION_REQUEST = 501;
     private static final int EXPORT_WAYPOINTS_REQUEST = 502;
     private static final int IMPORT_WAYPOINTS_REQUEST = 503;
@@ -730,12 +756,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 result.minerals.size() + " minerals & materials available in this Research Area.");
 
         ArrayList<MineralAreaAnalyzer.MineralSummary> allMinerals = new ArrayList<>(result.minerals);
-        allMinerals.sort((left, right) -> {
-            String leftName = left == null || left.displayName == null ? "" : left.displayName;
-            String rightName = right == null || right.displayName == null ? "" : right.displayName;
-            int insensitive = leftName.compareToIgnoreCase(rightName);
-            return insensitive != 0 ? insensitive : leftName.compareTo(rightName);
-        });
+        final MineralSortMode[] sortMode = new MineralSortMode[]{MineralSortMode.POPULARITY};
 
         MineralAreaAnalyzer.MineralSummary current = findMineralSummary(
                 result, activeResearchMineralKey, activeResearchMineralLabel);
@@ -757,9 +778,20 @@ public final class MainActivity extends Activity implements LocationRepository.L
         fixed.addView(filter, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView listTitle = researchPanelHeading("All Minerals & Materials · " + allMinerals.size());
         listTitle.setPadding(0, dp(3), 0, dp(2));
-        fixed.addView(listTitle);
+        titleRow.addView(listTitle, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        Button sort = smallActionButton("Sort: Popularity");
+        sort.setContentDescription("Sort minerals and materials. Current sort: Popularity");
+        titleRow.addView(sort, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        fixed.addView(titleRow);
 
         HorizontalScrollView jumpScroll = new HorizontalScrollView(this);
         jumpScroll.setHorizontalScrollBarEnabled(false);
@@ -830,8 +862,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
             rows.removeAllViews();
             tourMineralSelectionTarget = null;
 
-            int matches = 0;
-            char lastHeader = 0;
+            ArrayList<MineralAreaAnalyzer.MineralSummary> visibleMinerals = new ArrayList<>();
             for (MineralAreaAnalyzer.MineralSummary item : allMinerals) {
                 if (item == null) continue;
                 String name = item.displayName == null ? "" : item.displayName.trim();
@@ -841,18 +872,28 @@ public final class MainActivity extends Activity implements LocationRepository.L
                         && !key.toLowerCase(Locale.US).contains(query)) {
                     continue;
                 }
-                matches++;
-                char initial = mineralInitial(name);
-                if (initial != lastHeader) {
-                    TextView header = researchPanelHeading(String.valueOf(initial));
-                    header.setTextSize(12.5f);
-                    header.setPadding(dp(4), dp(6), dp(4), dp(2));
-                    rows.addView(header, new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                    if (initial >= 'A' && initial <= 'Z') {
-                        letterAnchors[initial - 'A'] = header;
+                visibleMinerals.add(item);
+            }
+            sortMineralSummaries(visibleMinerals, sortMode[0]);
+
+            boolean alphabetical = sortMode[0] == MineralSortMode.ALPHABETICAL;
+            jumpScroll.setVisibility(alphabetical ? View.VISIBLE : View.GONE);
+            char lastHeader = 0;
+            for (MineralAreaAnalyzer.MineralSummary item : visibleMinerals) {
+                String name = item.displayName == null ? "" : item.displayName.trim();
+                if (alphabetical) {
+                    char initial = mineralInitial(name);
+                    if (initial != lastHeader) {
+                        TextView header = researchPanelHeading(String.valueOf(initial));
+                        header.setTextSize(12.5f);
+                        header.setPadding(dp(4), dp(6), dp(4), dp(2));
+                        rows.addView(header, new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                        if (initial >= 'A' && initial <= 'Z') {
+                            letterAnchors[initial - 'A'] = header;
+                        }
+                        lastHeader = initial;
                     }
-                    lastHeader = initial;
                 }
 
                 boolean isSelected = selected[0] != null
@@ -875,17 +916,43 @@ public final class MainActivity extends Activity implements LocationRepository.L
                 rows.addView(choice, params);
             }
 
-            if (matches == 0) {
+            if (visibleMinerals.isEmpty()) {
                 rows.addView(researchBodyText(
                         "No minerals or materials match this search. Clear or change the search to browse the full list."));
             }
+            String sortLabel = mineralSortLabel(sortMode[0]);
             listTitle.setText(query.isEmpty()
                     ? "All Minerals & Materials · " + allMinerals.size()
-                    : "All Minerals & Materials · " + allMinerals.size() + " · " + matches + " matches");
+                    : "All Minerals & Materials · " + allMinerals.size() + " · " + visibleMinerals.size() + " matches");
+            sort.setText("Sort: " + sortLabel);
+            sort.setContentDescription("Sort minerals and materials. Current sort: " + sortLabel);
             for (int i = 0; i < letterButtons.length; i++) {
                 if (letterButtons[i] != null) letterButtons[i].setEnabled(letterAnchors[i] != null);
             }
+            TourDebugLog.mineralSortDiagnostic(MainActivity.this, "MINERAL_SORT_RENDER",
+                    "mode=" + sortMode[0].name()
+                            + " total=" + allMinerals.size()
+                            + " visible=" + visibleMinerals.size()
+                            + " query=" + query
+                            + " first=" + (visibleMinerals.isEmpty() ? "none"
+                            : safeMineralDebugName(visibleMinerals.get(0))));
         };
+
+        sort.setOnClickListener(v -> new AlertDialog.Builder(MainActivity.this)
+                .setTitle("Sort minerals & materials")
+                .setSingleChoiceItems(new String[]{"Popularity", "Number of records", "A–Z"},
+                        mineralSortDialogIndex(sortMode[0]), (dialog, which) -> {
+                            if (which == 0) sortMode[0] = MineralSortMode.POPULARITY;
+                            else if (which == 1) sortMode[0] = MineralSortMode.RECORD_COUNT;
+                            else sortMode[0] = MineralSortMode.ALPHABETICAL;
+                            TourDebugLog.mineralSortDiagnostic(MainActivity.this, "MINERAL_SORT_CHANGE",
+                                    "mode=" + sortMode[0].name());
+                            refreshList[0].run();
+                            researchAreaPanel.scrollDetailsToTop();
+                            dialog.dismiss();
+                        })
+                .setNegativeButton("Cancel", null)
+                .show());
 
         updateSelection.run();
         refreshList[0].run();
@@ -898,6 +965,68 @@ public final class MainActivity extends Activity implements LocationRepository.L
             @Override public void afterTextChanged(Editable value) {}
         });
         saveResearchSession();
+    }
+
+    private void sortMineralSummaries(ArrayList<MineralAreaAnalyzer.MineralSummary> minerals,
+                                      MineralSortMode mode) {
+        if (minerals == null || minerals.size() < 2) return;
+        MineralSortMode effective = mode == null ? MineralSortMode.POPULARITY : mode;
+        minerals.sort((left, right) -> {
+            if (effective == MineralSortMode.RECORD_COUNT) {
+                int countCompare = Integer.compare(
+                        right == null ? 0 : right.recordCount,
+                        left == null ? 0 : left.recordCount);
+                if (countCompare != 0) return countCompare;
+                return compareMineralNames(left, right);
+            }
+            if (effective == MineralSortMode.ALPHABETICAL) {
+                return compareMineralNames(left, right);
+            }
+            int leftRank = rockhoundPriorityRank(left);
+            int rightRank = rockhoundPriorityRank(right);
+            int rankCompare = Integer.compare(leftRank, rightRank);
+            return rankCompare != 0 ? rankCompare : compareMineralNames(left, right);
+        });
+    }
+
+    private int rockhoundPriorityRank(MineralAreaAnalyzer.MineralSummary item) {
+        String display = normalizedMineralSortName(item == null ? null : item.displayName);
+        String key = normalizedMineralSortName(item == null ? null : item.key);
+        for (int i = 0; i < ROCKHOUND_PRIORITY_MINERALS.length; i++) {
+            String priority = ROCKHOUND_PRIORITY_MINERALS[i];
+            if (priority.equals(display) || priority.equals(key)) return i;
+        }
+        return ROCKHOUND_PRIORITY_MINERALS.length;
+    }
+
+    private String normalizedMineralSortName(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.US);
+    }
+
+    private int compareMineralNames(MineralAreaAnalyzer.MineralSummary left,
+                                    MineralAreaAnalyzer.MineralSummary right) {
+        String leftName = left == null || left.displayName == null ? "" : left.displayName;
+        String rightName = right == null || right.displayName == null ? "" : right.displayName;
+        int insensitive = leftName.compareToIgnoreCase(rightName);
+        return insensitive != 0 ? insensitive : leftName.compareTo(rightName);
+    }
+
+    private String mineralSortLabel(MineralSortMode mode) {
+        if (mode == MineralSortMode.RECORD_COUNT) return "Records";
+        if (mode == MineralSortMode.ALPHABETICAL) return "A–Z";
+        return "Popularity";
+    }
+
+    private int mineralSortDialogIndex(MineralSortMode mode) {
+        if (mode == MineralSortMode.RECORD_COUNT) return 1;
+        if (mode == MineralSortMode.ALPHABETICAL) return 2;
+        return 0;
+    }
+
+    private String safeMineralDebugName(MineralAreaAnalyzer.MineralSummary item) {
+        if (item == null || item.displayName == null) return "";
+        String name = item.displayName.replace('\n', ' ').replace('\r', ' ').trim();
+        return name.length() <= 80 ? name : name.substring(0, 80);
     }
 
     private char mineralInitial(String name) {

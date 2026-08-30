@@ -375,6 +375,14 @@ public final class TourDebugLog {
     }
 
     /** Snapshot the Research workspace/mapped-control presentation without mutating it. */
+    /** Records mineral-result sorting without changing Research or guided-tour state. */
+    public static void mineralSortDiagnostic(Activity activity, String event, String detail) {
+        recordImportant(clean(event, 60),
+                "activity=" + activityName(activity)
+                        + " " + clean(detail, 320)
+                        + " main={" + mainSnapshot() + "}");
+    }
+
     public static void researchPresentation(Activity activity, String event, String state,
                                             View workspace, View mappedPanel, View dragControl,
                                             View collapseControl, View collapsedReopen) {
