@@ -396,13 +396,30 @@ public final class FieldMapController implements LocationRepository.Listener {
         FieldMapController controller = ref == null ? null : ref.get();
         if (controller == null || controller.map == null) return;
         activity.runOnUiThread(() -> {
-            // Match Field > Visibility's proven path first: ensure sources/layers are present and
-            // apply the newly persisted visibility state instead of only touching layer flags.
-            controller.applyCachedSources();
-            // Then rebuild Field Records from the database once. This makes turning the layer back
-            // on self-healing if its cached GeoJSON was empty/stale and gives tour-debug a precise
-            // source/layer diagnostic if the points still fail to render.
+            // Do not destroy/recreate the Field Record GeoJSON source here. The zoom diagnostic
+            // proved that a newly recreated source can remain logically VISIBLE while its current
+            // high-zoom source tile is absent until the camera crosses roughly zoom 9.6.
+            // Apply visibility first, then republish the records after the layer is actively used.
+            controller.applyCachedSourcesForVisibilityChange();
             controller.refreshFieldRecordLayerAfterVisibilityChange();
+        });
+    }
+
+    /**
+     * Apply all normal cached map state for a Layers-dialog change, but deliberately leave the
+     * Field Record GeoJSON payload alone until after its requested visibility has been applied.
+     */
+    private void applyCachedSourcesForVisibilityChange() {
+        if (map == null) return;
+        map.getStyle(style -> {
+            if (style == null) return;
+            ensureLayers(style);
+            setSource(style, TRACK_SOURCE, trackJson);
+            setSource(style, AREA_SOURCE, areaJson);
+            setSource(style, WAYPOINT_LABEL_SOURCE, waypointLabelJson);
+            updateNavigationSources(style);
+            updateMeasurementSources(style);
+            syncVisibility(style);
         });
     }
 
@@ -416,13 +433,10 @@ public final class FieldMapController implements LocationRepository.Listener {
                 map.getStyle(style -> {
                     if (style == null) return;
                     boolean requestedVisible = FieldMapState.fieldRecordsVisible(activity);
-                    if (requestedVisible) {
-                        rebuildFieldRecordRenderStack(style);
-                    } else {
-                        ensureLayers(style);
-                        setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
-                        syncVisibility(style);
-                    }
+                    ensureLayers(style);
+                    // Visibility must be committed before the GeoJSON update. Reusing the existing
+                    // source avoids the stale source-tile state produced by removeSource/addSource.
+                    syncVisibility(style);
                     Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
                     Layer labelLayer = style.getLayer(FIELD_RECORD_LABEL);
                     TourDebugLog.mapDiagnostic("FIELD_RECORD_LAYER_STATE",
@@ -433,47 +447,52 @@ public final class FieldMapController implements LocationRepository.Listener {
                                     + " pointVisibility=" + layerVisibilityValue(pointLayer)
                                     + " labelLayer=" + (labelLayer != null)
                                     + " labelVisibility=" + layerVisibilityValue(labelLayer));
-                    scheduleFieldRecordZoomProbe("visibility_change");
+                    if (requestedVisible) {
+                        publishFieldRecordSourceNextFrame("visibility_change");
+                    } else {
+                        scheduleFieldRecordZoomProbe("visibility_change_hidden");
+                    }
                 });
             });
         });
     }
 
     /**
-     * A hidden Field Record layer has proven capable of reporting VISIBLE without drawing again.
-     * Recreate only this small GeoJSON render stack when visibility is restored. Saved records,
-     * database state, camera state, GPS, tracks, and every other map layer remain untouched.
+     * Publish Field Record GeoJSON only after its source/layers exist and the point layer is
+     * visible. A style reload may create an empty source; a normal OFF->ON toggle reuses the
+     * existing source. In both cases this next-frame update makes MapLibre build the source tile
+     * for the camera's current zoom instead of waiting for a large zoom change to invalidate it.
      */
-    private void rebuildFieldRecordRenderStack(Style style) {
-        if (style == null) return;
-        try {
-            if (style.getLayer(FIELD_RECORD_LABEL) != null) style.removeLayer(FIELD_RECORD_LABEL);
-            if (style.getLayer(FIELD_RECORD_LAYER) != null) style.removeLayer(FIELD_RECORD_LAYER);
-            if (style.getSource(FIELD_RECORD_SOURCE) != null) style.removeSource(FIELD_RECORD_SOURCE);
-
-            style.addSource(new GeoJsonSource(FIELD_RECORD_SOURCE,
-                    fieldRecordJson == null ? emptyCollection() : fieldRecordJson));
-
-            CircleLayer circle = new CircleLayer(FIELD_RECORD_LAYER, FIELD_RECORD_SOURCE);
-            circle.setProperties(circleColor(Color.rgb(120, 70, 160)), circleRadius(6f),
-                    circleStrokeColor(Color.WHITE), circleStrokeWidth(2f));
-            style.addLayer(circle);
-
-            SymbolLayer labels = labelLayer(FIELD_RECORD_LABEL, FIELD_RECORD_SOURCE, 10.5f);
-            style.addLayer(labels);
-            syncVisibility(style);
-
-            TourDebugLog.mapDiagnostic("FIELD_RECORD_RENDER_REBUILT",
-                    "records=" + geoJsonFeatureCount(fieldRecordJson)
-                            + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
-                            + " pointLayer=" + (style.getLayer(FIELD_RECORD_LAYER) != null)
-                            + " labelLayer=" + (style.getLayer(FIELD_RECORD_LABEL) != null));
-        } catch (RuntimeException ex) {
-            // A style can be replaced between callback scheduling and execution. The style-finished
-            // listener will retry against the new style; keep the current map usable in the meantime.
-            TourDebugLog.mapDiagnostic("FIELD_RECORD_RENDER_REBUILD_FAILED",
-                    ex.getClass().getSimpleName() + ": " + String.valueOf(ex.getMessage()));
-        }
+    private void publishFieldRecordSourceNextFrame(String reason) {
+        if (mapView == null || map == null) return;
+        final String json = fieldRecordJson == null ? emptyCollection() : fieldRecordJson;
+        final int recordCount = geoJsonFeatureCount(json);
+        mapView.postOnAnimation(() -> {
+            if (map == null || activity.isFinishing() || activity.isDestroyed()) return;
+            map.getStyle(style -> {
+                if (style == null) return;
+                try {
+                    ensureLayers(style);
+                    syncVisibility(style);
+                    setSource(style, FIELD_RECORD_SOURCE, json);
+                    Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
+                    TourDebugLog.mapDiagnostic("FIELD_RECORD_SOURCE_PUBLISHED",
+                            "reason=" + reason
+                                    + " records=" + recordCount
+                                    + " requestedVisible=" + FieldMapState.fieldRecordsVisible(activity)
+                                    + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
+                                    + " pointLayer=" + (pointLayer != null)
+                                    + " pointVisibility=" + layerVisibilityValue(pointLayer));
+                    scheduleFieldRecordZoomProbe(reason + "_published");
+                } catch (RuntimeException ex) {
+                    // If the style changes again between frames, the style-finished recovery path
+                    // will create the new empty source/layers and republish against that style.
+                    TourDebugLog.mapDiagnostic("FIELD_RECORD_SOURCE_PUBLISH_FAILED",
+                            "reason=" + reason + " " + ex.getClass().getSimpleName()
+                                    + ": " + String.valueOf(ex.getMessage()));
+                }
+            });
+        });
     }
 
     /**
@@ -2865,14 +2884,24 @@ public final class FieldMapController implements LocationRepository.Listener {
     private void applyCachedSources() {
         if (map == null) return;
         map.getStyle(style -> {
+            if (style == null) return;
+            // If a new MapLibre style has replaced the runtime source, create the Field Record
+            // source empty and bind its layers first. Populate it on the next frame only after
+            // visibility is applied. Existing sources keep the normal cheap in-place update path.
+            boolean fieldRecordSourceMissing = style.getSource(FIELD_RECORD_SOURCE) == null;
             ensureLayers(style);
             setSource(style, TRACK_SOURCE, trackJson);
             setSource(style, AREA_SOURCE, areaJson);
-            setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
+            if (!fieldRecordSourceMissing) {
+                setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
+            }
             setSource(style, WAYPOINT_LABEL_SOURCE, waypointLabelJson);
             updateNavigationSources(style);
             updateMeasurementSources(style);
             syncVisibility(style);
+            if (fieldRecordSourceMissing && FieldMapState.fieldRecordsVisible(activity)) {
+                publishFieldRecordSourceNextFrame("style_bind");
+            }
         });
     }
 
