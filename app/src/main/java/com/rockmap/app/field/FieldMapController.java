@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PointF;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.os.Handler;
@@ -51,6 +52,7 @@ import org.maplibre.android.style.layers.Layer;
 import org.maplibre.android.style.layers.LineLayer;
 import org.maplibre.android.style.layers.SymbolLayer;
 import org.maplibre.android.style.sources.GeoJsonSource;
+import org.maplibre.geojson.Feature;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -181,7 +183,11 @@ public final class FieldMapController implements LocationRepository.Listener {
     private Location latestNavigationLocation;
     private boolean navigationUpdatesStarted;
     private boolean cameraMoveListenerInstalled;
+    private MapLibreMap.OnCameraIdleListener fieldRecordCameraIdleListener;
     private MapView.OnDidFinishLoadingStyleListener fieldStyleLoadedListener;
+    private String pendingFieldRecordZoomProbeReason = "camera_idle";
+    private final Runnable fieldRecordZoomProbeRunnable =
+            () -> logFieldRecordZoomRenderState(pendingFieldRecordZoomProbeReason);
     private View.OnLayoutChangeListener fieldLayoutListener;
     private long cameraCommandGeneration;
     private long hudRenderGeneration;
@@ -289,6 +295,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                 });
                 cameraMoveListenerInstalled = true;
             }
+            installFieldRecordZoomDiagnostics();
             configureMapUi();
             applyCachedSources();
             consumeMapRequests();
@@ -314,6 +321,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         resumed = false;
         main.removeCallbacks(refreshLoop);
         main.removeCallbacks(fieldTourResumeRunnable);
+        main.removeCallbacks(fieldRecordZoomProbeRunnable);
         // Invalidate every frame/global-layout continuation owned by the presentation that is
         // leaving the foreground. Anonymous postOnAnimation callbacks may still run, but their
         // generation can no longer mutate or restart this HUD after stop/pause.
@@ -372,6 +380,10 @@ public final class FieldMapController implements LocationRepository.Listener {
             mapView.removeOnDidFinishLoadingStyleListener(fieldStyleLoadedListener);
             fieldStyleLoadedListener = null;
         }
+        if (map != null && fieldRecordCameraIdleListener != null) {
+            map.removeOnCameraIdleListener(fieldRecordCameraIdleListener);
+            fieldRecordCameraIdleListener = null;
+        }
         worker.shutdownNow();
         waypointRepository.close();
     }
@@ -421,6 +433,7 @@ public final class FieldMapController implements LocationRepository.Listener {
                                     + " pointVisibility=" + layerVisibilityValue(pointLayer)
                                     + " labelLayer=" + (labelLayer != null)
                                     + " labelVisibility=" + layerVisibilityValue(labelLayer));
+                    scheduleFieldRecordZoomProbe("visibility_change");
                 });
             });
         });
@@ -461,6 +474,88 @@ public final class FieldMapController implements LocationRepository.Listener {
             TourDebugLog.mapDiagnostic("FIELD_RECORD_RENDER_REBUILD_FAILED",
                     ex.getClass().getSimpleName() + ": " + String.valueOf(ex.getMessage()));
         }
+    }
+
+    /**
+     * Tour-debug only: observe the rendered Field Record layer after camera movement settles.
+     * This never changes camera, layer, source, visibility, or saved-record state.
+     */
+    private void installFieldRecordZoomDiagnostics() {
+        if (map == null || fieldRecordCameraIdleListener != null) return;
+        fieldRecordCameraIdleListener = () -> scheduleFieldRecordZoomProbe("camera_idle");
+        map.addOnCameraIdleListener(fieldRecordCameraIdleListener);
+        scheduleFieldRecordZoomProbe("listener_installed");
+    }
+
+    private void scheduleFieldRecordZoomProbe(String reason) {
+        pendingFieldRecordZoomProbeReason = reason == null ? "unknown" : reason;
+        main.removeCallbacks(fieldRecordZoomProbeRunnable);
+        main.postDelayed(fieldRecordZoomProbeRunnable, 160L);
+    }
+
+    private void logFieldRecordZoomRenderState(String reason) {
+        if (!resumed || map == null || mapView == null
+                || mapView.getWidth() <= 0 || mapView.getHeight() <= 0) return;
+        map.getStyle(style -> {
+            if (style == null || map == null || mapView == null) return;
+            try {
+                int width = mapView.getWidth();
+                int height = mapView.getHeight();
+                double zoom = map.getCameraPosition() == null ? Double.NaN
+                        : map.getCameraPosition().zoom;
+                LatLng center = map.getCameraPosition() == null
+                        ? null : map.getCameraPosition().target;
+                List<FieldDatabase.FieldRecord> records = db.listFieldRecords();
+                List<Feature> viewportHits = map.queryRenderedFeatures(
+                        new RectF(0f, 0f, width, height),
+                        new String[]{FIELD_RECORD_LAYER});
+                Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
+                TourDebugLog.mapDiagnostic("FIELD_RECORD_ZOOM_RENDER",
+                        String.format(Locale.US,
+                                "reason=%s zoom=%.3f center=%s size=%dx%d records=%d viewportHits=%d requestedVisible=%s pointVisibility=%s",
+                                reason == null ? "unknown" : reason, zoom,
+                                center == null ? "none" : String.format(Locale.US, "%.6f,%.6f",
+                                        center.getLatitude(), center.getLongitude()),
+                                width, height, records.size(), viewportHits.size(),
+                                FieldMapState.fieldRecordsVisible(activity),
+                                layerVisibilityValue(pointLayer)));
+
+                float probeRadius = Math.max(10f, dp(10));
+                for (FieldDatabase.FieldRecord record : records) {
+                    PointF screen = map.getProjection().toScreenLocation(
+                            new LatLng(record.lat, record.lon));
+                    boolean finite = screen != null && Float.isFinite(screen.x) && Float.isFinite(screen.y);
+                    boolean inViewport = finite && screen.x >= 0f && screen.x <= width
+                            && screen.y >= 0f && screen.y <= height;
+                    int circleHits = -1;
+                    int labelHits = -1;
+                    if (finite) {
+                        RectF probe = new RectF(screen.x - probeRadius, screen.y - probeRadius,
+                                screen.x + probeRadius, screen.y + probeRadius);
+                        circleHits = map.queryRenderedFeatures(
+                                probe, new String[]{FIELD_RECORD_LAYER}).size();
+                        labelHits = map.queryRenderedFeatures(
+                                probe, new String[]{FIELD_RECORD_LABEL}).size();
+                    }
+                    TourDebugLog.mapDiagnostic("FIELD_RECORD_ZOOM_ITEM",
+                            String.format(Locale.US,
+                                    "zoom=%.3f id=%d name=%s lat=%.6f lon=%.6f screen=%s inViewport=%s circleHits=%d labelHits=%d",
+                                    zoom, record.id, safeFieldRecordDebugName(record.name),
+                                    record.lat, record.lon,
+                                    finite ? String.format(Locale.US, "%.1f,%.1f", screen.x, screen.y) : "invalid",
+                                    inViewport, circleHits, labelHits));
+                }
+            } catch (RuntimeException ex) {
+                TourDebugLog.mapDiagnostic("FIELD_RECORD_ZOOM_PROBE_FAILED",
+                        ex.getClass().getSimpleName() + ": " + String.valueOf(ex.getMessage()));
+            }
+        });
+    }
+
+    private static String safeFieldRecordDebugName(String value) {
+        if (value == null) return "";
+        String cleaned = value.replace('\n', ' ').replace('\r', ' ').trim();
+        return cleaned.length() <= 60 ? cleaned : cleaned.substring(0, 60);
     }
 
     private static int geoJsonFeatureCount(String geoJson) {
