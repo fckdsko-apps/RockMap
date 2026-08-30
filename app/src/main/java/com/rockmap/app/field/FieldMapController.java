@@ -67,8 +67,10 @@ import static org.maplibre.android.style.expressions.Expression.get;
 import static org.maplibre.android.style.layers.Property.NONE;
 import static org.maplibre.android.style.layers.Property.VISIBLE;
 import static org.maplibre.android.style.layers.PropertyFactory.circleColor;
+import static org.maplibre.android.style.layers.PropertyFactory.circleOpacity;
 import static org.maplibre.android.style.layers.PropertyFactory.circleRadius;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeColor;
+import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeOpacity;
 import static org.maplibre.android.style.layers.PropertyFactory.circleStrokeWidth;
 import static org.maplibre.android.style.layers.PropertyFactory.fillColor;
 import static org.maplibre.android.style.layers.PropertyFactory.fillOpacity;
@@ -80,6 +82,7 @@ import static org.maplibre.android.style.layers.PropertyFactory.textField;
 import static org.maplibre.android.style.layers.PropertyFactory.textHaloColor;
 import static org.maplibre.android.style.layers.PropertyFactory.textHaloWidth;
 import static org.maplibre.android.style.layers.PropertyFactory.textOffset;
+import static org.maplibre.android.style.layers.PropertyFactory.textOpacity;
 import static org.maplibre.android.style.layers.PropertyFactory.textSize;
 import static org.maplibre.android.style.layers.PropertyFactory.visibility;
 
@@ -447,50 +450,13 @@ public final class FieldMapController implements LocationRepository.Listener {
                                     + " pointVisibility=" + layerVisibilityValue(pointLayer)
                                     + " labelLayer=" + (labelLayer != null)
                                     + " labelVisibility=" + layerVisibilityValue(labelLayer));
-                    if (requestedVisible) {
-                        publishFieldRecordSourceNextFrame("visibility_change");
-                    } else {
-                        scheduleFieldRecordZoomProbe("visibility_change_hidden");
-                    }
+                    // Do not touch the GeoJSON source for a pure visibility toggle. Keeping
+                    // the Field Record layers layout-visible prevents MapLibre from deactivating
+                    // the source tile pyramid; syncVisibility() handles the visual hide/show via
+                    // paint opacity instead.
+                    scheduleFieldRecordZoomProbe(requestedVisible
+                            ? "visibility_change_shown" : "visibility_change_hidden");
                 });
-            });
-        });
-    }
-
-    /**
-     * Publish Field Record GeoJSON only after its source/layers exist and the point layer is
-     * visible. A style reload may create an empty source; a normal OFF->ON toggle reuses the
-     * existing source. In both cases this next-frame update makes MapLibre build the source tile
-     * for the camera's current zoom instead of waiting for a large zoom change to invalidate it.
-     */
-    private void publishFieldRecordSourceNextFrame(String reason) {
-        if (mapView == null || map == null) return;
-        final String json = fieldRecordJson == null ? emptyCollection() : fieldRecordJson;
-        final int recordCount = geoJsonFeatureCount(json);
-        mapView.postOnAnimation(() -> {
-            if (map == null || activity.isFinishing() || activity.isDestroyed()) return;
-            map.getStyle(style -> {
-                if (style == null) return;
-                try {
-                    ensureLayers(style);
-                    syncVisibility(style);
-                    setSource(style, FIELD_RECORD_SOURCE, json);
-                    Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
-                    TourDebugLog.mapDiagnostic("FIELD_RECORD_SOURCE_PUBLISHED",
-                            "reason=" + reason
-                                    + " records=" + recordCount
-                                    + " requestedVisible=" + FieldMapState.fieldRecordsVisible(activity)
-                                    + " source=" + (style.getSource(FIELD_RECORD_SOURCE) != null)
-                                    + " pointLayer=" + (pointLayer != null)
-                                    + " pointVisibility=" + layerVisibilityValue(pointLayer));
-                    scheduleFieldRecordZoomProbe(reason + "_published");
-                } catch (RuntimeException ex) {
-                    // If the style changes again between frames, the style-finished recovery path
-                    // will create the new empty source/layers and republish against that style.
-                    TourDebugLog.mapDiagnostic("FIELD_RECORD_SOURCE_PUBLISH_FAILED",
-                            "reason=" + reason + " " + ex.getClass().getSimpleName()
-                                    + ": " + String.valueOf(ex.getMessage()));
-                }
             });
         });
     }
@@ -2885,23 +2851,16 @@ public final class FieldMapController implements LocationRepository.Listener {
         if (map == null) return;
         map.getStyle(style -> {
             if (style == null) return;
-            // If a new MapLibre style has replaced the runtime source, create the Field Record
-            // source empty and bind its layers first. Populate it on the next frame only after
-            // visibility is applied. Existing sources keep the normal cheap in-place update path.
-            boolean fieldRecordSourceMissing = style.getSource(FIELD_RECORD_SOURCE) == null;
             ensureLayers(style);
             setSource(style, TRACK_SOURCE, trackJson);
             setSource(style, AREA_SOURCE, areaJson);
-            if (!fieldRecordSourceMissing) {
-                setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
-            }
+            // Field Record layers stay layout-visible even when the user hides them; opacity
+            // controls presentation. That keeps this source actively tiled at the current zoom.
+            setSource(style, FIELD_RECORD_SOURCE, fieldRecordJson);
             setSource(style, WAYPOINT_LABEL_SOURCE, waypointLabelJson);
             updateNavigationSources(style);
             updateMeasurementSources(style);
             syncVisibility(style);
-            if (fieldRecordSourceMissing && FieldMapState.fieldRecordsVisible(activity)) {
-                publishFieldRecordSourceNextFrame("style_bind");
-            }
         });
     }
 
@@ -3009,8 +2968,7 @@ public final class FieldMapController implements LocationRepository.Listener {
         setLayerVisible(style, TRACK_LAYER, FieldMapState.tracksVisible(activity));
         setLayerVisible(style, AREA_FILL, FieldMapState.areasVisible(activity));
         setLayerVisible(style, AREA_LINE, FieldMapState.areasVisible(activity));
-        setLayerVisible(style, FIELD_RECORD_LAYER, FieldMapState.fieldRecordsVisible(activity));
-        setLayerVisible(style, FIELD_RECORD_LABEL, FieldMapState.fieldRecordsVisible(activity));
+        setFieldRecordDisplay(style, FieldMapState.fieldRecordsVisible(activity));
 
         boolean normalMarkersVisible = true;
         Layer existingMarkers = style.getLayer(EXISTING_WAYPOINT_LAYER);
@@ -3030,6 +2988,27 @@ public final class FieldMapController implements LocationRepository.Listener {
         setLayerVisible(style, MEASURE_POINT_LAYER, measureActive && !measurement.isEmpty());
         setLayerVisible(style, MEASURE_LINE_LAYER, measureActive && measurement.size() >= 2);
         setLayerVisible(style, MEASURE_FILL_LAYER, measureActive && measurement.size() >= 3);
+    }
+
+    /**
+     * Hide Field Records without setting layout visibility to NONE. MapLibre Native can leave a
+     * GeoJSON source tile unloaded after a NONE -> VISIBLE transition at the current high zoom.
+     * Keeping the layers layout-visible preserves source use; paint opacity alone controls what
+     * the user sees.
+     */
+    private void setFieldRecordDisplay(Style style, boolean visible) {
+        float opacity = visible ? 1f : 0f;
+        Layer pointLayer = style.getLayer(FIELD_RECORD_LAYER);
+        if (pointLayer != null) {
+            pointLayer.setProperties(
+                    visibility(VISIBLE),
+                    circleOpacity(opacity),
+                    circleStrokeOpacity(opacity));
+        }
+        Layer labelLayer = style.getLayer(FIELD_RECORD_LABEL);
+        if (labelLayer != null) {
+            labelLayer.setProperties(visibility(VISIBLE), textOpacity(opacity));
+        }
     }
 
     private void setLayerVisible(Style style, String id, boolean visible) {
