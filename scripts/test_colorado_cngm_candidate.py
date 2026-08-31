@@ -108,10 +108,11 @@ def main():
         )
         write_csv(
             cross_csv,
-            ["Source_DescriptionOfMapUnitsID", "DescriptionOfMapUnitsID", "Source_MapUnit", "MapUnit"],
+            ["Source_DescriptionOfMapUnitsID", "DescriptionOfMapUnitsID", "MapSourceID", "Source_MapUnit", "MapUnit"],
             [{
-                "Source_DescriptionOfMapUnitsID": "7001",
-                "DescriptionOfMapUnitsID": "9001",
+                "Source_DescriptionOfMapUnitsID": "42",
+                "DescriptionOfMapUnitsID": "17",
+                "MapSourceID": "CO_MAP",
                 "Source_MapUnit": "31 | Tgr",
                 "MapUnit": "T_i",
             }],
@@ -191,6 +192,12 @@ def main():
             assert con.execute("SELECT source_mapunit FROM source_units").fetchone()[0] == "31 | Tgr"
             assert con.execute("SELECT mapunit FROM synthesis_units").fetchone()[0] == "T_i"
             assert con.execute("SELECT COUNT(*) FROM source_synthesis").fetchone()[0] == 1
+            link = con.execute(
+                """SELECT crosswalk_source_fk,crosswalk_synthesis_fk,crosswalk_map_source_id,
+                          source_mapunit,mapunit
+                   FROM source_synthesis"""
+            ).fetchone()
+            assert link == ("42", "17", "CO_MAP", "31 | Tgr", "T_i")
             citation = con.execute("SELECT source_citation FROM source_units").fetchone()[0]
             assert "Synthetic Colorado source map citation" in citation
         finally:

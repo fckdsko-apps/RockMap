@@ -538,8 +538,9 @@ CREATE TABLE synthesis_units (
 CREATE TABLE source_synthesis (
     source_unit_id INTEGER NOT NULL REFERENCES source_units(id),
     synthesis_unit_id INTEGER NOT NULL REFERENCES synthesis_units(id),
-    source_unit_upstream_id TEXT NOT NULL,
-    synthesis_upstream_id TEXT NOT NULL,
+    crosswalk_source_fk TEXT NOT NULL,
+    crosswalk_synthesis_fk TEXT NOT NULL,
+    crosswalk_map_source_id TEXT NOT NULL,
     source_mapunit TEXT NOT NULL,
     mapunit TEXT NOT NULL,
     PRIMARY KEY(source_unit_id, synthesis_unit_id)
@@ -678,31 +679,44 @@ def make_crosswalk(csv_path: Path) -> List[Dict[str, str]]:
     fields, rows = read_csv(csv_path)
     idx = field_index(fields)
     out: List[Dict[str, str]] = []
-    seen = set()
+    by_pair: Dict[Tuple[str, str], Dict[str, str]] = {}
     for row in rows:
         source_mapunit = pick(row, idx, "Source_MapUnit", "source_mapunit")
         mapunit = pick(row, idx, "MapUnit", "mapunit")
-        source_upstream = pick(
+        # In the exported GeMS derivative these are relationship-table integer
+        # foreign keys. They are NOT the same identifier namespace as the
+        # *_DescriptionOfMapUnits_ID string fields in the exported DMU tables.
+        source_fk = pick(
             row, idx,
-            "Source_DescriptionOfMapUnitsID", "Source_DescriptionOfMapUnits_ID",
-            "source_descriptionofmapunits_id",
+            "Source_DescriptionOfMapUnitsID",
+            "source_descriptionofmapunitsid",
         )
-        synthesis_upstream = pick(
+        synthesis_fk = pick(
             row, idx,
-            "DescriptionOfMapUnitsID", "DescriptionOfMapUnits_ID",
-            "descriptionofmapunits_id",
+            "DescriptionOfMapUnitsID",
+            "descriptionofmapunitsid",
         )
+        map_source_id = pick(row, idx, "MapSourceID")
         if not source_mapunit or not mapunit:
             continue
-        key = (source_mapunit, mapunit, source_upstream, synthesis_upstream)
-        if key not in seen:
-            seen.add(key)
-            out.append({
-                "source_mapunit": source_mapunit,
-                "mapunit": mapunit,
-                "source_unit_upstream_id": source_upstream,
-                "synthesis_upstream_id": synthesis_upstream,
-            })
+        pair = (source_mapunit, mapunit)
+        rec = {
+            "source_mapunit": source_mapunit,
+            "mapunit": mapunit,
+            "crosswalk_source_fk": source_fk,
+            "crosswalk_synthesis_fk": synthesis_fk,
+            "crosswalk_map_source_id": map_source_id,
+        }
+        previous = by_pair.get(pair)
+        if previous is not None:
+            if previous != rec:
+                raise RuntimeError(
+                    "Official crosswalk contains conflicting rows for "
+                    f"{source_mapunit} -> {mapunit}"
+                )
+            continue
+        by_pair[pair] = rec
+        out.append(rec)
     if not out:
         raise RuntimeError("Official synthesis-to-source crosswalk contained no usable rows.")
     return out
@@ -930,18 +944,34 @@ def build_candidate(inputs: Mapping[str, Path], output_db: Path, *, built_at: st
         for link in relevant_crosswalk:
             src = link["source_mapunit"]
             syn = link["mapunit"]
-            source_upstream = link["source_unit_upstream_id"] or source_by_key[src]["source_unit_upstream_id"]
-            synthesis_upstream = link["synthesis_upstream_id"] or synth_by_key[syn]["synthesis_upstream_id"]
-            if source_upstream != source_by_key[src]["source_unit_upstream_id"]:
-                raise RuntimeError(f"Crosswalk source ID mismatch for {src}")
-            if synthesis_upstream != synth_by_key[syn]["synthesis_upstream_id"]:
-                raise RuntimeError(f"Crosswalk synthesis ID mismatch for {syn}")
+
+            # The exported crosswalk explicitly provides Source_MapUnit and MapUnit,
+            # which are the stable human-readable foreign keys described by USGS.
+            # Preserve its integer relationship IDs separately; do not compare those
+            # integers to the exported DMU *_ID string fields because they are
+            # different identifier namespaces in this derivative product.
+            crosswalk_map_source_id = link["crosswalk_map_source_id"]
+            source_map_source_id = source_by_key[src]["map_source_id"]
+            if (
+                crosswalk_map_source_id
+                and source_map_source_id
+                and crosswalk_map_source_id != source_map_source_id
+            ):
+                raise RuntimeError(
+                    f"Crosswalk MapSourceID mismatch for {src}: "
+                    f"{crosswalk_map_source_id} != {source_map_source_id}"
+                )
+
             db.execute(
-                """INSERT OR IGNORE INTO source_synthesis(
-                    source_unit_id,synthesis_unit_id,source_unit_upstream_id,synthesis_upstream_id,
-                    source_mapunit,mapunit
-                ) VALUES(?,?,?,?,?,?)""",
-                (source_ids[src], synth_ids[syn], source_upstream, synthesis_upstream, src, syn),
+                """INSERT INTO source_synthesis(
+                    source_unit_id,synthesis_unit_id,crosswalk_source_fk,crosswalk_synthesis_fk,
+                    crosswalk_map_source_id,source_mapunit,mapunit
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    source_ids[src], synth_ids[syn],
+                    link["crosswalk_source_fk"], link["crosswalk_synthesis_fk"],
+                    crosswalk_map_source_id, src, syn,
+                ),
             )
 
         seen_upstream = set()
