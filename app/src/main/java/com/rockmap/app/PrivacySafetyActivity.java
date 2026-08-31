@@ -51,6 +51,17 @@ public final class PrivacySafetyActivity extends Activity {
         sourcesHint.setPadding(0, 0, 0, dp(8));
         content.addView(sourcesHint);
 
+        Button userData = button("User data & backup");
+        userData.setContentDescription("Manage RockMap user-created data and Android backup information");
+        userData.setOnClickListener(v ->
+                startActivity(new Intent(this, UserDataBackupActivity.class)));
+        content.addView(userData, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView userDataHint = body("Saved locations, trips, tracks, field records, prospecting areas, deletion controls, and Android backup/restore information.");
+        userDataHint.setPadding(0, 0, 0, dp(8));
+        content.addView(userDataHint);
+
         TextView safetyHeading = heading("Safety & data limitations", 17f);
         safetyHeading.setPadding(0, dp(4), 0, dp(6));
         content.addView(safetyHeading);

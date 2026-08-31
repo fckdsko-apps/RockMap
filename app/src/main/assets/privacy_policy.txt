@@ -1,5 +1,5 @@
 ROCKMAP PRIVACY POLICY
-Last updated: August 22, 2026
+Last updated: August 30, 2026
 
 RockMap is an offline-first Android field-map and research application. This policy explains how RockMap accesses, uses, stores, and shares user data.
 
@@ -32,7 +32,11 @@ Before RockMap can be used, the current release requires acknowledgment of the S
 RockMap stores a randomly generated local acknowledgment token together with the disclosure version, last acknowledgment time, acknowledgment count, and reminder preference. The token is stored only in RockMap's private app preferences. It is not an account token, authentication credential, analytics identifier, advertising identifier, or cross-app tracking identifier, and RockMap does not send it to RockMap-operated servers. The safety preferences are excluded from Android backup/device transfer. The token is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
 
 ANDROID BACKUP AND DEVICE TRANSFER
-RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, and field data. Depending on your Android, device, account, and backup settings, this data may be stored or transferred by the Android platform or backup provider. Downloadable offline map files, downloaded Colorado geology snapshots, reproducible Research-result files, and the local safety acknowledgment preferences are excluded from Android backup/device transfer. RockMap does not receive or control copies held by the Android backup provider.
+RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, tracks, field records, polygon areas, and related user-created data. Depending on your Android device, account, backup provider, and backup settings, Android may restore this eligible user-created data after RockMap is reinstalled or when data is transferred to another device.
+
+Downloadable offline map files, downloaded Colorado geology snapshots, reproducible Research-result files, local safety acknowledgment preferences, first-install setup state, and downloaded-data status preferences are excluded from Android backup/device transfer. This is why a reinstall may require RockMap's reference-data packs to be downloaded again even when Android restores eligible saved user work.
+
+RockMap does not operate or receive these Android backup copies. Backup retention, deletion, encryption, and restore timing are controlled by Android and the user's backup provider. Deleting local RockMap data does not give RockMap the technical ability to force an Android/Google/Samsung backup provider to immediately erase an older provider-managed backup copy. Users can review or change the backup options made available by their device and backup provider through Android settings.
 
 OFFLINE-DATA UPDATES AND NETWORK DATA
 RockMap is designed to work offline, but you can choose to check for and download updated offline map or research data.
@@ -59,7 +63,13 @@ DATA SECURITY
 RockMap stores working data in Android app-private storage. Network update URLs must use HTTPS and cleartext traffic is disabled. Release-managed offline-data files are checked against declared size and SHA-256 values before activation. Colorado geology additionally undergoes SQLite integrity, schema, Colorado-state, geometry, and record-count validation before activation. No storage or transmission method can be guaranteed completely secure.
 
 DATA RETENTION AND DELETION
-Saved markers, field records, tracks, polygon areas, and trips remain on the device until you delete them in RockMap, clear RockMap app data, or uninstall the app. Downloaded Colorado geology remains until it is replaced by a successfully verified newer snapshot, app data is cleared, or RockMap is uninstalled. The last Research result is overwritten by a later Research result and can also be cleared from Research; it is not included in Android backup/device transfer. Attached-photo references remain until the associated field record is changed/deleted or app data is cleared; the original selected photo is controlled by its storage provider. The local safety acknowledgment remains until app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever you chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention/deletion rules. RockMap has no server-side user accounts and therefore no RockMap account data to delete from a RockMap server.
+Saved markers, trips, tracks, field records, polygon areas, and related user-created RockMap data remain in the current local installation until you delete the relevant records in RockMap, use the User data & backup deletion controls, clear RockMap app data, or uninstall the app.
+
+RockMap provides in-app controls under Safety, sources & privacy > User data & backup to delete saved locations and trips; delete tracks, field records, and polygon areas; or delete all user-created RockMap database content while leaving downloaded reference-data packs and application settings in place. Deleting field records removes RockMap's stored photo references and releases persisted document permissions when possible; it does not delete the original photos from the photo/document provider.
+
+Downloaded Colorado geology remains until it is replaced by a successfully verified newer snapshot, app data is cleared, or RockMap is uninstalled. The last Research result is overwritten by a later Research result and can also be cleared from Research; it is not included in Android backup/device transfer. The local safety acknowledgment remains until app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever you chose to save them and must be deleted from that location.
+
+Eligible user-created databases may also exist in Android/provider-managed backup or device-transfer storage. Uninstalling RockMap removes the installed local copy but does not guarantee immediate deletion of a separate provider-managed backup. Android may restore an eligible backup on a later reinstall. RockMap cannot directly erase provider-managed backup copies; users must use the backup controls their Android device/provider makes available. RockMap has no server-side user accounts and therefore has no RockMap account data or RockMap server-side user database to delete.
 
 CHILDREN
 RockMap is a general-purpose field-map and research utility and is not designed specifically for children. RockMap does not knowingly operate a service that collects children's personal information on RockMap servers.

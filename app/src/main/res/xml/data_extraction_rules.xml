@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <!-- Downloadable map/research data can be fetched again. User databases remain backup-eligible. -->
+        <!-- User-created RockMap databases remain backup-eligible for reinstall/device recovery. -->
         <exclude domain="file" path="maps/" />
         <exclude domain="file" path="research/" />
         <exclude domain="sharedpref" path="rockmap_safety.xml" />
+        <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
+        <exclude domain="sharedpref" path="rockmap_offline.xml" />
+        <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="maps/" />
         <exclude domain="file" path="research/" />
         <exclude domain="sharedpref" path="rockmap_safety.xml" />
+        <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
+        <exclude domain="sharedpref" path="rockmap_offline.xml" />
+        <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
     </device-transfer>
 </data-extraction-rules>

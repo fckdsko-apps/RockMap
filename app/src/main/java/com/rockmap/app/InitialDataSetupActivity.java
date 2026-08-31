@@ -74,14 +74,20 @@ public final class InitialDataSetupActivity extends Activity {
     public static boolean shouldShow(Context context) {
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        OfflineDataManager manager = new OfflineDataManager(app);
+
+        // Never trust a preference flag by itself. Android backup/restore can restore preferences
+        // independently from RockMap's intentionally non-backed-up map pack. If the required core
+        // snapshot is physically missing, first-run setup must run.
+        if (!manager.hasRenderableActivePack()) return true;
+
         if (prefs.getBoolean(KEY_FINISHED, false)) return false;
 
         boolean started = prefs.getBoolean(KEY_STARTED, false);
-        OfflineDataManager manager = new OfflineDataManager(app);
 
         // This is an upgrade of an already functioning installation, not a first install.
         // Mark the bootstrap complete without interrupting an existing user.
-        if (!started && manager.hasRenderableActivePack()) {
+        if (!started) {
             prefs.edit().putBoolean(KEY_FINISHED, true).apply();
             return false;
         }

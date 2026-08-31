@@ -64,5 +64,10 @@
             android:name=".DataSourcesLicensesActivity"
             android:exported="false"
             android:screenOrientation="unspecified" />
+
+        <activity
+            android:name=".UserDataBackupActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
     </application>
 </manifest>

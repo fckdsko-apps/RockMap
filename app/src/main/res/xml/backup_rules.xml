@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Downloadable map/research data can be fetched again. User databases remain backup-eligible. -->
+    <!-- User-created RockMap databases remain backup-eligible for reinstall/device recovery. -->
+    <!-- Downloadable reference data can be fetched again and must not consume backup quota. -->
     <exclude domain="file" path="maps/" />
     <exclude domain="file" path="research/" />
-    <!-- Safety acknowledgment tokens are deliberately device/install-local and never backed up. -->
+
+    <!-- Install/device-local state must never be restored independently of the files it describes. -->
     <exclude domain="sharedpref" path="rockmap_safety.xml" />
+    <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
+    <exclude domain="sharedpref" path="rockmap_offline.xml" />
+    <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
 </full-backup-content>
