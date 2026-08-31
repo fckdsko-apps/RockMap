@@ -1,0 +1,145 @@
+name: Build Colorado CNGM Production Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: 'Optional: official NGMDB Earth Surface GIS ZIP URL. Leave blank to auto-resolve.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rockmap-cngm-production-candidate
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    name: Compile relational Colorado CNGM candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Install pinned system GIS dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdal-bin
+          ogrinfo --version
+          ogr2ogr --version
+
+      - name: Validate candidate builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/build_colorado_cngm_candidate.py \
+            scripts/test_colorado_cngm_candidate.py
+          python3 scripts/test_colorado_cngm_candidate.py
+          python3 scripts/build_colorado_cngm_candidate.py --help >/dev/null
+
+      - name: Check runner disk before official source download
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h .
+          FREE_BYTES="$(df -PB1 . | awk 'NR==2 {print $4}')"
+          # The official Earth Surface download is ~2.1 GB and extraction is larger.
+          # Fail rather than partially filling the runner.
+          if [ "$FREE_BYTES" -lt 9000000000 ]; then
+            echo "::error::Less than 9 GB free on the GitHub runner; refusing the CNGM source build."
+            exit 1
+          fi
+
+      - name: Build Colorado CNGM production candidate
+        shell: bash
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+        run: |
+          set -euo pipefail
+          rm -rf dist-cngm-production-candidate
+          BUILT_AT="$(git show -s --format=%cI "$GITHUB_SHA")"
+
+          ARGS=(
+            --output-dir dist-cngm-production-candidate
+            --database-name colorado-geology-cngm-candidate-v2.db
+            --built-at "$BUILT_AT"
+          )
+          if [ -n "${SOURCE_URL:-}" ]; then
+            ARGS+=(--source-url "$SOURCE_URL")
+          fi
+
+          python3 scripts/build_colorado_cngm_candidate.py "${ARGS[@]}"
+
+      - name: Fail closed on candidate output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-cngm-production-candidate/colorado-geology-cngm-candidate-v2.db
+          test -s dist-cngm-production-candidate/colorado-geology-cngm-candidate-v2.db.gz
+          test -s dist-cngm-production-candidate/candidate-summary.json
+          test -s dist-cngm-production-candidate/summary.md
+          test -s dist-cngm-production-candidate/SHA256SUMS.txt
+
+          python3 - <<'PY'
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          root = Path('dist-cngm-production-candidate')
+          summary = json.loads((root / 'candidate-summary.json').read_text(encoding='utf-8'))
+          c = summary['candidate']
+
+          assert summary['production_release_approved'] is False
+          assert summary['android_runtime_migrated'] is False
+          assert c['state'] == 'CO'
+          assert c['schema_version'] == 2
+          assert 100 <= c['polygons'] <= 100000
+          assert c['source_units'] > 0
+          assert c['synthesis_units'] > 0
+          assert c['crosswalk_rows'] > 0
+          assert c['data_sources'] > 0
+          assert 0 < c['sqlite_bytes'] <= 250_000_000
+          assert 0 < c['gzip_bytes'] <= 150_000_000
+
+          db = root / 'colorado-geology-cngm-candidate-v2.db'
+          con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+          try:
+              assert con.execute('PRAGMA quick_check').fetchone()[0].lower() == 'ok'
+              meta = dict(con.execute('SELECT key,value FROM metadata'))
+              assert meta['source_doi'] == '10.5066/P146VGVM'
+              assert meta['parent_database_doi'] == '10.5066/P1DC4XFG'
+              assert meta['state'] == 'CO'
+              assert meta['schema_version'] == '2'
+              assert con.execute("SELECT COUNT(*) FROM polygons WHERE state <> 'CO'").fetchone()[0] == 0
+              assert con.execute("SELECT COUNT(*) FROM polygons WHERE length(geometry_json) < 20").fetchone()[0] == 0
+          finally:
+              con.close()
+
+          print((root / 'summary.md').read_text(encoding='utf-8'))
+          PY
+
+      - name: Upload production-candidate artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cngm-colorado-production-candidate
+          path: |
+            dist-cngm-production-candidate/colorado-geology-cngm-candidate-v2.db
+            dist-cngm-production-candidate/colorado-geology-cngm-candidate-v2.db.gz
+            dist-cngm-production-candidate/candidate-summary.json
+            dist-cngm-production-candidate/summary.md
+            dist-cngm-production-candidate/SHA256SUMS.txt
+          retention-days: 14
+          if-no-files-found: error
