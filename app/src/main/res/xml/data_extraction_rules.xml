@@ -8,6 +8,7 @@
         <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
         <exclude domain="sharedpref" path="rockmap_offline.xml" />
         <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
+        <exclude domain="sharedpref" path="rockmap_data_update_state.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="maps/" />
@@ -16,5 +17,6 @@
         <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
         <exclude domain="sharedpref" path="rockmap_offline.xml" />
         <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
+        <exclude domain="sharedpref" path="rockmap_data_update_state.xml" />
     </device-transfer>
 </data-extraction-rules>

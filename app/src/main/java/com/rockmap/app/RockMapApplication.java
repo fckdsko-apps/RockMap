@@ -6,6 +6,7 @@ import android.os.Bundle;
 
 import com.rockmap.app.field.FieldMapController;
 import com.rockmap.app.field.FieldMapPolishController;
+import com.rockmap.app.updates.DataUpdateScheduler;
 
 import java.util.WeakHashMap;
 
@@ -20,6 +21,9 @@ public final class RockMapApplication extends Application implements Application
 
     @Override public void onCreate() {
         super.onCreate();
+        // Manifest-only background checks. This schedules no large data transfer.
+        DataUpdateScheduler.ensureScheduled(this);
+        DataUpdateScheduler.ensureNotificationChannel(this);
         registerActivityLifecycleCallbacks(this);
     }
 

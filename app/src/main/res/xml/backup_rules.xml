@@ -10,4 +10,7 @@
     <exclude domain="sharedpref" path="rockmap_initial_setup.xml" />
     <exclude domain="sharedpref" path="rockmap_offline.xml" />
     <exclude domain="sharedpref" path="rockmap_geology_data.xml" />
+
+    <!-- Keep the user's update frequency preference backup-eligible, but not stale scan results. -->
+    <exclude domain="sharedpref" path="rockmap_data_update_state.xml" />
 </full-backup-content>
