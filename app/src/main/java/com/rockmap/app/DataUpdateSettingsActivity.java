@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.ViewGroup;
+import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -83,6 +84,14 @@ public final class DataUpdateSettingsActivity extends Activity {
 
         firstRunSetup = getIntent() != null
                 && getIntent().getBooleanExtra(EXTRA_FIRST_RUN_SETUP, false);
+
+        // Android 13+ routes system/predictive back through OnBackInvokedDispatcher.
+        // Keep first-run setup semantics intact without the obsolete Activity.onBackPressed()
+        // override that fails release lint for targetSdk 36.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::closeScreen);
+        }
 
         DataUpdateScheduler.ensureNotificationChannel(this);
         buildUi();
@@ -354,11 +363,6 @@ public final class DataUpdateSettingsActivity extends Activity {
             return;
         }
         finish();
-    }
-
-    @Override
-    public void onBackPressed() {
-        closeScreen();
     }
 
     private void manageAlerts() {
