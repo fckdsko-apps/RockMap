@@ -325,7 +325,7 @@ public final class DataUpdateSettingsActivity extends Activity {
                         + "RockMap will always show the update size and require your approval before installing one.")
                 .setSingleChoiceItems(labels, currentIndex,
                         (d, which) -> selected[0] = which)
-                .setPositiveButton("Save", null)
+                .setPositiveButton("Continue", null)
                 .setCancelable(false)
                 .create();
 
