@@ -32,24 +32,28 @@ def main():
     assert not module.is_allowed_download_url("http://ngmdb.usgs.gov/example.zip")
     assert not module.is_allowed_download_url("https://example.com/example.zip")
 
-    # Regression: datasource enumeration must use/parse ogrinfo JSON rather than quiet text output.
     layer_json = json.dumps({
-        "description": "synthetic.gdb",
         "layers": [
             {"name": "MapUnitPolys"},
             {"name": "Source_DescriptionOfMapUnits"},
             {"name": "DescriptionOfMapUnits"},
-            {"name": "Synthesis_to_Source_Units"},
+            {"name": "synthesis_to_source_units"},
             {"name": "DataSources"},
-        ],
+        ]
     })
     assert module.parse_ogrinfo_layer_json(layer_json) == [
         "MapUnitPolys",
         "Source_DescriptionOfMapUnits",
         "DescriptionOfMapUnits",
-        "Synthesis_to_Source_Units",
+        "synthesis_to_source_units",
         "DataSources",
     ]
+
+    # Regression for Actions failure 90638298605: the CSV destination must not
+    # be pre-created as a directory before ogr2ogr asks the CSV driver to Create().
+    builder_source = SCRIPT.read_text(encoding="utf-8")
+    assert 'str(target), str(gdb), layers[logical]' in builder_source
+    assert 'tmp_dir.mkdir()' not in builder_source
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -183,6 +187,7 @@ def main():
             assert con.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0] == "2"
             assert con.execute("SELECT value FROM metadata WHERE key='source_doi'").fetchone()[0] == module.EARTH_SURFACE_DOI
             assert con.execute("SELECT COUNT(*) FROM polygons").fetchone()[0] == 1
+            assert con.execute("SELECT upstream_polygon_id FROM polygons").fetchone()[0] == "CO_MAP|123"
             assert con.execute("SELECT source_mapunit FROM source_units").fetchone()[0] == "31 | Tgr"
             assert con.execute("SELECT mapunit FROM synthesis_units").fetchone()[0] == "T_i"
             assert con.execute("SELECT COUNT(*) FROM source_synthesis").fetchone()[0] == 1

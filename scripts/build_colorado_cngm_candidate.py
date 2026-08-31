@@ -326,8 +326,6 @@ def parse_ogrinfo_layer_json(text: str) -> List[str]:
 
 
 def list_ogr_layers(gdb: Path) -> List[str]:
-    # GDAL 3.8 on ubuntu-24.04 supports -json (introduced in GDAL 3.7).
-    # Do not use -q here: quiet mode suppresses the datasource inventory that we need.
     text = run(["ogrinfo", "-ro", "-json", str(gdb)], capture=True)
     return parse_ogrinfo_layer_json(text)
 
@@ -395,19 +393,17 @@ def export_candidate_inputs(gdb: Path, layers: Mapping[str, str], work: Path) ->
     outputs = {"polygons": polygons}
     for logical in ("source_units", "synthesis_units", "crosswalk", "data_sources"):
         target = table_dir / f"{logical}.csv"
-        # CSV driver output is a directory when using ogr2ogr; write a temporary directory
-        # then rename the single emitted CSV deterministically.
-        tmp_dir = table_dir / f".{logical}-csv"
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir)
-        tmp_dir.mkdir()
-        run(["ogr2ogr", "-overwrite", "-f", "CSV", str(tmp_dir), str(gdb), layers[logical],
-             "-lco", "LINEFORMAT=LF"])
-        emitted = list(tmp_dir.glob("*.csv"))
-        if len(emitted) != 1:
-            raise RuntimeError(f"Expected one CSV for {logical}; found {len(emitted)}")
-        emitted[0].replace(target)
-        shutil.rmtree(tmp_dir)
+        if target.exists():
+            target.unlink()
+        # GDAL's CSV driver accepts a single .csv filename as the destination
+        # datasource. Do not pre-create that destination: GDAL Create() owns it.
+        run([
+            "ogr2ogr", "-overwrite", "-f", "CSV",
+            str(target), str(gdb), layers[logical],
+            "-lco", "LINEFORMAT=LF",
+        ])
+        if not target.is_file() or target.stat().st_size <= 0:
+            raise RuntimeError(f"GDAL did not create the expected CSV for {logical}: {target.name}")
         outputs[logical] = target
     outputs["boundary"] = boundary
     return outputs
@@ -754,20 +750,26 @@ def build_candidate(inputs: Mapping[str, Path], output_db: Path, *, built_at: st
             if mapunit and mapunit not in synth_by_key:
                 raise RuntimeError(f"Colorado polygon references missing synthesis MapUnit: {mapunit}")
 
-            upstream_id = pick(
+            raw_polygon_id = pick(
                 props, idx,
                 "MapUnitPolys_ID", "MapUnitPolysID", "mapunitpolys_id",
                 "OBJECTID", "ObjectID", "FID",
             )
-            if not upstream_id:
-                # Stable deterministic fallback based on source identifiers + geometry.
+            map_source_id = pick(props, idx, "MapSourceID")
+            data_source_id = pick(props, idx, "DataSourceID")
+            if raw_polygon_id:
+                # GeMS feature IDs can be local to a contributing map. Namespace them
+                # with MapSourceID so the compiled Colorado provenance key is unambiguous.
+                upstream_id = (map_source_id + "|" if map_source_id else "") + raw_polygon_id
+            else:
                 upstream_id = hashlib.sha256(
-                    (source_mapunit + "\x1f" + mapunit + "\x1f" + canonical_json(geom)).encode("utf-8")
+                    (
+                        map_source_id + "\x1f" + source_mapunit + "\x1f"
+                        + mapunit + "\x1f" + canonical_json(geom)
+                    ).encode("utf-8")
                 ).hexdigest()
 
             south, west, north, east = polygon_bounds(geom)
-            map_source_id = pick(props, idx, "MapSourceID")
-            data_source_id = pick(props, idx, "DataSourceID")
             symbol = pick(props, idx, "Symbol", "FGDC_Symbol")
             source_rec = source_by_key[source_mapunit]
             synth_rec = synth_by_key.get(mapunit)
@@ -808,14 +810,18 @@ def build_candidate(inputs: Mapping[str, Path], output_db: Path, *, built_at: st
         row for row in crosswalk
         if row["source_mapunit"] in used_sources and row["mapunit"] in used_synth
     ]
-    crosswalk_sources = {row["source_mapunit"] for row in relevant_crosswalk}
-    missing_crosswalk = sorted(
-        row["source_mapunit"] for row in polygon_rows
-        if row["mapunit"] and row["source_mapunit"] not in crosswalk_sources
-    )
+    crosswalk_pairs = {
+        (row["source_mapunit"], row["mapunit"])
+        for row in relevant_crosswalk
+    }
+    missing_crosswalk = sorted({
+        (row["source_mapunit"], row["mapunit"])
+        for row in polygon_rows
+        if row["mapunit"] and (row["source_mapunit"], row["mapunit"]) not in crosswalk_pairs
+    })
     if missing_crosswalk:
         raise RuntimeError(
-            "Colorado polygons with synthesis units are missing from the official crosswalk; "
+            "Colorado polygon source→synthesis pairs are missing from the official crosswalk; "
             f"first examples: {missing_crosswalk[:10]}"
         )
 
