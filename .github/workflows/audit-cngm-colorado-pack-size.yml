@@ -1,0 +1,88 @@
+name: Audit Colorado CNGM Pack Size
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rockmap-cngm-colorado-storage-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Build Colorado CNGM offline storage proxy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+
+      - name: Validate RockMap source
+        shell: bash
+        run: python3 scripts/preflight.py
+
+      - name: Install audit dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check 'shapely==2.1.1'
+
+      - name: Validate audit script
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/audit_cngm_state_pack_sizes.py
+          python3 scripts/audit_cngm_state_pack_sizes.py --help >/dev/null
+
+      - name: Build Colorado storage proxy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/audit_cngm_state_pack_sizes.py \
+            --states CO \
+            --output-dir dist-cngm-colorado-storage-audit
+
+      - name: Print audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat dist-cngm-colorado-storage-audit/summary.md
+
+      - name: Fail closed if Colorado audit output is invalid
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist-cngm-colorado-storage-audit/summary.csv
+          test -s dist-cngm-colorado-storage-audit/summary.md
+          test -s dist-cngm-colorado-storage-audit/audit-metadata.json
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+
+          rows = list(csv.DictReader(Path('dist-cngm-colorado-storage-audit/summary.csv').open(encoding='utf-8')))
+          if len(rows) != 1:
+              raise SystemExit(f'Expected exactly one Colorado audit row; got {len(rows)}')
+          row = rows[0]
+          if row['state'] != 'CO':
+              raise SystemExit(f'Expected Colorado row; got {row["state"]!r}')
+          if int(row['kept_polygons']) < 10:
+              raise SystemExit('CO: implausibly low polygon count')
+          if int(row['sqlite_bytes']) <= 0 or int(row['gzip_bytes']) <= 0:
+              raise SystemExit('CO: invalid pack size')
+          if float(row['gzip_mib']) > 150:
+              print(f'::warning::Colorado compressed proxy is {row["gzip_mib"]} MiB (>150 MiB).')
+          print('Validated Colorado CNGM storage audit output')
+          PY
+
+      - name: Upload Colorado audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cngm-colorado-storage-audit
+          path: dist-cngm-colorado-storage-audit/
+          if-no-files-found: error
+          retention-days: 14
