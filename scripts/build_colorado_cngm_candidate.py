@@ -302,18 +302,34 @@ def run(cmd: Sequence[str], *, capture: bool = False) -> str:
     return proc.stdout or ""
 
 
-def list_ogr_layers(gdb: Path) -> List[str]:
-    text = run(["ogrinfo", "-ro", "-q", str(gdb)], capture=True)
+def parse_ogrinfo_layer_json(text: str) -> List[str]:
+    """Parse GDAL 3.7+ ogrinfo -json output and return exact layer/table names."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GDAL layer inventory was not valid JSON.") from exc
+    raw_layers = payload.get("layers")
+    if not isinstance(raw_layers, list):
+        raise RuntimeError("GDAL JSON layer inventory did not contain a layers array.")
     layers: List[str] = []
-    for line in text.splitlines():
-        match = re.match(r"^\s*\d+\s*:\s*(.*?)\s*(?:\([^)]*\))?\s*$", line)
-        if match:
-            name = match.group(1).strip()
-            if name:
-                layers.append(name)
+    seen = set()
+    for item in raw_layers:
+        if not isinstance(item, dict):
+            continue
+        name = safe_text(item.get("name"))
+        if name and name not in seen:
+            seen.add(name)
+            layers.append(name)
     if not layers:
         raise RuntimeError("GDAL could not enumerate any layers/tables in the official geodatabase.")
     return layers
+
+
+def list_ogr_layers(gdb: Path) -> List[str]:
+    # GDAL 3.8 on ubuntu-24.04 supports -json (introduced in GDAL 3.7).
+    # Do not use -q here: quiet mode suppresses the datasource inventory that we need.
+    text = run(["ogrinfo", "-ro", "-json", str(gdb)], capture=True)
+    return parse_ogrinfo_layer_json(text)
 
 
 def resolve_layers(names: Sequence[str]) -> Dict[str, str]:

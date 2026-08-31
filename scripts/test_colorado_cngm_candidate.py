@@ -32,6 +32,25 @@ def main():
     assert not module.is_allowed_download_url("http://ngmdb.usgs.gov/example.zip")
     assert not module.is_allowed_download_url("https://example.com/example.zip")
 
+    # Regression: datasource enumeration must use/parse ogrinfo JSON rather than quiet text output.
+    layer_json = json.dumps({
+        "description": "synthetic.gdb",
+        "layers": [
+            {"name": "MapUnitPolys"},
+            {"name": "Source_DescriptionOfMapUnits"},
+            {"name": "DescriptionOfMapUnits"},
+            {"name": "Synthesis_to_Source_Units"},
+            {"name": "DataSources"},
+        ],
+    })
+    assert module.parse_ogrinfo_layer_json(layer_json) == [
+        "MapUnitPolys",
+        "Source_DescriptionOfMapUnits",
+        "DescriptionOfMapUnits",
+        "Synthesis_to_Source_Units",
+        "DataSources",
+    ]
+
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         source_csv = root / "source.csv"
