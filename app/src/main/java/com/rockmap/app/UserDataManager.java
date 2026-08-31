@@ -9,14 +9,19 @@ import android.os.Handler;
 import android.os.Looper;
 
 import com.rockmap.app.field.FieldDatabase;
+import com.rockmap.app.field.ProspectingAreaResearchStore;
+import com.rockmap.app.field.ProspectingAreaVisibility;
 import com.rockmap.app.waypoints.RockMapDatabase;
 
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /** Centralized destructive operations for RockMap user-created data. */
 public final class UserDataManager {
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final String AREA_VISIBILITY_PREFS = "rockmap-prospecting-area-visibility";
+    private static final String AREA_RESEARCH_PREFS = "rockmap-prospecting-area-research-v1";
 
     private UserDataManager() {}
 
@@ -36,9 +41,14 @@ public final class UserDataManager {
         run(context, callback, () -> {
             FieldDatabase field = FieldDatabase.get(context);
             if (field.getActiveTrack() != null) {
-                throw new IllegalStateException("Stop the active track recording before deleting track and field data.");
+                throw new IllegalStateException(
+                        "Stop the active track recording before deleting track and field data.");
             }
+
+            List<FieldDatabase.Area> areasBeforeDelete = field.listAreas();
             clearFieldTables(field.getWritableDatabase(), false);
+            clearProspectingAreaState(context, areasBeforeDelete);
+            verifyFieldDataDeleted(field);
             releasePersistedDocumentPermissions(context);
         });
     }
@@ -47,19 +57,21 @@ public final class UserDataManager {
         run(context, callback, () -> {
             FieldDatabase field = FieldDatabase.get(context);
             if (field.getActiveTrack() != null) {
-                throw new IllegalStateException("Stop the active track recording before deleting all user-created data.");
+                throw new IllegalStateException(
+                        "Stop the active track recording before deleting all user-created data.");
             }
 
-            // Check the active-track condition before deleting either database so the operation
-            // cannot partially erase waypoints/trips while a track blocks field-data deletion.
+            List<FieldDatabase.Area> areasBeforeDelete = field.listAreas();
+
             RockMapDatabase.get(context).clearAllTables();
             clearFieldTables(field.getWritableDatabase(), true);
+            clearProspectingAreaState(context, areasBeforeDelete);
+            verifyFieldDataDeleted(field);
             releasePersistedDocumentPermissions(context);
         });
     }
 
     private static void run(Context context, Callback callback, ThrowingRunnable work) {
-        Context app = context.getApplicationContext();
         Handler main = new Handler(Looper.getMainLooper());
         EXECUTOR.execute(() -> {
             try {
@@ -83,7 +95,8 @@ public final class UserDataManager {
         SQLiteDatabase db = FieldDatabase.get(context).getWritableDatabase();
         db.beginTransaction();
         try {
-            db.delete("import_items", "item_type=?", new String[]{FieldDatabase.IMPORT_WAYPOINT});
+            db.delete("import_items", "item_type=?",
+                    new String[]{FieldDatabase.IMPORT_WAYPOINT});
             db.execSQL("UPDATE import_batches SET waypoint_count=0");
             db.execSQL("DELETE FROM import_batches WHERE id NOT IN "
                     + "(SELECT DISTINCT batch_id FROM import_items)");
@@ -93,10 +106,6 @@ public final class UserDataManager {
         }
     }
 
-    /**
-     * Deletes field-owned user content. When clearAllImports is false, imported waypoints and
-     * their batch records survive; track/area ownership counts are zeroed to remain consistent.
-     */
     private static void clearFieldTables(SQLiteDatabase db, boolean clearAllImports) {
         db.beginTransaction();
         try {
@@ -122,12 +131,41 @@ public final class UserDataManager {
         }
     }
 
-    /**
-     * Field-record photos remain owned by the user's chosen photo/document provider. RockMap
-     * stores only URI references. Once field records are gone, release any persisted document
-     * grants RockMap no longer needs. Failure to release a provider grant must not resurrect or
-     * block deletion of RockMap database records.
-     */
+    private static void clearProspectingAreaState(
+            Context context, List<FieldDatabase.Area> areasBeforeDelete) {
+        if (areasBeforeDelete != null) {
+            for (FieldDatabase.Area area : areasBeforeDelete) {
+                if (area == null || area.id <= 0L) continue;
+                ProspectingAreaVisibility.forget(context, area.id);
+                ProspectingAreaResearchStore.forget(context, area.id);
+            }
+        }
+
+        boolean visibilityCleared = context
+                .getSharedPreferences(AREA_VISIBILITY_PREFS, Context.MODE_PRIVATE)
+                .edit().clear().commit();
+        boolean researchCleared = context
+                .getSharedPreferences(AREA_RESEARCH_PREFS, Context.MODE_PRIVATE)
+                .edit().clear().commit();
+
+        if (!visibilityCleared || !researchCleared) {
+            throw new IllegalStateException(
+                    "Prospecting Area records were removed, but RockMap could not clear all associated local area state.");
+        }
+    }
+
+    private static void verifyFieldDataDeleted(FieldDatabase field) {
+        if (!field.listTracks(1).isEmpty()) {
+            throw new IllegalStateException("RockMap could not remove all recorded tracks.");
+        }
+        if (!field.listFieldRecords().isEmpty()) {
+            throw new IllegalStateException("RockMap could not remove all field records.");
+        }
+        if (!field.listAreas().isEmpty()) {
+            throw new IllegalStateException("RockMap could not remove all Prospecting Areas.");
+        }
+    }
+
     private static void releasePersistedDocumentPermissions(Context context) {
         ContentResolver resolver = context.getContentResolver();
         for (UriPermission permission : resolver.getPersistedUriPermissions()) {
@@ -138,7 +176,6 @@ public final class UserDataManager {
             try {
                 resolver.releasePersistableUriPermission(permission.getUri(), flags);
             } catch (SecurityException ignored) {
-                // Provider may already have revoked or changed the grant.
             }
         }
     }
