@@ -30,6 +30,7 @@ import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.research.GeologyDataManager;
 import com.rockmap.app.research.GeologyDataPreviewer;
 import com.rockmap.app.research.GeologyDataUpdateWorker;
+import com.rockmap.app.updates.DataUpdateScheduler;
 
 import java.util.List;
 import java.util.Locale;
@@ -479,15 +480,35 @@ public final class InitialDataSetupActivity extends Activity {
         return !geologyRequested || geologyDataManager.getActiveDatabaseFile() != null;
     }
 
+    /**
+     * The required data install is only one part of first-run setup. Before the first map load,
+     * make the update-check frequency explicit so a new install is not silently opted into
+     * background manifest checks.
+     */
     private void markFinishedAndOpen() {
-        getSharedPreferences(PREFS, MODE_PRIVATE)
-                .edit()
-                .putBoolean(KEY_FINISHED, true)
-                .apply();
+        if (DataUpdateScheduler.shouldShowFirstRunOnboarding(this)) {
+            Intent intent = new Intent(this, DataUpdateSettingsActivity.class);
+            intent.putExtra(DataUpdateSettingsActivity.EXTRA_FIRST_RUN_SETUP, true);
+            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(intent);
+            finish();
+            return;
+        }
+
+        markSetupFinished(this);
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
         startActivity(intent);
         finish();
+    }
+
+    /** Called by the update-frequency onboarding after the user has made an explicit choice. */
+    public static void markSetupFinished(Context context) {
+        context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_FINISHED, true)
+                .apply();
     }
 
     @Override

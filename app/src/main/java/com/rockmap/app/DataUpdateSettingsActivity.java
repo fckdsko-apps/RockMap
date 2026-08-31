@@ -46,6 +46,8 @@ import java.util.List;
  * Install, and Close are always visible on a phone-sized screen.
  */
 public final class DataUpdateSettingsActivity extends Activity {
+    public static final String EXTRA_FIRST_RUN_SETUP = "rockmap.data_updates.first_run_setup";
+
     private static final int REQ_NOTIFICATIONS = 921;
     private static final String INSTALL_WORK = "rockmap-user-data-update-install";
 
@@ -65,6 +67,7 @@ public final class DataUpdateSettingsActivity extends Activity {
     private String manualGeologyError = "";
     private int manualPending;
     private boolean installRunning;
+    private boolean firstRunSetup;
 
     private LiveData<List<WorkInfo>> installLiveData;
     private Observer<List<WorkInfo>> installObserver;
@@ -77,10 +80,20 @@ public final class DataUpdateSettingsActivity extends Activity {
             finish();
             return;
         }
+
+        firstRunSetup = getIntent() != null
+                && getIntent().getBooleanExtra(EXTRA_FIRST_RUN_SETUP, false);
+
         DataUpdateScheduler.ensureNotificationChannel(this);
         buildUi();
         observeInstallWork();
         refreshUi();
+
+        // A clean install reaches this screen immediately after the required reference-data
+        // bootstrap. Existing installs also receive the choice the first time they open Updates.
+        if (DataUpdateScheduler.shouldShowFirstRunOnboarding(this)) {
+            getWindow().getDecorView().post(this::showFirstRunOnboarding);
+        }
     }
 
     private void buildUi() {
@@ -160,8 +173,8 @@ public final class DataUpdateSettingsActivity extends Activity {
         rowTwo.addView(installButton, weightedButtonParams(true));
         root.addView(rowTwo);
 
-        closeButton = button("Close");
-        closeButton.setOnClickListener(v -> finish());
+        closeButton = button(firstRunSetup ? "Open RockMap" : "Close");
+        closeButton.setOnClickListener(v -> closeScreen());
         root.addView(closeButton, fullButtonParams());
 
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -252,6 +265,10 @@ public final class DataUpdateSettingsActivity extends Activity {
                 .setTitle("Automatic update checks")
                 .setSingleChoiceItems(labels, checked, (dialog, which) -> {
                     DataUpdateScheduler.setFrequency(this, values[which]);
+                    DataUpdateScheduler.markFirstRunOnboardingSeen(this);
+                    if (firstRunSetup) InitialDataSetupActivity.markSetupFinished(this);
+                    TourDebugLog.mapDiagnostic("DATA_UPDATE_ONBOARDING",
+                            "state=complete frequency=" + values[which] + " source=settings");
                     dialog.dismiss();
                     refreshUi();
                     if (!DataUpdateScheduler.FREQUENCY_NEVER.equals(values[which])
@@ -261,6 +278,87 @@ public final class DataUpdateSettingsActivity extends Activity {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    private void showFirstRunOnboarding() {
+        if (!DataUpdateScheduler.shouldShowFirstRunOnboarding(this)
+                || isFinishing() || isDestroyed()) {
+            return;
+        }
+
+        final String[] values = new String[]{
+                DataUpdateScheduler.FREQUENCY_NEVER,
+                DataUpdateScheduler.FREQUENCY_DAILY,
+                DataUpdateScheduler.FREQUENCY_WEEKLY,
+                DataUpdateScheduler.FREQUENCY_MONTHLY
+        };
+        final String[] labels = new String[]{
+                "Never",
+                "Daily",
+                "Weekly — recommended",
+                "Monthly"
+        };
+
+        String current = DataUpdateScheduler.getFrequency(this);
+        int currentIndex = 2;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i].equals(current)) currentIndex = i;
+        }
+        final int[] selected = new int[]{currentIndex};
+
+        TourDebugLog.mapDiagnostic("DATA_UPDATE_ONBOARDING", "state=shown");
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Keep RockMap data current?")
+                .setMessage("RockMap's offline reference data can change over time. "
+                        + "Choose how often RockMap should check the small update manifests.\n\n"
+                        + "These checks do not download the large data packs. "
+                        + "RockMap will always show the update size and require your approval before installing one.")
+                .setSingleChoiceItems(labels, currentIndex,
+                        (d, which) -> selected[0] = which)
+                .setPositiveButton("Save", null)
+                .setCancelable(false)
+                .create();
+
+        dialog.setOnShowListener(ignored ->
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                    String chosen = values[selected[0]];
+                    DataUpdateScheduler.setFrequency(this, chosen);
+                    DataUpdateScheduler.markFirstRunOnboardingSeen(this);
+                    if (firstRunSetup) InitialDataSetupActivity.markSetupFinished(this);
+                    TourDebugLog.mapDiagnostic("DATA_UPDATE_ONBOARDING",
+                            "state=complete frequency=" + chosen + " source=first_run");
+                    dialog.dismiss();
+                    refreshUi();
+
+                    if (!DataUpdateScheduler.FREQUENCY_NEVER.equals(chosen)
+                            && !DataUpdateScheduler.areAlertsEnabled(this)) {
+                        getWindow().getDecorView().postDelayed(
+                                this::offerNotificationPermission, 250L);
+                    }
+                }));
+        dialog.show();
+    }
+
+    private void closeScreen() {
+        if (firstRunSetup) {
+            if (DataUpdateScheduler.shouldShowFirstRunOnboarding(this)) {
+                showFirstRunOnboarding();
+                return;
+            }
+            InitialDataSetupActivity.markSetupFinished(this);
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            startActivity(intent);
+            finish();
+            return;
+        }
+        finish();
+    }
+
+    @Override
+    public void onBackPressed() {
+        closeScreen();
     }
 
     private void manageAlerts() {

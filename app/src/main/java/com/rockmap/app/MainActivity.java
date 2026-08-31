@@ -3975,6 +3975,10 @@ public final class MainActivity extends Activity implements LocationRepository.L
         box.addView(total);
 
         Button checkSizes = smallActionButton("Check selected sizes");
+        // Keep update discovery/scheduling beside the existing size check in the pinned
+        // Offline Data action area. Neither control should ever require scrolling.
+        View updateActions =
+                com.rockmap.app.updates.DataUpdateUiBridge.pinnedCheckAndUpdates(this, checkSizes);
 
         Button install = smallActionButton("Install selected");
         install.setEnabled(false);
@@ -4167,7 +4171,7 @@ public final class MainActivity extends Activity implements LocationRepository.L
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(initialSetup ? "Set up Offline Maps & Data" : "Offline Maps & Data")
-                .setView(boundedScrollableContentWithPinnedActions(box, checkSizes, install, 560))
+                .setView(boundedScrollableContentWithPinnedActions(box, updateActions, install, 560))
                 .setNegativeButton(initialSetup ? "Continue without download" : "Close", null)
                 .create();
         holder[0] = dialog;

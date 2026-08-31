@@ -44,6 +44,7 @@ public final class DataUpdateScheduler {
     private static final String STATE_PREFS = "rockmap_data_update_state";
     private static final String KEY_FREQUENCY = "frequency";
     private static final String KEY_NOTIFICATION_REQUESTED = "notification_permission_requested";
+    private static final String KEY_FIRST_RUN_ONBOARDING_SEEN = "first_run_onboarding_seen";
 
     private static final String KEY_LAST_CHECKED_AT = "last_checked_at";
     private static final String KEY_LAST_RESULT = "last_result";
@@ -64,7 +65,18 @@ public final class DataUpdateScheduler {
     private DataUpdateScheduler() {}
 
     public static void ensureScheduled(Context context) {
-        setScheduleInternal(context.getApplicationContext(), getFrequency(context), false);
+        Context app = context.getApplicationContext();
+
+        // Do not silently opt a brand-new installation into background manifest checks before
+        // RockMap has shown the first-run frequency choice. The UI still recommends Weekly.
+        if (shouldShowFirstRunOnboarding(app)) {
+            WorkManager.getInstance(app).cancelUniqueWork(PERIODIC_WORK);
+            TourDebugLog.mapDiagnostic("DATA_UPDATE_SCHEDULE",
+                    "state=awaiting_onboarding");
+            return;
+        }
+
+        setScheduleInternal(app, getFrequency(app), false);
     }
 
     public static void setFrequency(Context context, String frequency) {
@@ -345,6 +357,18 @@ public final class DataUpdateScheduler {
         context.getApplicationContext()
                 .getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_NOTIFICATION_REQUESTED, true).apply();
+    }
+
+    public static boolean shouldShowFirstRunOnboarding(Context context) {
+        return !context.getApplicationContext()
+                .getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(KEY_FIRST_RUN_ONBOARDING_SEEN, false);
+    }
+
+    public static void markFirstRunOnboardingSeen(Context context) {
+        context.getApplicationContext()
+                .getSharedPreferences(STATE_PREFS, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_FIRST_RUN_ONBOARDING_SEEN, true).apply();
     }
 
     public static String installedCoreVersion(Context context) {
