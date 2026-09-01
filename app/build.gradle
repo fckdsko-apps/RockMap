@@ -21,6 +21,8 @@ def signingReady = false
 def generatedOfflineGlyphAssetsDir = layout.buildDirectory.dir('generated/rockmapOfflineGlyphAssets').get().asFile
 def generatedOfflinePlaceAssetsDir = layout.buildDirectory.dir('generated/rockmapOfflinePlaceAssets').get().asFile
 def offlinePlaceIndexFile = new File(generatedOfflinePlaceAssetsDir, 'rockmap_place_index.tsv.gz')
+def cngmStage2ManifestFile = file('src/main/assets/rockmap-cngm-stage2-debug.json')
+def cngmStage2AssetFile = file('src/main/assets/rockmap-cngm-stage2-debug.db.gz')
 
 if (signingDirPath) {
     def signingPropsFile = file("${signingDirPath}/signing.properties")
@@ -142,7 +144,23 @@ tasks.register('verifyOfflinePlaceIndex') {
     }
 }
 
+// tour-debug only: if the reviewed CNGM Stage 2 asset is present, validate it and inject the
+// runner-only migration/debug hooks before Java compilation. Main/release promotion must remove
+// this temporary asset/task and move the proven dual-schema behavior into production source.
+tasks.register('injectCngmStage2Debug', Exec) {
+    description = 'Validate the reviewed CNGM Stage 2 asset and inject runner-only migration diagnostics.'
+    group = 'build setup'
+    onlyIf {
+        cngmStage2ManifestFile.isFile() && cngmStage2AssetFile.isFile()
+    }
+    inputs.file(rootProject.file('scripts/inject_cngm_stage2_debug.py'))
+    inputs.file(cngmStage2ManifestFile)
+    inputs.file(cngmStage2AssetFile)
+    commandLine 'python3', rootProject.file('scripts/inject_cngm_stage2_debug.py').absolutePath
+}
+
 tasks.named('preBuild').configure {
+    dependsOn tasks.named('injectCngmStage2Debug')
     dependsOn tasks.named('prepareOfflineGlyphs')
     dependsOn tasks.named('verifyOfflinePlaceIndex')
 }

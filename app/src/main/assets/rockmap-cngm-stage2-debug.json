@@ -1,0 +1,22 @@
+{
+  "assetBytes": 5376393,
+  "assetFile": "rockmap-cngm-stage2-debug.db.gz",
+  "assetSha256": "b6a548297e6fc0a9355b7107a046dc8b38bb57360353c7c9dc75f258333ca51b",
+  "crosswalkCount": 185,
+  "databaseBytes": 20496384,
+  "databaseFile": "rockmap-cngm-stage2-debug.db",
+  "databaseSha256": "36957001dffd98d05f1fcd6ab33e8e0f18e4c3a8fd01689cfdf5c6b7e7e11acd",
+  "debugStage": "cngm-stage2",
+  "formatVersion": 1,
+  "parentDatabaseDoi": "10.5066/P1DC4XFG",
+  "productionReleaseApproved": false,
+  "recordCount": 9500,
+  "schemaVersion": 2,
+  "sourceCandidateSha256": "d7b4d2a186bbaa662abc11e9f4a489d3c52536eec63333c8e4c2152023cee221",
+  "sourceDoi": "10.5066/P146VGVM",
+  "sourceMapCitation": "Tweto, Ogden, 1979, Geologic map of Colorado: U.S. Geological Survey, scale 1:500,000",
+  "sourceMapDataSourceId": "1035",
+  "sourceMapId": "map50",
+  "sourceUnitCount": 185,
+  "synthesisUnitCount": 41
+}
