@@ -193,9 +193,11 @@ import java.util.zip.GZIPInputStream;
 /** Runner-generated CNGM Stage 2 bootstrap for the tour-debug APK only. */
 public final class CngmStage2DebugBootstrap {{
     public static final String DATABASE_NAME = "rockmap-cngm-stage2-debug.db";
-    private static final String ASSET_NAME = "rockmap-cngm-stage2-debug.db.gz";
-    private static final long ASSET_BYTES = {int(manifest["assetBytes"])}L;
-    private static final String ASSET_SHA256 = {java_string(manifest["assetSha256"])};
+    // Android's asset packager automatically expands source assets ending in .gz and
+    // strips the .gz suffix. The packaged asset is therefore the SQLite database itself.
+    private static final String ASSET_NAME = "rockmap-cngm-stage2-debug.db";
+    private static final long ASSET_BYTES = {int(manifest["databaseBytes"])}L;
+    private static final String ASSET_SHA256 = {java_string(manifest["databaseSha256"])};
     private static final long DATABASE_BYTES = {int(manifest["databaseBytes"])}L;
     private static final String DATABASE_SHA256 = {java_string(manifest["databaseSha256"])};
     private static final int RECORD_COUNT = {int(manifest["recordCount"])};
@@ -214,7 +216,6 @@ public final class CngmStage2DebugBootstrap {{
             Context app = context.getApplicationContext();
             File research = new File(app.getFilesDir(), "research");
             File target = new File(research, DATABASE_NAME);
-            File gzipPart = new File(research, DATABASE_NAME + ".gz.part");
             File dbPart = new File(research, DATABASE_NAME + ".part");
             TourDebugLog.mapDiagnostic("CNGM_STAGE2_BOOT_START",
                     "asset=" + ASSET_NAME + " target=" + target.getAbsolutePath()
@@ -232,10 +233,10 @@ public final class CngmStage2DebugBootstrap {{
                                     + " sourceMap=" + SOURCE_MAP_ID);
                     return;
                 }}
-                deleteIfExists(gzipPart);
                 deleteIfExists(dbPart);
-                copyAssetAndVerify(app, gzipPart);
-                gunzipAndVerify(gzipPart, dbPart);
+                // AAPT has already expanded the source .gz asset into ASSET_NAME inside the APK.
+                // Copy those exact SQLite bytes, verify their SHA-256, then validate SQLite.
+                copyAssetAndVerify(app, dbPart);
                 validateDatabase(dbPart);
                 if (target.exists() && !target.delete()) {{
                     throw new IOException("Cannot replace stale CNGM debug database.");
@@ -263,10 +264,8 @@ public final class CngmStage2DebugBootstrap {{
                 TourDebugLog.mapDiagnostic("CNGM_STAGE2_BOOT_FAIL",
                         "type=" + exc.getClass().getSimpleName()
                                 + " message=" + clean(exc.getMessage()));
-                deleteIfExists(gzipPart);
                 deleteIfExists(dbPart);
             }} finally {{
-                deleteIfExists(gzipPart);
                 deleteIfExists(dbPart);
             }}
         }}
@@ -300,32 +299,6 @@ public final class CngmStage2DebugBootstrap {{
         }}
         TourDebugLog.mapDiagnostic("CNGM_STAGE2_ASSET_OK",
                 "bytes=" + total + " sha256=" + ASSET_SHA256);
-    }}
-
-    private static void gunzipAndVerify(File source, File target) throws Exception {{
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        long total = 0L;
-        try (InputStream raw = new BufferedInputStream(new java.io.FileInputStream(source));
-             GZIPInputStream gzip = new GZIPInputStream(raw, 128 * 1024);
-             FileOutputStream file = new FileOutputStream(target);
-             BufferedOutputStream output = new BufferedOutputStream(file)) {{
-            byte[] buffer = new byte[128 * 1024];
-            int read;
-            while ((read = gzip.read(buffer)) != -1) {{
-                total += read;
-                if (total > DATABASE_BYTES) throw new IOException("CNGM debug database exceeded declared bytes.");
-                digest.update(buffer, 0, read);
-                output.write(buffer, 0, read);
-            }}
-            output.flush();
-            file.getFD().sync();
-        }}
-        if (total != DATABASE_BYTES) throw new IOException("CNGM debug database byte count mismatch.");
-        if (!hex(digest.digest()).equalsIgnoreCase(DATABASE_SHA256)) {{
-            throw new IOException("CNGM debug database SHA-256 mismatch.");
-        }}
-        TourDebugLog.mapDiagnostic("CNGM_STAGE2_UNPACK_OK",
-                "bytes=" + total + " sha256=" + DATABASE_SHA256);
     }}
 
     private static boolean isExactDatabase(File file) {{
