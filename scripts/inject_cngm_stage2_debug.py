@@ -2810,15 +2810,19 @@ import com.rockmap.app.research.GeologyDataManager;
         learnLabel.setTextColor(Color.rgb(70, 70, 70));
         learnLabel.setPadding(dp(8), dp(10), dp(8), dp(2));
         detailBox.addView(learnLabel);
+        final String learningUnit = unit;
+        final String learningAge = age;
+        final String learningLithology = lith;
         Button learnOnline = smallActionButton("Search Google  ↗");
         learnOnline.setContentDescription("Search Google for educational information about this mapped geology. Opens an external browser.");
-        learnOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(this, unit, age, lith));
+        learnOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(
+                this, learningUnit, learningAge, learningLithology));
         detailBox.addView(learnOnline);
         Button saveArea = smallActionButton("Save as Prospecting Area");
         saveArea.setOnClickListener(v -> saveGeologyFeatureAsProspectingArea(feature, coordinate, unit));
         detailBox.addView(saveArea);
 ''',
-        "CngmSearchUi.showLearningSearches(this, unit, age, lith)",
+        "CngmSearchUi.showLearningSearches(\n                this, learningUnit, learningAge, learningLithology)",
         "add educational web search to geology polygon HUD",
     )
 
@@ -2873,7 +2877,8 @@ def validate_search_ui_injection() -> None:
         ],
         MAIN: [
             "import com.rockmap.app.research.CngmSearchUi;",
-            "CngmSearchUi.showLearningSearches(this, unit, age, lith)",
+            "learningLithology = lith;",
+            "CngmSearchUi.showLearningSearches(",
             "CNGM Stage 2B: technical geology values remain copyable.",
         ],
     }
