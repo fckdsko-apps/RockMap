@@ -884,11 +884,11 @@ public final class CngmSearchUi {
         bg.setCornerRadii(new float[]{dp(activity, 18), dp(activity, 18), dp(activity, 18), dp(activity, 18), 0, 0, 0, 0});
         shell.setBackground(bg);
 
-        TextView title = standaloneText(activity, "Search Google", 20f, 0xff202020, true);
+        TextView title = standaloneText(activity, "Search online", 20f, 0xff202020, true);
         title.setPadding(0, 0, 0, dp(activity, 4));
         shell.addView(title);
         TextView intro = standaloneText(activity,
-                "Choose what you want to learn about. Google results are external information and may not apply to this mapped location.",
+                "Choose what you want to learn about. Online search results are external information and may not apply to this mapped location.",
                 13f, 0xff555555, false);
         intro.setTextIsSelectable(true);
         intro.setPadding(0, 0, 0, dp(activity, 8));
@@ -919,10 +919,10 @@ public final class CngmSearchUi {
             secondary.setPadding(0, dp(activity, 2), 0, 0);
             row.addView(primary);
             row.addView(secondary);
-            row.setContentDescription(labels.get(i) + ". " + subtitles.get(i) + ". Opens Google in your browser.");
+            row.setContentDescription(labels.get(i) + ". " + subtitles.get(i) + ". Opens an external web search in your browser.");
             row.setOnClickListener(v -> {
                 dialog.dismiss();
-                openGoogleSearch(activity, queries.get(index));
+                openOnlineSearch(activity, queries.get(index));
             });
             rows.addView(row);
         }
@@ -951,7 +951,7 @@ public final class CngmSearchUi {
         }
     }
 
-    private static void openGoogleSearch(Activity activity, String query) {
+    private static void openOnlineSearch(Activity activity, String query) {
         try {
             android.net.Uri uri = android.net.Uri.parse(
                     "https://www.google.com/search?q=" + android.net.Uri.encode(clean(query)));
@@ -960,7 +960,7 @@ public final class CngmSearchUi {
         } catch (RuntimeException ex) {
             new AlertDialog.Builder(activity)
                     .setTitle("Could not open browser")
-                    .setMessage("Android could not open the external Google search.")
+                    .setMessage("Android could not open the external web search.")
                     .setPositiveButton("Close", null)
                     .show();
         }
@@ -2113,6 +2113,9 @@ public final class CngmSearchUi {
             raise RuntimeError("CNGM search UI helper missing marker: " + marker)
     if "Lithology filter (optional)" in generated or "Age filter (optional)" in generated:
         raise RuntimeError("CNGM search UI reintroduced optional-field labels.")
+    for provider_copy in ("Search Google", "Google results", "Opens Google", "external Google search"):
+        if provider_copy in generated:
+            raise RuntimeError("CNGM search UI exposed provider-specific Google wording: " + provider_copy)
     print("CNGM Stage 2B search UX helper: generated")
 
 
@@ -2661,6 +2664,34 @@ def inject_sources() -> None:
 
     replace_once(
         RESEARCH,
+        '''            for (UnitGroup group : groups) {
+                unitList.addView(action(group.name,
+                        group.detailLine(),
+                        v -> showUnitGroup(group, resultTitle)));
+            }
+''',
+        '''            for (UnitGroup group : groups) {
+                final UnitGroup onlineGroup = group;
+                LinearLayout unitBlock = new LinearLayout(this);
+                unitBlock.setOrientation(LinearLayout.VERTICAL);
+                unitBlock.addView(action(group.name,
+                        group.detailLine(),
+                        v -> showUnitGroup(group, resultTitle)));
+                Button searchOnline = button("Search online  ↗");
+                searchOnline.setTextSize(13f);
+                searchOnline.setContentDescription("Search online for information about " + group.name + ". Opens an external browser.");
+                searchOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(
+                        this, onlineGroup.name, onlineGroup.age, onlineGroup.lithology));
+                unitBlock.addView(searchOnline);
+                unitList.addView(unitBlock);
+            }
+''',
+        "final UnitGroup onlineGroup = group;",
+        "add Search online to each geologic-unit result",
+    )
+
+    replace_once(
+        RESEARCH,
         '''        root.addView(title(group.name));
         root.addView(help(group.detailLine()));
 ''',
@@ -2668,6 +2699,11 @@ def inject_sources() -> None:
         TextView unitSummary = help("Mapped unit: " + group.name + "\\n" + group.detailLine());
         unitSummary.setTextIsSelectable(true);
         root.addView(unitSummary);
+        Button searchOnline = button("Search online  ↗");
+        searchOnline.setContentDescription("Search online for information about this mapped geologic unit, its age, or rock type. Opens an external browser.");
+        searchOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(
+                this, group.name, group.age, group.lithology));
+        root.addView(searchOnline);
 ''',
         'TextView unitSummary = help("Mapped unit: " + group.name',
         "make selected geology-unit terms copyable",
@@ -2756,6 +2792,8 @@ def inject_sources() -> None:
         new AlertDialog.Builder(this)
                 .setTitle("Source & Technical Details")
                 .setView(scroll(technicalBody))
+                .setNeutralButton("Search online  ↗", (d, w) -> CngmSearchUi.showLearningSearches(
+                        this, u.displayName(), u.compactAgeLabel(), u.compactLithologyLabel()))
                 .setPositiveButton("Close", null)
                 .show();
 ''',
@@ -2813,8 +2851,8 @@ import com.rockmap.app.research.GeologyDataManager;
         final String learningUnit = unit;
         final String learningAge = age;
         final String learningLithology = lith;
-        Button learnOnline = smallActionButton("Search Google  ↗");
-        learnOnline.setContentDescription("Search Google for educational information about this mapped geology. Opens an external browser.");
+        Button learnOnline = smallActionButton("Search online  ↗");
+        learnOnline.setContentDescription("Search online for educational information about this mapped geology. Opens an external browser.");
         learnOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(
                 this, learningUnit, learningAge, learningLithology));
         detailBox.addView(learnOnline);
@@ -2874,10 +2912,14 @@ def validate_search_ui_injection() -> None:
             "currentResultSearchSummary",
             'Button editSearch = button("Edit Search");',
             "TextView unitSummary = help(\"Mapped unit: \" + group.name",
+            "final UnitGroup onlineGroup = group;",
+            'Button searchOnline = button("Search online  ↗");',
+            '.setNeutralButton("Search online  ↗"',
         ],
         MAIN: [
             "import com.rockmap.app.research.CngmSearchUi;",
             "learningLithology = lith;",
+            'smallActionButton("Search online  ↗")',
             "CngmSearchUi.showLearningSearches(",
             "CNGM Stage 2B: technical geology values remain copyable.",
         ],
@@ -2892,6 +2934,9 @@ def validate_search_ui_injection() -> None:
     research_text = RESEARCH.read_text(encoding="utf-8")
     if "Lithology filter (optional)" in research_text or "Age filter (optional)" in research_text:
         raise RuntimeError("Legacy optional geology-search labels survived the UI injection.")
+    main_text = MAIN.read_text(encoding="utf-8")
+    if "Search Google" in research_text or "Search Google" in main_text:
+        raise RuntimeError("Provider-specific Search Google wording survived the UX injection.")
     ui_text = SEARCH_UI.read_text(encoding="utf-8")
     if "minerals found here" in ui_text.lower() or "what can i find" in ui_text.lower():
         raise RuntimeError("Search UX generated a location-specific mineral-occurrence claim.")
