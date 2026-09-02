@@ -48,7 +48,15 @@ EXPECTED_BASE_SOURCE_UNITS = 185
 EXPECTED_BASE_POLYGONS = 9500
 BASE_ASSET = ROOT / "app/src/main/assets/rockmap-cngm-stage2-debug.db.gz"
 BASE_MANIFEST = ROOT / "app/src/main/assets/rockmap-cngm-stage2-debug.json"
-USER_AGENT = "RockMap-CNGM-search-authority/1.0"
+USER_AGENT = "RockMap-CNGM-search-authority/3.0"
+
+# Pin the exact official full-database package successfully observed in the
+# 2026-09-01 Actions run. If USGS replaces this archive, fail closed and review
+# the new release rather than silently changing scientific inputs.
+EXPECTED_FULL_ARCHIVE_BYTES = 6_433_448_495
+EXPECTED_FULL_ARCHIVE_SHA256 = "b018765f66fd286257f8120e5ed255288975c3db4478d11ac61154671f4e082f"
+EXPECTED_FULL_PAYLOAD_BASENAME = "ngs_full_2025_v1.gpkg"
+
 MIN_ARCHIVE_BYTES = 1_000_000_000
 MAX_ARCHIVE_BYTES = 12_000_000_000
 MAX_EXTRACTED_BYTES = 48_000_000_000
@@ -76,6 +84,29 @@ MANDATORY_PG_TABLES = set(WANTED_PG_TABLES)
 
 def safe_text(v: Any) -> str:
     return "" if v is None else str(v).strip()
+
+
+_INTEGER_ID_RE = re.compile(r"^[+-]?\d+(?:\.0+)?$")
+
+
+def canonical_int_id(v: Any, label: str) -> str:
+    """Canonicalize a USGS field documented as INTEGER.
+
+    The GeoPackage export can expose nullable integer foreign keys as numeric
+    values such as 111.0 while the referenced dictionary primary key is exposed
+    as 111. Both represent the same SQL INTEGER key. Canonicalize only fields
+    that USGS documents as INTEGER; never apply this to scientific text or
+    source_mapunit.
+    """
+    raw=safe_text(v)
+    if not raw:
+        return ""
+    if not _INTEGER_ID_RE.fullmatch(raw):
+        raise RuntimeError(
+            f"{label} must be an integer identifier; got {raw!r}"
+        )
+    integer_part=raw.split(".",1)[0]
+    return str(int(integer_part))
 
 
 def norm(v: Any) -> str:
@@ -390,6 +421,15 @@ def pick(row: Mapping[str,Any], ix: Mapping[str,str], *names: str) -> str:
     return ""
 
 
+def pick_int_id(
+    row: Mapping[str,Any],
+    ix: Mapping[str,str],
+    *names: str,
+    label: str,
+) -> str:
+    return canonical_int_id(pick(row,ix,*names),label)
+
+
 def table(csvs: Mapping[str,Path], key: str, required=True):
     p=csvs.get(key)
     if not p:
@@ -465,7 +505,7 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
     def dict_by_id(rows,ix,id_names,term_names,label):
         out={}
         for r in rows:
-            rid=pick(r,ix,*id_names)
+            rid=pick_int_id(r,ix,*id_names,label=f"{label} vocabulary id")
             term=pick(r,ix,*term_names)
             if not rid:
                 continue
@@ -485,7 +525,10 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
     geomaterial_by_term={}
     geomaterial_by_id={}
     for r in gm_rows:
-        gid=pick(r,gm_ix,"geomaterialdict_id","geomaterialdictid")
+        gid=pick_int_id(
+            r,gm_ix,"geomaterialdict_id","geomaterialdictid",
+            label="GeoMaterial dictionary id",
+        )
         term=pick(r,gm_ix,"geomaterial")
         if not gid or not term:
             continue
@@ -506,7 +549,10 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
     full_source_by_id={}
     for r in source_rows:
         sm=pick(r,source_ix,"source_mapunit")
-        sid=pick(r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid")
+        sid=pick_int_id(
+            r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid",
+            label="source_descriptionofmapunits_id",
+        )
         if not sm or not sid:
             continue
         if sm in full_source_by_mapunit:
@@ -528,8 +574,13 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
     for u in base_units:
         sm=u["source_mapunit"]
         r=full_source_by_mapunit[sm]
-        sid=pick(r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid")
-        mapsourceid=pick(r,source_ix,"mapsourceid")
+        sid=pick_int_id(
+            r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid",
+            label="source_descriptionofmapunits_id",
+        )
+        mapsourceid=pick_int_id(
+            r,source_ix,"mapsourceid",label=f"mapsourceid for {sm}"
+        )
         full_source_id_for[sm]=sid
         if mapsourceid != "50":
             source_mismatches.append((sm,"mapsourceid",mapsourceid,"50"))
@@ -549,7 +600,10 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
 
     def resolve_assignment_source(row,ix,label):
         sm=pick(row,ix,"source_mapunit")
-        sid=pick(row,ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
+        sid=pick_int_id(
+            row,ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id",
+            label=f"{label} source_descriptionofmapunitsid",
+        )
         by_id=wanted_full_ids.get(sid) if sid else None
         by_key=sm if sm in wanted else None
         if by_id and by_key and by_id != by_key:
@@ -580,7 +634,9 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
         sm=resolve_assignment_source(r,aa_ix,"Age")
         if sm is None:
             continue
-        assignment_id=pick(r,aa_ix,"age_id","ageid")
+        assignment_id=pick_int_id(
+            r,aa_ix,"age_id","ageid",label=f"age_id for {sm}"
+        )
         if not assignment_id:
             raise RuntimeError(f"Age assignment for {sm} has no age_id")
         if assignment_id in age_seen_id:
@@ -592,11 +648,14 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
         age_seen_id.add(assignment_id)
         age_seen_source.add(sm)
 
-        sid=pick(r,aa_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
-        amin=pick(r,aa_ix,"agedictid_min")
-        amax=pick(r,aa_ix,"agedictid_max")
-        cmin=pick(r,aa_ix,"confidencedictid_min")
-        cmax=pick(r,aa_ix,"confidencedictid_max")
+        sid=pick_int_id(
+            r,aa_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id",
+            label=f"Age source_descriptionofmapunitsid for {sm}",
+        )
+        amin=pick_int_id(r,aa_ix,"agedictid_min",label=f"agedictid_min for {sm}")
+        amax=pick_int_id(r,aa_ix,"agedictid_max",label=f"agedictid_max for {sm}")
+        cmin=pick_int_id(r,aa_ix,"confidencedictid_min",label=f"confidencedictid_min for {sm}")
+        cmax=pick_int_id(r,aa_ix,"confidencedictid_max",label=f"confidencedictid_max for {sm}")
         if amin and amin not in ages:
             raise RuntimeError(f"Age assignment references unknown agedict id {amin}")
         if amax and amax not in ages:
@@ -613,17 +672,22 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
         sm=resolve_assignment_source(r,la_ix,"Lithology")
         if sm is None:
             continue
-        assignment_id=pick(r,la_ix,"lithology_id","lithologyid")
+        assignment_id=pick_int_id(
+            r,la_ix,"lithology_id","lithologyid",label=f"lithology_id for {sm}"
+        )
         if not assignment_id:
             raise RuntimeError(f"Lithology assignment for {sm} has no lithology_id")
         if assignment_id in lith_seen_id:
             raise RuntimeError(f"Duplicate lithology_id in selected Colorado assignments: {assignment_id}")
         lith_seen_id.add(assignment_id)
 
-        sid=pick(r,la_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
-        lid=pick(r,la_ix,"lithologydictid")
-        cid=pick(r,la_ix,"confidencedictid")
-        pid=pick(r,la_ix,"proportiondictid")
+        sid=pick_int_id(
+            r,la_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id",
+            label=f"Lithology source_descriptionofmapunitsid for {sm}",
+        )
+        lid=pick_int_id(r,la_ix,"lithologydictid",label=f"lithologydictid for {sm}")
+        cid=pick_int_id(r,la_ix,"confidencedictid",label=f"lithology confidencedictid for {sm}")
+        pid=pick_int_id(r,la_ix,"proportiondictid",label=f"proportiondictid for {sm}")
         if not lid:
             raise RuntimeError(f"Lithology assignment {assignment_id} for {sm} has no lithologydictid")
         if lid not in liths:
@@ -756,6 +820,9 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
             "base_polygons":str(base["polygon_count"]),
             "base_asset_sha256":base["asset_sha256"],
             "source_linkage_key":"source_mapunit",
+            "integer_id_representation":"canonical base-10 integer text",
+            "full_archive_sha256":EXPECTED_FULL_ARCHIVE_SHA256,
+            "full_archive_bytes":str(EXPECTED_FULL_ARCHIVE_BYTES),
             "production_release_approved":"false",
         }
         con.executemany("insert into metadata(key,value) values(?,?)",sorted(meta.items()))
@@ -777,7 +844,7 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
                 sm,
                 u["source_unit_upstream_id"],
                 full_source_id_for[sm],
-                pick(r,source_ix,"mapsourceid"),
+                pick_int_id(r,source_ix,"mapsourceid",label=f"mapsourceid for {sm}"),
                 u["geomaterial"],
                 u["source_age_text"],
                 pick(r,source_ix,"geomaterial"),
@@ -792,7 +859,9 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
                 return None
 
         for r in age_rows:
-            cid=pick(r,age_ix,"agedict_id","agedictid")
+            cid=pick_int_id(
+                r,age_ix,"agedict_id","agedictid",label="agedict_id"
+            )
             term=pick(r,age_ix,"age")
             if not cid or not term:
                 continue
@@ -1026,6 +1095,20 @@ def self_test() -> int:
 
     assert norm("Early Proterozoic")=="earlyproterozoic"
     assert norm_ws("  Early   Proterozoic ")=="Early Proterozoic"
+
+    # Regression 0b: exact failure from Actions run 33595070506. The official
+    # GeoPackage exposed an INTEGER foreign key as "111.0" while agedict_id was
+    # "111". These are the same database key and must compare canonically.
+    assert canonical_int_id("111.0","test id")=="111"
+    assert canonical_int_id("00111.000","test id")=="111"
+    assert canonical_int_id(111,"test id")=="111"
+    assert canonical_int_id(111.0,"test id")=="111"
+    try:
+        canonical_int_id("111.5","test id")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Non-integral identifier was not rejected")
     assert safe_member("x/y/file.dump")
     assert not safe_member("../bad")
     assert not safe_member("/abs")
@@ -1083,18 +1166,21 @@ def self_test() -> int:
 
         source_rows=[
             {
-                "source_descriptionofmapunits_id":str(5000+i),
+                # Simulate the GeoPackage numeric representation observed in
+                # the real full CNGM export: nullable integer relationships may
+                # arrive as integral floats.
+                "source_descriptionofmapunits_id":f"{5000+i}.0",
                 "source_mapunit":u["source_mapunit"],
-                "mapsourceid":"50",
+                "mapsourceid":"50.0",
                 "age":"Early Proterozoic",
                 "geomaterial":"Igneous rock",
             }
             for i,u in enumerate(base_units)
         ]
         source_rows.append({
-            "source_descriptionofmapunits_id":"9999",
+            "source_descriptionofmapunits_id":"9999.0",
             "source_mapunit":"31|OUTSIDE",
-            "mapsourceid":"31",
+            "mapsourceid":"31.0",
             "age":"Cretaceous",
             "geomaterial":"Igneous rock",
         })
@@ -1138,54 +1224,54 @@ def self_test() -> int:
         age_rows=[]
         lith_rows=[]
         for i,u in enumerate(base_units):
-            sid=str(5000+i)
+            sid=f"{5000+i}.0"
             age_rows.append({
-                "age_id":f"A{i}",
+                "age_id":f"{7000+i}.0",
                 "source_descriptionofmapunitsid":sid,
                 "source_mapunit":u["source_mapunit"],
-                "agedictid_min":"2",
-                "agedictid_max":"2",
-                "confidencedictid_min":"20",
-                "confidencedictid_max":"20",
+                "agedictid_min":"2.0",
+                "agedictid_max":"2.0",
+                "confidencedictid_min":"20.0",
+                "confidencedictid_max":"20.0",
             })
             lith_rows.append({
-                "lithology_id":f"L{i}",
+                "lithology_id":f"{8000+i}.0",
                 "source_descriptionofmapunitsid":sid,
                 "source_mapunit":u["source_mapunit"],
-                "lithologydictid":"10",
-                "confidencedictid":"20",
-                "proportiondictid":"30",
+                "lithologydictid":"10.0",
+                "confidencedictid":"20.0",
+                "proportiondictid":"30.0",
             })
 
         # An unrelated map must never leak into the Colorado authority pack.
         age_rows.append({
-            "age_id":"A-OUTSIDE",
-            "source_descriptionofmapunitsid":"9999",
+            "age_id":"99901.0",
+            "source_descriptionofmapunitsid":"9999.0",
             "source_mapunit":"31|OUTSIDE",
-            "agedictid_min":"3",
-            "agedictid_max":"3",
-            "confidencedictid_min":"20",
-            "confidencedictid_max":"20",
+            "agedictid_min":"3.0",
+            "agedictid_max":"3.0",
+            "confidencedictid_min":"20.0",
+            "confidencedictid_max":"20.0",
         })
         lith_rows.append({
-            "lithology_id":"L-OUTSIDE",
-            "source_descriptionofmapunitsid":"9999",
+            "lithology_id":"99902.0",
+            "source_descriptionofmapunitsid":"9999.0",
             "source_mapunit":"31|OUTSIDE",
-            "lithologydictid":"10",
-            "confidencedictid":"20",
-            "proportiondictid":"30",
+            "lithologydictid":"10.0",
+            "confidencedictid":"20.0",
+            "proportiondictid":"30.0",
         })
 
         # Preserve assignment row identity instead of assuming one row per
         # (source_mapunit,lithology concept). The published relationship is
         # many-to-one from lithology assignments to source units.
         lith_rows.append({
-            "lithology_id":"L-DUP-CONCEPT",
-            "source_descriptionofmapunitsid":"5000",
+            "lithology_id":"99903.0",
+            "source_descriptionofmapunitsid":"5000.0",
             "source_mapunit":"50|TEST000",
-            "lithologydictid":"10",
-            "confidencedictid":"20",
-            "proportiondictid":"30",
+            "lithologydictid":"10.0",
+            "confidencedictid":"20.0",
+            "proportiondictid":"30.0",
         })
 
         csvs["assignments.age"]=write_csv_file(
@@ -1233,6 +1319,14 @@ def self_test() -> int:
                 "select earth_surface_source_unit_id,full_db_source_unit_id from base_source_units where source_mapunit='50|TEST000'"
             ).fetchone()
             assert ids==("earth-surface-1","5000")
+            assert con.execute(
+                "select assignment_id,min_concept_id,min_confidence_id from age_assignments "
+                "where source_mapunit='50|TEST000'"
+            ).fetchone()==("7000","2","20")
+            assert con.execute(
+                "select assignment_id,concept_id,confidence_id,proportion_id from lithology_assignments "
+                "where source_mapunit='50|TEST000' order by assignment_id limit 1"
+            ).fetchone()[1:]==("10","20","30")
         finally:
             con.close()
 
@@ -1242,7 +1336,7 @@ def self_test() -> int:
         # one identifier namespace.
         bad_age=list(age_rows)
         bad_age[0]=dict(bad_age[0])
-        bad_age[0]["source_descriptionofmapunitsid"]="5001"
+        bad_age[0]["source_descriptionofmapunitsid"]="5001.0"
         bad_csvs=dict(csvs)
         bad_csvs["assignments.age"]=write_csv_file(
             "bad_age_assign.csv",
@@ -1303,9 +1397,20 @@ def main() -> int:
         stage="download official full CNGM source"
         archive=work/"cngm-full-download"
         dl=download(url,archive)
+        if dl["bytes"] != EXPECTED_FULL_ARCHIVE_BYTES or dl["sha256"] != EXPECTED_FULL_ARCHIVE_SHA256:
+            raise RuntimeError(
+                "Official CNGM full-database archive changed from the reviewed 2025 V1 input; "
+                f"observed bytes={dl['bytes']} sha256={dl['sha256']}. "
+                "Review the new upstream release before extraction."
+            )
 
         stage="identify official CNGM payload"
         kind,payload,inventory=identify_payload(archive,work)
+        if kind != "sqlite" or payload.name != EXPECTED_FULL_PAYLOAD_BASENAME:
+            raise RuntimeError(
+                "Reviewed CNGM 2025 V1 archive did not expose the expected GeoPackage payload: "
+                f"kind={kind!r}, file={payload.name!r}"
+            )
 
         summary={
             "production_release_approved":False,
@@ -1314,6 +1419,8 @@ def main() -> int:
             "data_report_doi":DATA_REPORT_DOI,
             "source_map_id":SOURCE_MAP_ID,
             "download":dl,
+            "reviewed_archive_sha256":EXPECTED_FULL_ARCHIVE_SHA256,
+            "reviewed_archive_bytes":EXPECTED_FULL_ARCHIVE_BYTES,
             "payload_kind":kind,
             "payload_file":payload.name,
             "archive_inventory_count":len(inventory),
