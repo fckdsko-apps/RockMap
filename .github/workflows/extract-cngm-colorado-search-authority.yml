@@ -22,67 +22,116 @@ jobs:
     timeout-minutes: 210
 
     steps:
-      - name: Checkout repository
+      - name: Checkout selected branch
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 1
 
-      - name: Validate RockMap source
+      - name: Fail closed on branch and required inputs
         shell: bash
-        run: python3 scripts/preflight.py
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_REF_NAME" != "tour-debug" ]; then
+            echo "::error::This scientific extraction checkpoint must be run against tour-debug, not $GITHUB_REF_NAME."
+            exit 1
+          fi
+
+          test -s scripts/extract_cngm_colorado_search_authority.py
+          test -s app/src/main/assets/rockmap-cngm-stage2-debug.db.gz
+          test -s app/src/main/assets/rockmap-cngm-stage2-debug.json
+
+          python3 scripts/preflight.py
+
+      - name: Validate extractor before installing dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m py_compile scripts/extract_cngm_colorado_search_authority.py
+          python3 scripts/extract_cngm_colorado_search_authority.py --self-test
 
       - name: Free runner disk for official CNGM source
         shell: bash
         run: |
           set -euo pipefail
-          # This workflow needs the official ~6.4 GB relational source only long enough
-          # to extract a tiny nonspatial Colorado authority artifact. Android/CodeQL/.NET
-          # toolchains are not used by this job.
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache/CodeQL || true
+
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/share/dotnet \
+            /opt/hostedtoolcache/CodeQL \
+            || true
+
           sudo apt-get clean
           df -h .
 
-      - name: Install pinned extraction dependencies
+      - name: Install and verify extraction dependencies
         shell: bash
         run: |
           set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            postgresql postgresql-contrib postgis gdal-bin
+            postgresql \
+            postgresql-contrib \
+            postgis \
+            postgresql-postgis \
+            gdal-bin
+
           python3 --version
           psql --version
           pg_restore --version
+          pg_config --version
           ogrinfo --version
           ogr2ogr --version
 
-      - name: Validate search-authority extractor
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m py_compile scripts/extract_cngm_colorado_search_authority.py
-          python3 scripts/extract_cngm_colorado_search_authority.py --self-test
+          POSTGIS_CONTROL="$(pg_config --sharedir)/extension/postgis.control"
+          if [ ! -s "$POSTGIS_CONTROL" ]; then
+            echo "::error::PostGIS extension control file is missing: $POSTGIS_CONTROL"
+            dpkg -l | grep -E 'postgres|postgis' || true
+            exit 1
+          fi
 
-      - name: Prepare isolated PostgreSQL restore target
+      - name: Prepare and verify isolated PostgreSQL target
         shell: bash
         run: |
           set -euo pipefail
+
           sudo service postgresql start
           sudo -u postgres createuser --superuser "$USER" 2>/dev/null || true
+
           dropdb --if-exists cngm_search_extract
           createdb cngm_search_extract
+
           psql -X -v ON_ERROR_STOP=1 postgresql:///cngm_search_extract \
             -c 'CREATE EXTENSION IF NOT EXISTS postgis;'
+
+          POSTGIS_VERSION="$(
+            psql -X -At -v ON_ERROR_STOP=1 postgresql:///cngm_search_extract \
+              -c 'SELECT postgis_version();'
+          )"
+
+          if [ -z "$POSTGIS_VERSION" ]; then
+            echo "::error::PostGIS installed but could not be loaded by PostgreSQL."
+            exit 1
+          fi
+
+          echo "PostGIS: $POSTGIS_VERSION"
 
       - name: Check disk before official source download
         shell: bash
         run: |
           set -euo pipefail
+
           df -h .
           FREE_BYTES="$(df -PB1 . | awk 'NR==2 {print $4}')"
-          # The official download is ~6.4 GB; archive + selected restore/extraction
-          # need substantial temporary headroom. Fail before downloading if not safe.
-          if [ "$FREE_BYTES" -lt 22000000000 ]; then
-            echo "::error::Less than 22 GB free after cleanup; refusing the full CNGM extraction."
+
+          # The official download is advertised as ~6.4 GB. The extracted
+          # payload can be much larger. Require enough space for archive,
+          # extraction, selective staging, and a large safety margin.
+          if [ "$FREE_BYTES" -lt 70000000000 ]; then
+            echo "::error::Less than 70 GB free after cleanup; refusing the full CNGM extraction."
             exit 1
           fi
 
@@ -92,24 +141,30 @@ jobs:
           SOURCE_URL: ${{ inputs.source_url }}
         run: |
           set -euo pipefail
+
           rm -rf dist-cngm-search-authority
+
           ARGS=(
             --output-dir dist-cngm-search-authority
             --pg-dsn postgresql:///cngm_search_extract
           )
+
           if [ -n "${SOURCE_URL:-}" ]; then
             ARGS+=(--source-url "$SOURCE_URL")
           fi
+
           python3 scripts/extract_cngm_colorado_search_authority.py "${ARGS[@]}"
 
       - name: Fail closed on authority artifact
         shell: bash
         run: |
           set -euo pipefail
-          test -s dist-cngm-search-authority/cngm-colorado-search-authority-v1.db
+
+          test -s dist-cngm-search-authority/cngm-colorado-search-authority-v2.db
           test -s dist-cngm-search-authority/search-authority-summary.json
           test -s dist-cngm-search-authority/summary.md
           test -s dist-cngm-search-authority/SHA256SUMS.txt
+          test -s dist-cngm-search-authority/table-schema.json
 
           python3 - <<'PY'
           import json
@@ -117,7 +172,10 @@ jobs:
           from pathlib import Path
 
           root = Path('dist-cngm-search-authority')
-          summary = json.loads((root / 'search-authority-summary.json').read_text(encoding='utf-8'))
+          summary = json.loads(
+              (root / 'search-authority-summary.json').read_text(encoding='utf-8')
+          )
+
           assert summary['production_release_approved'] is False
           assert summary['full_database_doi'] == '10.5066/P1DC4XFG'
           assert summary['earth_surface_doi'] == '10.5066/P146VGVM'
@@ -126,29 +184,70 @@ jobs:
           assert summary['base']['source_units'] == 185
           assert summary['base']['polygons'] == 9500
 
-          db = root / 'cngm-colorado-search-authority-v1.db'
+          coverage = summary['coverage']
+          assert coverage['base_source_units'] == 185
+          assert coverage['full_source_units_exactly_matched'] == 185
+          assert coverage['age_assigned_source_units'] > 0
+          assert coverage['geomaterial_assigned_source_units'] > 0
+          assert coverage['lithology_assigned_source_units'] > 0
+
+          db = root / 'cngm-colorado-search-authority-v2.db'
           con = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+
           try:
               assert con.execute('PRAGMA quick_check').fetchone()[0].lower() == 'ok'
+              assert con.execute('PRAGMA foreign_key_check').fetchall() == []
+
               meta = dict(con.execute('SELECT key,value FROM metadata'))
+              assert meta['format_version'] == '2'
               assert meta['full_database_doi'] == '10.5066/P1DC4XFG'
               assert meta['earth_surface_doi'] == '10.5066/P146VGVM'
               assert meta['source_map_id'] == 'map50'
               assert meta['base_source_units'] == '185'
               assert meta['base_polygons'] == '9500'
+              assert meta['source_linkage_key'] == 'source_mapunit'
               assert meta['production_release_approved'] == 'false'
-              assert con.execute('SELECT COUNT(*) FROM age_concepts').fetchone()[0] > 0
-              assert con.execute('SELECT COUNT(*) FROM geomaterial_concepts').fetchone()[0] > 0
-              assert con.execute('SELECT COUNT(*) FROM base_source_units').fetchone()[0] == 185
-              assert con.execute('SELECT COUNT(*) FROM source_geomaterial').fetchone()[0] > 0
-              assert con.execute('SELECT COUNT(*) FROM age_assignments').fetchone()[0] > 0
-              # Never guess what percentage of the 185 units USGS assigned. Report gaps;
-              # only require that every retained relationship belongs to a reviewed map50 unit.
-              base_units = {r[0] for r in con.execute('SELECT source_mapunit FROM base_source_units')}
-              assigned_age = {r[0] for r in con.execute('SELECT source_mapunit FROM age_assignments')}
-              assigned_lith = {r[0] for r in con.execute('SELECT DISTINCT source_mapunit FROM lithology_assignments')}
-              assert assigned_age <= base_units
-              assert assigned_lith <= base_units
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM base_source_units'
+              ).fetchone()[0] == 185
+
+              assert con.execute(
+                  "SELECT COUNT(*) FROM base_source_units WHERE map_source_id <> '50'"
+              ).fetchone()[0] == 0
+
+              assert con.execute(
+                  'SELECT COUNT(DISTINCT full_db_source_unit_id) FROM base_source_units'
+              ).fetchone()[0] == 185
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM age_concepts'
+              ).fetchone()[0] > 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM geomaterial_concepts'
+              ).fetchone()[0] > 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM lithology_concepts'
+              ).fetchone()[0] > 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM age_assignments'
+              ).fetchone()[0] > 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM lithology_assignments'
+              ).fetchone()[0] > 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM age_assignments a LEFT JOIN base_source_units b USING(source_mapunit) WHERE b.source_mapunit IS NULL'
+              ).fetchone()[0] == 0
+
+              assert con.execute(
+                  'SELECT COUNT(*) FROM lithology_assignments l LEFT JOIN base_source_units b USING(source_mapunit) WHERE b.source_mapunit IS NULL'
+              ).fetchone()[0] == 0
+
           finally:
               con.close()
 
@@ -158,12 +257,13 @@ jobs:
       - name: Upload Colorado search-authority artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: cngm-colorado-search-authority
+          name: cngm-colorado-search-authority-v2
           path: |
-            dist-cngm-search-authority/cngm-colorado-search-authority-v1.db
+            dist-cngm-search-authority/cngm-colorado-search-authority-v2.db
             dist-cngm-search-authority/search-authority-summary.json
             dist-cngm-search-authority/summary.md
             dist-cngm-search-authority/SHA256SUMS.txt
+            dist-cngm-search-authority/table-schema.json
           retention-days: 14
           if-no-files-found: error
 
@@ -173,8 +273,9 @@ jobs:
         with:
           name: cngm-search-authority-failure-diagnostics
           path: |
+            dist-cngm-search-authority/failure-diagnostics.json
+            dist-cngm-search-authority/table-schema.json
             dist-cngm-search-authority/_work/source-inventory.txt
-            dist-cngm-search-authority/search-authority-summary.json
-            dist-cngm-search-authority/summary.md
+            dist-cngm-search-authority/_work/tables/selected-toc.list
           retention-days: 7
           if-no-files-found: ignore

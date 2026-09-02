@@ -51,7 +51,7 @@ BASE_MANIFEST = ROOT / "app/src/main/assets/rockmap-cngm-stage2-debug.json"
 USER_AGENT = "RockMap-CNGM-search-authority/1.0"
 MIN_ARCHIVE_BYTES = 1_000_000_000
 MAX_ARCHIVE_BYTES = 12_000_000_000
-MAX_EXTRACTED_BYTES = 18_000_000_000
+MAX_EXTRACTED_BYTES = 48_000_000_000
 
 ALLOWED_HOSTS = {
     "ngmdb.usgs.gov", "data.usgs.gov", "pubs.usgs.gov", "www.usgs.gov", "usgs.gov",
@@ -59,30 +59,19 @@ ALLOWED_HOSTS = {
 }
 
 WANTED_PG_TABLES = [
+    # Keep this extraction deliberately small. These are the only full-CNGM
+    # relational tables required for authoritative Colorado age/material search.
     ("source", "source_descriptionofmapunits"),
-    ("source", "mapsources"),
     ("vocabularies", "agedict"),
     ("vocabularies", "geomaterialdict"),
     ("vocabularies", "lithologydict"),
     ("vocabularies", "confidencedict"),
     ("vocabularies", "proportiondict"),
-    ("vocabularies", "vocabularysources"),
     ("assignments", "age"),
     ("assignments", "lithology"),
-    ("synthesis", "descriptionofmapunits"),
-    ("synthesis", "synthesissources"),
 ]
 
-MANDATORY_PG_TABLES = {
-    ("source", "source_descriptionofmapunits"),
-    ("vocabularies", "agedict"),
-    ("vocabularies", "geomaterialdict"),
-    ("vocabularies", "lithologydict"),
-    ("vocabularies", "confidencedict"),
-    ("vocabularies", "proportiondict"),
-    ("assignments", "age"),
-    ("assignments", "lithology"),
-}
+MANDATORY_PG_TABLES = set(WANTED_PG_TABLES)
 
 
 def safe_text(v: Any) -> str:
@@ -92,6 +81,11 @@ def safe_text(v: Any) -> str:
 def norm(v: Any) -> str:
     s = unicodedata.normalize("NFKD", safe_text(v)).replace("’", "'").replace("–", "-").replace("—", "-")
     return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def norm_ws(v: Any) -> str:
+    """Normalize insignificant whitespace only; do not change scientific wording."""
+    return " ".join(safe_text(v).split())
 
 
 def sha256_file(path: Path) -> str:
@@ -305,17 +299,40 @@ def select_pg_toc_entries(toc: str) -> Tuple[List[str], set[Tuple[str, str]]]:
     return lines, found
 
 
-def restore_pg_selected(dump: Path, dsn: str, outdir: Path) -> Dict[str,Path]:
-    # Restore all pre-data only: schemas/table definitions/types/extensions. No national spatial rows.
+def validate_postgres_target(dsn: str) -> None:
+    # Fail before touching a multi-gigabyte pg_dump if the runner cannot actually
+    # provide the geospatial extension the full CNGM dump may reference in pre-data.
     run(["psql",dsn,"-X","-v","ON_ERROR_STOP=1","-c","CREATE EXTENSION IF NOT EXISTS postgis;"])
-    run(["pg_restore","--section=pre-data","--no-owner","--no-privileges","--exit-on-error","-d",dsn,str(dump)])
+    version=run(["psql",dsn,"-X","-At","-v","ON_ERROR_STOP=1","-c","SELECT postgis_version();"],capture=True).strip()
+    if not version:
+        raise RuntimeError("PostGIS extension probe returned no version")
+
+
+def restore_pg_selected(dump: Path, dsn: str, outdir: Path) -> Dict[str,Path]:
+    # Read and validate the dump TOC before altering PostgreSQL. This catches
+    # pg_restore format/version incompatibility and missing CNGM tables as early
+    # as possible after the source download.
     toc=run(["pg_restore","-l",str(dump)],capture=True)
     lines,found=select_pg_toc_entries(toc)
-    listfile=outdir/"selected-toc.list"; listfile.write_text("\n".join(lines)+"\n",encoding="utf-8")
+    listfile=outdir/"selected-toc.list"
+    listfile.write_text("\n".join(lines)+"\n",encoding="utf-8")
+
+    validate_postgres_target(dsn)
+
+    # Restore schema/pre-data only. No national table rows are loaded here.
+    # The full pre-data section is used because table defaults/types in a native
+    # pg_dump can depend on database-level objects. Data restoration remains
+    # strictly allowlisted to the eight reviewed nonspatial authority tables.
+    run(["pg_restore","--section=pre-data","--no-owner","--no-privileges","--exit-on-error","-d",dsn,str(dump)])
     run(["pg_restore","--data-only","--no-owner","--no-privileges","--exit-on-error","-L",str(listfile),"-d",dsn,str(dump)])
+
     csvs={}
     for schema,table in sorted(found):
-        p=outdir/f"{schema}__{table}.csv"; table_to_csv_postgres(dsn,schema,table,p); csvs[f"{schema}.{table}"]=p
+        p=outdir/f"{schema}__{table}.csv"
+        table_to_csv_postgres(dsn,schema,table,p)
+        if not p.is_file() or p.stat().st_size <= 0:
+            raise RuntimeError(f"PostgreSQL export produced an empty file for {schema}.{table}")
+        csvs[f"{schema}.{table}"]=p
     return csvs
 
 
@@ -395,6 +412,7 @@ def require_columns(key: str, fields: Sequence[str], required_groups: Sequence[S
 
 
 def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path, summary: Dict[str,Any]) -> None:
+    source_fields,source_rows,source_ix=table(csvs,"source.source_descriptionofmapunits")
     age_fields,age_rows,age_ix=table(csvs,"vocabularies.agedict")
     gm_fields,gm_rows,gm_ix=table(csvs,"vocabularies.geomaterialdict")
     lith_fields,lith_rows,lith_ix=table(csvs,"vocabularies.lithologydict")
@@ -402,16 +420,23 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
     prop_fields,prop_rows,prop_ix=table(csvs,"vocabularies.proportiondict")
     aa_fields,aa_rows,aa_ix=table(csvs,"assignments.age")
     la_fields,la_rows,la_ix=table(csvs,"assignments.lithology")
-    synth_fields,synth_rows,synth_ix=table(csvs,"synthesis.descriptionofmapunits",required=False)
 
+    # These field names and relationships are documented by USGS Data Report
+    # 1210. Fail before interpretation if the released schema does not match.
+    require_columns("source.source_descriptionofmapunits",source_fields,[
+        ("source_descriptionofmapunits_id","source_descriptionofmapunitsid"),
+        ("source_mapunit",),("mapsourceid",),("age",),("geomaterial",),
+    ])
     require_columns("vocabularies.agedict",age_fields,[
         ("agedict_id","agedictid"),("age",),("hierarchykey","hierarchy_key"),
     ])
     require_columns("vocabularies.geomaterialdict",gm_fields,[
-        ("geomaterial",),("hierarchykey","hierarchy_key"),
+        ("geomaterialdict_id","geomaterialdictid"),("geomaterial",),
+        ("hierarchykey","hierarchy_key"),
     ])
     require_columns("vocabularies.lithologydict",lith_fields,[
-        ("lithologydict_id","lithologydictid"),("lithology",),("hierarchykey","hierarchy_key"),
+        ("lithologydict_id","lithologydictid"),("lithology",),
+        ("hierarchykey","hierarchy_key"),
     ])
     require_columns("vocabularies.confidencedict",conf_fields,[
         ("confidencedict_id","confidencedictid"),("confidence",),
@@ -420,238 +445,623 @@ def build_authority(csvs: Mapping[str,Path], base: Mapping[str,Any], outdb: Path
         ("proportiondict_id","proportiondictid"),("proportion",),
     ])
     require_columns("assignments.age",aa_fields,[
+        ("age_id","ageid"),
+        ("source_descriptionofmapunitsid","source_descriptionofmapunits_id"),
         ("source_mapunit",),("agedictid_min",),("agedictid_max",),
         ("confidencedictid_min",),("confidencedictid_max",),
     ])
     require_columns("assignments.lithology",la_fields,[
-        ("source_mapunit",),("lithologydictid",),("confidencedictid",),("proportiondictid",),
+        ("lithology_id","lithologyid"),
+        ("source_descriptionofmapunitsid","source_descriptionofmapunits_id"),
+        ("source_mapunit",),("lithologydictid",),("confidencedictid",),
+        ("proportiondictid",),
     ])
 
-    base_units=base["units"]; wanted={u["source_mapunit"] for u in base_units}
-    if len(wanted)!=EXPECTED_BASE_SOURCE_UNITS: raise RuntimeError("Base source_mapunit set is not unique")
+    base_units=base["units"]
+    wanted={u["source_mapunit"] for u in base_units}
+    if len(wanted)!=EXPECTED_BASE_SOURCE_UNITS:
+        raise RuntimeError("Base source_mapunit set is not unique")
 
-    def dict_by_id(rows,ix,id_names,term_names):
+    def dict_by_id(rows,ix,id_names,term_names,label):
         out={}
         for r in rows:
-            rid=pick(r,ix,*id_names); term=pick(r,ix,*term_names)
-            if rid: out[rid]=(term,r)
+            rid=pick(r,ix,*id_names)
+            term=pick(r,ix,*term_names)
+            if not rid:
+                continue
+            previous=out.get(rid)
+            if previous is not None and previous!=(term,r):
+                raise RuntimeError(f"Duplicate/conflicting {label} id {rid}")
+            out[rid]=(term,r)
+        if not out:
+            raise RuntimeError(f"Authoritative {label} vocabulary was empty")
         return out
-    ages=dict_by_id(age_rows,age_ix,("agedict_id","agedictid"),("age",))
-    liths=dict_by_id(lith_rows,lith_ix,("lithologydict_id","lithologydictid"),("lithology",))
-    confs=dict_by_id(conf_rows,conf_ix,("confidencedict_id","confidencedictid"),("confidence",))
-    props=dict_by_id(prop_rows,prop_ix,("proportiondict_id","proportiondictid"),("proportion",))
-    gms={pick(r,gm_ix,"geomaterial"):r for r in gm_rows if pick(r,gm_ix,"geomaterial")}
+
+    ages=dict_by_id(age_rows,age_ix,("agedict_id","agedictid"),("age",),"age")
+    liths=dict_by_id(lith_rows,lith_ix,("lithologydict_id","lithologydictid"),("lithology",),"lithology")
+    confs=dict_by_id(conf_rows,conf_ix,("confidencedict_id","confidencedictid"),("confidence",),"confidence")
+    props=dict_by_id(prop_rows,prop_ix,("proportiondict_id","proportiondictid"),("proportion",),"proportion")
+
+    geomaterial_by_term={}
+    geomaterial_by_id={}
+    for r in gm_rows:
+        gid=pick(r,gm_ix,"geomaterialdict_id","geomaterialdictid")
+        term=pick(r,gm_ix,"geomaterial")
+        if not gid or not term:
+            continue
+        if gid in geomaterial_by_id:
+            raise RuntimeError(f"Duplicate GeoMaterial dictionary id {gid}")
+        if term in geomaterial_by_term:
+            raise RuntimeError(f"Duplicate GeoMaterial term {term!r}")
+        geomaterial_by_id[gid]=r
+        geomaterial_by_term[term]=(gid,r)
+    if not geomaterial_by_term:
+        raise RuntimeError("Authoritative GeoMaterial vocabulary was empty")
+
+    # The full relational CNGM source_mapunit is globally unique because USGS
+    # prepends mapsourceid. Use it as the scientific linkage key. Do not compare
+    # Earth-Surface exported row IDs to full-database IDs; they are preserved as
+    # separate namespaces.
+    full_source_by_mapunit={}
+    full_source_by_id={}
+    for r in source_rows:
+        sm=pick(r,source_ix,"source_mapunit")
+        sid=pick(r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid")
+        if not sm or not sid:
+            continue
+        if sm in full_source_by_mapunit:
+            raise RuntimeError(f"Duplicate source_mapunit in full CNGM source table: {sm}")
+        if sid in full_source_by_id:
+            raise RuntimeError(f"Duplicate source_descriptionofmapunits_id in full CNGM source table: {sid}")
+        full_source_by_mapunit[sm]=r
+        full_source_by_id[sid]=r
+
+    missing_source=sorted(wanted-set(full_source_by_mapunit))
+    if missing_source:
+        raise RuntimeError(
+            "Reviewed map50 source units were missing from the full CNGM source table; "
+            f"first examples: {missing_source[:12]}"
+        )
+
+    source_mismatches=[]
+    full_source_id_for={}
+    for u in base_units:
+        sm=u["source_mapunit"]
+        r=full_source_by_mapunit[sm]
+        sid=pick(r,source_ix,"source_descriptionofmapunits_id","source_descriptionofmapunitsid")
+        mapsourceid=pick(r,source_ix,"mapsourceid")
+        full_source_id_for[sm]=sid
+        if mapsourceid != "50":
+            source_mismatches.append((sm,"mapsourceid",mapsourceid,"50"))
+        full_age=pick(r,source_ix,"age")
+        full_gm=pick(r,source_ix,"geomaterial")
+        if norm_ws(full_age) != norm_ws(u["source_age_text"]):
+            source_mismatches.append((sm,"age",full_age,u["source_age_text"]))
+        if norm_ws(full_gm) != norm_ws(u["geomaterial"]):
+            source_mismatches.append((sm,"geomaterial",full_gm,u["geomaterial"]))
+    if source_mismatches:
+        raise RuntimeError(
+            "Full CNGM source facts did not match the reviewed Earth Surface map50 checkpoint; "
+            f"first examples: {source_mismatches[:8]}"
+        )
+
+    wanted_full_ids={full_source_id_for[sm]:sm for sm in wanted}
+
+    def resolve_assignment_source(row,ix,label):
+        sm=pick(row,ix,"source_mapunit")
+        sid=pick(row,ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
+        by_id=wanted_full_ids.get(sid) if sid else None
+        by_key=sm if sm in wanted else None
+        if by_id and by_key and by_id != by_key:
+            raise RuntimeError(
+                f"{label} assignment source foreign keys disagree: "
+                f"source_mapunit={sm!r}, source_descriptionofmapunitsid={sid!r}"
+            )
+        target=by_key or by_id
+        if target is None:
+            return None
+        expected_sid=full_source_id_for[target]
+        if sid and sid != expected_sid:
+            raise RuntimeError(
+                f"{label} assignment full-database source ID mismatch for {target}: "
+                f"{sid} != {expected_sid}"
+            )
+        if sm and sm != target:
+            raise RuntimeError(
+                f"{label} assignment source_mapunit mismatch for full-database source ID {sid}: "
+                f"{sm!r} != {target!r}"
+            )
+        return target
 
     age_assign=[]
+    age_seen_source=set()
+    age_seen_id=set()
     for r in aa_rows:
-        sm=pick(r,aa_ix,"source_mapunit")
-        if sm not in wanted: continue
-        amin=pick(r,aa_ix,"agedictid_min"); amax=pick(r,aa_ix,"agedictid_max")
-        cmin=pick(r,aa_ix,"confidencedictid_min"); cmax=pick(r,aa_ix,"confidencedictid_max")
-        if amin and amin not in ages: raise RuntimeError(f"Age assignment references unknown agedict id {amin}")
-        if amax and amax not in ages: raise RuntimeError(f"Age assignment references unknown agedict id {amax}")
-        if cmin and cmin not in confs: raise RuntimeError(f"Age assignment references unknown confidence id {cmin}")
-        if cmax and cmax not in confs: raise RuntimeError(f"Age assignment references unknown confidence id {cmax}")
-        age_assign.append((sm,amin,amax,cmin,cmax))
-    lith_assign=[]
-    for r in la_rows:
-        sm=pick(r,la_ix,"source_mapunit")
-        if sm not in wanted: continue
-        lid=pick(r,la_ix,"lithologydictid"); cid=pick(r,la_ix,"confidencedictid"); pid=pick(r,la_ix,"proportiondictid")
-        if lid and lid not in liths: raise RuntimeError(f"Lithology assignment references unknown lithologydict id {lid}")
-        if cid and cid not in confs: raise RuntimeError(f"Lithology assignment references unknown confidence id {cid}")
-        if pid and pid not in props: raise RuntimeError(f"Lithology assignment references unknown proportion id {pid}")
-        lith_assign.append((sm,lid,cid,pid))
+        sm=resolve_assignment_source(r,aa_ix,"Age")
+        if sm is None:
+            continue
+        assignment_id=pick(r,aa_ix,"age_id","ageid")
+        if not assignment_id:
+            raise RuntimeError(f"Age assignment for {sm} has no age_id")
+        if assignment_id in age_seen_id:
+            raise RuntimeError(f"Duplicate age_id in selected Colorado assignments: {assignment_id}")
+        if sm in age_seen_source:
+            raise RuntimeError(
+                f"Full CNGM assignments.age violated documented one-to-one relationship for {sm}"
+            )
+        age_seen_id.add(assignment_id)
+        age_seen_source.add(sm)
 
-    if outdb.exists(): outdb.unlink()
+        sid=pick(r,aa_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
+        amin=pick(r,aa_ix,"agedictid_min")
+        amax=pick(r,aa_ix,"agedictid_max")
+        cmin=pick(r,aa_ix,"confidencedictid_min")
+        cmax=pick(r,aa_ix,"confidencedictid_max")
+        if amin and amin not in ages:
+            raise RuntimeError(f"Age assignment references unknown agedict id {amin}")
+        if amax and amax not in ages:
+            raise RuntimeError(f"Age assignment references unknown agedict id {amax}")
+        if cmin and cmin not in confs:
+            raise RuntimeError(f"Age assignment references unknown confidence id {cmin}")
+        if cmax and cmax not in confs:
+            raise RuntimeError(f"Age assignment references unknown confidence id {cmax}")
+        age_assign.append((assignment_id,sm,sid,amin,amax,cmin,cmax))
+
+    lith_assign=[]
+    lith_seen_id=set()
+    for r in la_rows:
+        sm=resolve_assignment_source(r,la_ix,"Lithology")
+        if sm is None:
+            continue
+        assignment_id=pick(r,la_ix,"lithology_id","lithologyid")
+        if not assignment_id:
+            raise RuntimeError(f"Lithology assignment for {sm} has no lithology_id")
+        if assignment_id in lith_seen_id:
+            raise RuntimeError(f"Duplicate lithology_id in selected Colorado assignments: {assignment_id}")
+        lith_seen_id.add(assignment_id)
+
+        sid=pick(r,la_ix,"source_descriptionofmapunitsid","source_descriptionofmapunits_id")
+        lid=pick(r,la_ix,"lithologydictid")
+        cid=pick(r,la_ix,"confidencedictid")
+        pid=pick(r,la_ix,"proportiondictid")
+        if not lid:
+            raise RuntimeError(f"Lithology assignment {assignment_id} for {sm} has no lithologydictid")
+        if lid not in liths:
+            raise RuntimeError(f"Lithology assignment references unknown lithologydict id {lid}")
+        if cid and cid not in confs:
+            raise RuntimeError(f"Lithology assignment references unknown confidence id {cid}")
+        if pid and pid not in props:
+            raise RuntimeError(f"Lithology assignment references unknown proportion id {pid}")
+        lith_assign.append((assignment_id,sm,sid,lid,cid,pid))
+
+    if outdb.exists():
+        outdb.unlink()
     con=sqlite3.connect(outdb)
     try:
         con.executescript("""
-        PRAGMA page_size=4096; PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA foreign_keys=ON;
-        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
-        CREATE TABLE base_source_units(
-          source_mapunit TEXT PRIMARY KEY, source_unit_upstream_id TEXT NOT NULL,
-          source_geomaterial_text TEXT NOT NULL, source_age_text TEXT NOT NULL
+        PRAGMA page_size=4096;
+        PRAGMA journal_mode=OFF;
+        PRAGMA synchronous=OFF;
+        PRAGMA foreign_keys=ON;
+
+        CREATE TABLE metadata(
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
         ) WITHOUT ROWID;
+
+        CREATE TABLE base_source_units(
+          source_mapunit TEXT PRIMARY KEY,
+          earth_surface_source_unit_id TEXT NOT NULL,
+          full_db_source_unit_id TEXT NOT NULL UNIQUE,
+          map_source_id TEXT NOT NULL,
+          source_geomaterial_text TEXT NOT NULL,
+          source_age_text TEXT NOT NULL,
+          full_db_geomaterial_text TEXT NOT NULL,
+          full_db_age_text TEXT NOT NULL
+        ) WITHOUT ROWID;
+
         CREATE TABLE age_concepts(
-          concept_id TEXT PRIMARY KEY, term TEXT NOT NULL UNIQUE, hierarchy_key TEXT NOT NULL,
-          definition TEXT NOT NULL, indented_name TEXT NOT NULL, rank TEXT NOT NULL,
-          t_min_ma REAL, t_max_ma REAL, baseage TEXT NOT NULL, notes TEXT NOT NULL
+          concept_id TEXT PRIMARY KEY,
+          term TEXT NOT NULL,
+          hierarchy_key TEXT NOT NULL,
+          definition TEXT NOT NULL,
+          indented_name TEXT NOT NULL,
+          rank TEXT NOT NULL,
+          t_min_ma REAL,
+          t_max_ma REAL,
+          baseage TEXT NOT NULL,
+          notes TEXT NOT NULL
         ) WITHOUT ROWID;
         CREATE INDEX idx_age_concepts_term ON age_concepts(term COLLATE NOCASE);
         CREATE INDEX idx_age_concepts_hierarchy ON age_concepts(hierarchy_key);
+
         CREATE TABLE geomaterial_concepts(
-          term TEXT PRIMARY KEY, hierarchy_key TEXT NOT NULL, definition TEXT NOT NULL,
-          indented_name TEXT NOT NULL, notes TEXT NOT NULL
+          concept_id TEXT PRIMARY KEY,
+          term TEXT NOT NULL UNIQUE,
+          hierarchy_key TEXT NOT NULL,
+          definition TEXT NOT NULL,
+          indented_name TEXT NOT NULL,
+          notes TEXT NOT NULL
         ) WITHOUT ROWID;
         CREATE INDEX idx_gm_hierarchy ON geomaterial_concepts(hierarchy_key);
+
         CREATE TABLE lithology_concepts(
-          concept_id TEXT PRIMARY KEY, term TEXT NOT NULL UNIQUE, hierarchy_key TEXT NOT NULL,
-          definition TEXT NOT NULL, indented_name TEXT NOT NULL, notes TEXT NOT NULL
+          concept_id TEXT PRIMARY KEY,
+          term TEXT NOT NULL,
+          hierarchy_key TEXT NOT NULL,
+          definition TEXT NOT NULL,
+          indented_name TEXT NOT NULL,
+          notes TEXT NOT NULL
         ) WITHOUT ROWID;
         CREATE INDEX idx_lith_term ON lithology_concepts(term COLLATE NOCASE);
         CREATE INDEX idx_lith_hierarchy ON lithology_concepts(hierarchy_key);
+
+        CREATE TABLE confidence_concepts(
+          concept_id TEXT PRIMARY KEY,
+          term TEXT NOT NULL
+        ) WITHOUT ROWID;
+
+        CREATE TABLE proportion_concepts(
+          concept_id TEXT PRIMARY KEY,
+          term TEXT NOT NULL
+        ) WITHOUT ROWID;
+
         CREATE TABLE source_geomaterial(
           source_mapunit TEXT PRIMARY KEY REFERENCES base_source_units(source_mapunit),
-          term TEXT NOT NULL REFERENCES geomaterial_concepts(term), hierarchy_key TEXT NOT NULL
+          concept_id TEXT NOT NULL REFERENCES geomaterial_concepts(concept_id),
+          term TEXT NOT NULL,
+          hierarchy_key TEXT NOT NULL
         ) WITHOUT ROWID;
+
         CREATE TABLE age_assignments(
-          source_mapunit TEXT PRIMARY KEY REFERENCES base_source_units(source_mapunit), min_concept_id TEXT, max_concept_id TEXT,
-          min_term TEXT NOT NULL, max_term TEXT NOT NULL, min_hierarchy_key TEXT NOT NULL, max_hierarchy_key TEXT NOT NULL,
-          min_confidence TEXT NOT NULL, max_confidence TEXT NOT NULL
+          assignment_id TEXT PRIMARY KEY,
+          source_mapunit TEXT NOT NULL UNIQUE REFERENCES base_source_units(source_mapunit),
+          full_db_source_unit_id TEXT NOT NULL,
+          min_concept_id TEXT REFERENCES age_concepts(concept_id),
+          max_concept_id TEXT REFERENCES age_concepts(concept_id),
+          min_term TEXT NOT NULL,
+          max_term TEXT NOT NULL,
+          min_hierarchy_key TEXT NOT NULL,
+          max_hierarchy_key TEXT NOT NULL,
+          min_confidence_id TEXT REFERENCES confidence_concepts(concept_id),
+          max_confidence_id TEXT REFERENCES confidence_concepts(concept_id),
+          min_confidence TEXT NOT NULL,
+          max_confidence TEXT NOT NULL
         ) WITHOUT ROWID;
+
         CREATE TABLE lithology_assignments(
-          source_mapunit TEXT NOT NULL REFERENCES base_source_units(source_mapunit), concept_id TEXT NOT NULL, term TEXT NOT NULL, hierarchy_key TEXT NOT NULL,
-          confidence TEXT NOT NULL, proportion TEXT NOT NULL,
-          PRIMARY KEY(source_mapunit,concept_id)
+          assignment_id TEXT PRIMARY KEY,
+          source_mapunit TEXT NOT NULL REFERENCES base_source_units(source_mapunit),
+          full_db_source_unit_id TEXT NOT NULL,
+          concept_id TEXT NOT NULL REFERENCES lithology_concepts(concept_id),
+          term TEXT NOT NULL,
+          hierarchy_key TEXT NOT NULL,
+          confidence_id TEXT REFERENCES confidence_concepts(concept_id),
+          confidence TEXT NOT NULL,
+          proportion_id TEXT REFERENCES proportion_concepts(concept_id),
+          proportion TEXT NOT NULL
         ) WITHOUT ROWID;
+        CREATE INDEX idx_lith_assign_source ON lithology_assignments(source_mapunit);
         CREATE INDEX idx_lith_assign_term ON lithology_assignments(term COLLATE NOCASE);
-        CREATE TABLE synthesis_hierarchy(
-          synthesis_id TEXT NOT NULL, mapunit TEXT NOT NULL, name TEXT NOT NULL, full_name TEXT NOT NULL,
-          age_text TEXT NOT NULL, geomaterial TEXT NOT NULL, hierarchy_key TEXT NOT NULL,
-          paragraph_style TEXT NOT NULL, synthesis_source_id TEXT NOT NULL
-        );
         """)
+
         meta={
-            "format_version":"1","authority":"USGS CNGM full relational geospatial database",
-            "full_database_doi":FULL_DATABASE_DOI,"earth_surface_doi":EARTH_SURFACE_DOI,
-            "data_report_doi":DATA_REPORT_DOI,"source_map_id":SOURCE_MAP_ID,
-            "base_source_units":str(len(wanted)),"base_polygons":str(base["polygon_count"]),
-            "base_asset_sha256":base["asset_sha256"],"production_release_approved":"false",
+            "format_version":"2",
+            "authority":"USGS CNGM full relational geospatial database",
+            "full_database_doi":FULL_DATABASE_DOI,
+            "earth_surface_doi":EARTH_SURFACE_DOI,
+            "data_report_doi":DATA_REPORT_DOI,
+            "source_map_id":SOURCE_MAP_ID,
+            "base_source_units":str(len(wanted)),
+            "base_polygons":str(base["polygon_count"]),
+            "base_asset_sha256":base["asset_sha256"],
+            "source_linkage_key":"source_mapunit",
+            "production_release_approved":"false",
         }
         con.executemany("insert into metadata(key,value) values(?,?)",sorted(meta.items()))
+
         con.executemany(
-            "insert into base_source_units values(?,?,?,?)",
-            [(u["source_mapunit"],u["source_unit_upstream_id"],u["geomaterial"],u["source_age_text"]) for u in base_units]
+            "insert into confidence_concepts values(?,?)",
+            sorted((cid,term) for cid,(term,_) in confs.items())
         )
+        con.executemany(
+            "insert into proportion_concepts values(?,?)",
+            sorted((pid,term) for pid,(term,_) in props.items())
+        )
+
+        base_rows=[]
+        for u in base_units:
+            sm=u["source_mapunit"]
+            r=full_source_by_mapunit[sm]
+            base_rows.append((
+                sm,
+                u["source_unit_upstream_id"],
+                full_source_id_for[sm],
+                pick(r,source_ix,"mapsourceid"),
+                u["geomaterial"],
+                u["source_age_text"],
+                pick(r,source_ix,"geomaterial"),
+                pick(r,source_ix,"age"),
+            ))
+        con.executemany("insert into base_source_units values(?,?,?,?,?,?,?,?)",base_rows)
+
+        def real(x):
+            try:
+                return float(x) if safe_text(x) else None
+            except (TypeError,ValueError):
+                return None
+
         for r in age_rows:
-            cid=pick(r,age_ix,"agedict_id","agedictid"); term=pick(r,age_ix,"age")
-            if not cid or not term: continue
-            def real(x):
-                try:return float(x) if safe_text(x) else None
-                except:return None
+            cid=pick(r,age_ix,"agedict_id","agedictid")
+            term=pick(r,age_ix,"age")
+            if not cid or not term:
+                continue
+            hierarchy=pick(r,age_ix,"hierarchykey","hierarchy_key")
+            if not hierarchy:
+                raise RuntimeError(f"Age concept {cid}/{term!r} has no hierarchykey")
             con.execute("insert into age_concepts values(?,?,?,?,?,?,?,?,?,?)",(
-                cid,term,pick(r,age_ix,"hierarchykey","hierarchy_key"),pick(r,age_ix,"definition"),
+                cid,term,hierarchy,pick(r,age_ix,"definition"),
                 pick(r,age_ix,"indentedname","indented_name"),pick(r,age_ix,"rank"),
                 real(pick(r,age_ix,"t_min_ma")),real(pick(r,age_ix,"t_max_ma")),
-                pick(r,age_ix,"baseage"),pick(r,age_ix,"notes")))
-        for term,r in gms.items():
-            con.execute("insert into geomaterial_concepts values(?,?,?,?,?)",(
-                term,pick(r,gm_ix,"hierarchykey","hierarchy_key"),pick(r,gm_ix,"definition"),
-                pick(r,gm_ix,"indentedname","indented_name"),pick(r,gm_ix,"notes")))
+                pick(r,age_ix,"baseage"),pick(r,age_ix,"notes")
+            ))
+
+        for term,(gid,r) in geomaterial_by_term.items():
+            hierarchy=pick(r,gm_ix,"hierarchykey","hierarchy_key")
+            if not hierarchy:
+                raise RuntimeError(f"GeoMaterial concept {gid}/{term!r} has no hierarchykey")
+            con.execute("insert into geomaterial_concepts values(?,?,?,?,?,?)",(
+                gid,term,hierarchy,pick(r,gm_ix,"definition"),
+                pick(r,gm_ix,"indentedname","indented_name"),pick(r,gm_ix,"notes")
+            ))
+
         for cid,(term,r) in liths.items():
+            if not term:
+                raise RuntimeError(f"Lithology concept {cid} has no term")
+            hierarchy=pick(r,lith_ix,"hierarchykey","hierarchy_key")
+            if not hierarchy:
+                raise RuntimeError(f"Lithology concept {cid}/{term!r} has no hierarchykey")
             con.execute("insert into lithology_concepts values(?,?,?,?,?,?)",(
-                cid,term,pick(r,lith_ix,"hierarchykey","hierarchy_key"),pick(r,lith_ix,"definition"),
-                pick(r,lith_ix,"indentedname","indented_name"),pick(r,lith_ix,"notes")))
+                cid,term,hierarchy,pick(r,lith_ix,"definition"),
+                pick(r,lith_ix,"indentedname","indented_name"),pick(r,lith_ix,"notes")
+            ))
+
         missing_gm=[]
         for u in base_units:
+            sm=u["source_mapunit"]
             term=u["geomaterial"]
-            if not term: continue
-            r=gms.get(term)
-            if r is None: missing_gm.append((u["source_mapunit"],term)); continue
-            con.execute("insert into source_geomaterial values(?,?,?)",(u["source_mapunit"],term,pick(r,gm_ix,"hierarchykey","hierarchy_key")))
+            if not term:
+                continue
+            pair=geomaterial_by_term.get(term)
+            if pair is None:
+                missing_gm.append((sm,term))
+                continue
+            gid,r=pair
+            con.execute(
+                "insert into source_geomaterial values(?,?,?,?)",
+                (sm,gid,term,pick(r,gm_ix,"hierarchykey","hierarchy_key"))
+            )
         if missing_gm:
-            raise RuntimeError("Base source GeoMaterial terms missing from authoritative geomaterialdict: "+str(missing_gm[:8]))
-        for sm,amin,amax,cmin,cmax in age_assign:
-            amin_term,amin_r=ages.get(amin,("",{})); amax_term,amax_r=ages.get(amax,("",{}))
-            con.execute("insert into age_assignments values(?,?,?,?,?,?,?,?,?)",(
-                sm,amin or None,amax or None,amin_term,amax_term,
-                pick(amin_r,age_ix,"hierarchykey","hierarchy_key") if amin_r else "",
-                pick(amax_r,age_ix,"hierarchykey","hierarchy_key") if amax_r else "",
-                confs.get(cmin,("",{}))[0],confs.get(cmax,("",{}))[0]))
-        for sm,lid,cid,pid in lith_assign:
-            term,r=liths.get(lid,("",{}))
-            if not lid or not term: continue
-            con.execute("insert into lithology_assignments values(?,?,?,?,?,?)",(
-                sm,lid,term,pick(r,lith_ix,"hierarchykey","hierarchy_key"),
-                confs.get(cid,("",{}))[0],props.get(pid,("",{}))[0]))
-        for r in synth_rows:
-            con.execute("insert into synthesis_hierarchy values(?,?,?,?,?,?,?,?,?)",(
-                pick(r,synth_ix,"descriptionofmapunits_id","descriptionofmapunitsid"),pick(r,synth_ix,"mapunit"),
-                pick(r,synth_ix,"name"),pick(r,synth_ix,"fullname","full_name"),pick(r,synth_ix,"age"),
-                pick(r,synth_ix,"geomaterial"),pick(r,synth_ix,"hierarchykey","hierarchy_key"),
-                pick(r,synth_ix,"paragraphstyle","paragraph_style"),pick(r,synth_ix,"synthesissourceid","synthesis_source_id")))
+            raise RuntimeError(
+                "Base source GeoMaterial terms missing from authoritative geomaterialdict: "
+                + str(missing_gm[:8])
+            )
+
+        for assignment_id,sm,sid,amin,amax,cmin,cmax in age_assign:
+            amin_term,amin_r=ages.get(amin,("",{}))
+            amax_term,amax_r=ages.get(amax,("",{}))
+            con.execute(
+                "insert into age_assignments values(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    assignment_id,sm,sid or full_source_id_for[sm],
+                    amin or None,amax or None,
+                    amin_term,amax_term,
+                    pick(amin_r,age_ix,"hierarchykey","hierarchy_key") if amin_r else "",
+                    pick(amax_r,age_ix,"hierarchykey","hierarchy_key") if amax_r else "",
+                    cmin or None,cmax or None,
+                    confs.get(cmin,("",{}))[0],confs.get(cmax,("",{}))[0],
+                )
+            )
+
+        for assignment_id,sm,sid,lid,cid,pid in lith_assign:
+            term,r=liths[lid]
+            con.execute(
+                "insert into lithology_assignments values(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    assignment_id,sm,sid or full_source_id_for[sm],
+                    lid,term,pick(r,lith_ix,"hierarchykey","hierarchy_key"),
+                    cid or None,confs.get(cid,("",{}))[0],
+                    pid or None,props.get(pid,("",{}))[0],
+                )
+            )
+
         con.commit()
-        if con.execute("pragma quick_check").fetchone()[0].lower()!="ok": raise RuntimeError("Authority SQLite quick_check failed")
+        if con.execute("pragma quick_check").fetchone()[0].lower()!="ok":
+            raise RuntimeError("Authority SQLite quick_check failed")
+        fk_errors=con.execute("pragma foreign_key_check").fetchall()
+        if fk_errors:
+            raise RuntimeError(f"Authority SQLite foreign-key check failed: {fk_errors[:8]}")
+
         counts={t:con.execute(f"select count(*) from {t}").fetchone()[0] for t in [
-            "base_source_units","age_concepts","geomaterial_concepts","lithology_concepts","source_geomaterial","age_assignments","lithology_assignments","synthesis_hierarchy"]}
-        age_terms={r[0].lower() for r in con.execute("select term from age_concepts")}
+            "base_source_units","age_concepts","geomaterial_concepts","lithology_concepts",
+            "confidence_concepts","proportion_concepts","source_geomaterial",
+            "age_assignments","lithology_assignments",
+        ]}
+        age_terms={safe_text(r[0]).lower() for r in con.execute("select term from age_concepts")}
         summary["authority_counts"]=counts
         summary["coverage"]={
             "base_source_units":len(wanted),
+            "full_source_units_exactly_matched":len(wanted),
             "age_assigned_source_units":con.execute("select count(*) from age_assignments").fetchone()[0],
             "geomaterial_assigned_source_units":con.execute("select count(*) from source_geomaterial").fetchone()[0],
-            "lithology_assigned_source_units":con.execute("select count(distinct source_mapunit) from lithology_assignments").fetchone()[0],
+            "lithology_assigned_source_units":con.execute(
+                "select count(distinct source_mapunit) from lithology_assignments"
+            ).fetchone()[0],
         }
-        summary["probe_terms"]={x:(x in age_terms) for x in ["precambrian","cenozoic","paleogene","neogene","proterozoic","archean","cretaceous"]}
-        summary["age_assignment_missing_source_mapunits"]=sorted(wanted-{r[0] for r in age_assign})
-        summary["lithology_assignment_missing_source_mapunits"]=sorted(wanted-{r[0] for r in lith_assign})
-    finally: con.close()
+        summary["probe_terms"]={
+            x:(x in age_terms)
+            for x in ["precambrian","cenozoic","paleogene","neogene","proterozoic","archean","cretaceous"]
+        }
+        summary["age_assignment_missing_source_mapunits"]=sorted(wanted-age_seen_source)
+        summary["lithology_assignment_missing_source_mapunits"]=sorted(
+            wanted-{r[1] for r in lith_assign}
+        )
+    finally:
+        con.close()
 
 
 def write_summary(outdir: Path, summary: Mapping[str,Any], db: Path) -> None:
-    s=dict(summary); s["authority_db"]={"file":db.name,"bytes":db.stat().st_size,"sha256":sha256_file(db)}
-    (outdir/"search-authority-summary.json").write_text(json.dumps(s,indent=2,sort_keys=True)+"\n",encoding="utf-8")
-    cov=s.get("coverage",{}); probes=s.get("probe_terms",{})
-    md=["# RockMap CNGM Colorado search-authority extraction","",
-        "**Artifact-only scientific checkpoint. Not a production release.**","",
-        f"- Full relational source DOI: {FULL_DATABASE_DOI}",f"- Earth Surface DOI: {EARTH_SURFACE_DOI}",f"- Data Report: {DATA_REPORT_DOI}",
-        f"- Reviewed source map: {SOURCE_MAP_ID}",f"- Base Colorado source units: {cov.get('base_source_units','?')}",
+    s=dict(summary)
+    s["authority_db"]={
+        "file":db.name,
+        "bytes":db.stat().st_size,
+        "sha256":sha256_file(db),
+    }
+    (outdir/"search-authority-summary.json").write_text(
+        json.dumps(s,indent=2,sort_keys=True)+"\n",
+        encoding="utf-8",
+    )
+    cov=s.get("coverage",{})
+    probes=s.get("probe_terms",{})
+    md=[
+        "# RockMap CNGM Colorado search-authority extraction",
+        "",
+        "**Artifact-only scientific checkpoint. Not a production release.**",
+        "",
+        f"- Full relational source DOI: {FULL_DATABASE_DOI}",
+        f"- Earth Surface DOI: {EARTH_SURFACE_DOI}",
+        f"- Data Report: {DATA_REPORT_DOI}",
+        f"- Reviewed source map: {SOURCE_MAP_ID}",
+        f"- Base Colorado source units: {cov.get('base_source_units','?')}",
+        f"- Full-CNGM source units exactly matched: {cov.get('full_source_units_exactly_matched','?')}",
         f"- Units with authoritative CNGM age assignments: {cov.get('age_assigned_source_units','?')}",
         f"- Units with GeMS/CNGM GeoMaterial links: {cov.get('geomaterial_assigned_source_units','?')}",
-        f"- Units with authoritative CNGM lithology assignments: {cov.get('lithology_assigned_source_units','?')}","",
-        "## Probe terms present in CNGM agedict","" ]
-    for k,v in probes.items(): md.append(f"- {k}: {'YES' if v else 'NO'}")
-    md += ["","## Scientific rules","","- No RockMap-generated age or lithology relationships are added.",
-           "- Assignments are retained only for the 185 reviewed map50 source units used by the Stage 2 Colorado Earth Surface pack.",
-           "- Original source facts remain separate from CNGM standardized assignments.",
-           "- Missing/ambiguous source relationships are reported rather than inferred.",""]
+        f"- Units with authoritative CNGM lithology assignments: {cov.get('lithology_assigned_source_units','?')}",
+        "",
+        "## Probe terms present in CNGM agedict",
+        "",
+    ]
+    for k,v in probes.items():
+        md.append(f"- {k}: {'YES' if v else 'NO'}")
+    md += [
+        "",
+        "## Scientific rules",
+        "",
+        "- No RockMap-generated age or lithology relationships are added.",
+        "- Assignments are retained only for the 185 reviewed map50 source units used by the Stage 2 Colorado Earth Surface pack.",
+        "- The full CNGM source table must contain all 185 source_mapunit keys and must agree with the reviewed source age and GeoMaterial text.",
+        "- Earth Surface exported row IDs and full-database row IDs are preserved as separate identifier namespaces.",
+        "- Original source facts remain separate from CNGM standardized assignments.",
+        "- Missing/ambiguous source relationships are reported rather than inferred.",
+        "",
+    ]
     (outdir/"summary.md").write_text("\n".join(md),encoding="utf-8")
     files=[db,outdir/"search-authority-summary.json",outdir/"summary.md"]
-    (outdir/"SHA256SUMS.txt").write_text("".join(f"{sha256_file(p)}  {p.name}\n" for p in files),encoding="utf-8")
+    (outdir/"SHA256SUMS.txt").write_text(
+        "".join(f"{sha256_file(p)}  {p.name}\n" for p in files),
+        encoding="utf-8",
+    )
+
+
+def write_table_schema_diagnostics(csvs: Mapping[str,Path], target: Path) -> None:
+    payload={}
+    for key,path in sorted(csvs.items()):
+        try:
+            with path.open("r",encoding="utf-8-sig",newline="") as f:
+                reader=csv.reader(f)
+                header=next(reader,[])
+            payload[key]={
+                "file":path.name,
+                "bytes":path.stat().st_size,
+                "columns":header,
+            }
+        except Exception as exc:
+            payload[key]={"error":f"{type(exc).__name__}: {exc}"}
+    target.write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n",encoding="utf-8")
+
+
+def write_failure_diagnostics(
+    outdir: Optional[Path],
+    *,
+    stage: str,
+    exc: BaseException,
+    summary: Optional[Mapping[str,Any]]=None,
+    csvs: Optional[Mapping[str,Path]]=None,
+) -> None:
+    if outdir is None:
+        return
+    outdir.mkdir(parents=True,exist_ok=True)
+    payload={
+        "stage":stage,
+        "error_type":type(exc).__name__,
+        "error":str(exc),
+        "production_release_approved":False,
+    }
+    if summary:
+        # Only safe scalar/list metadata; never include raw source rows or binaries.
+        for key in (
+            "full_database_doi","earth_surface_doi","data_report_doi",
+            "source_map_id","download","payload_kind","payload_file",
+            "archive_inventory_count","archive_inventory_sample",
+            "base","extracted_tables",
+        ):
+            if key in summary:
+                payload[key]=summary[key]
+    (outdir/"failure-diagnostics.json").write_text(
+        json.dumps(payload,indent=2,sort_keys=True)+"\n",
+        encoding="utf-8",
+    )
+    if csvs:
+        write_table_schema_diagnostics(csvs,outdir/"table-schema.json")
 
 
 def self_test() -> int:
     """Regression checks that run before any multi-gigabyte source download."""
-    # Catch the exact class of failure where workflow YAML is accidentally pasted
-    # over this Python file.
     own=Path(__file__).read_text(encoding="utf-8")
-    assert own.startswith("#!/usr/bin/env python3")
-    assert re.search(r"(?m)^\\s*uses:\\s+actions/upload-artifact@", own) is None
-    assert re.search(r"(?m)^name:\\s+Extract Colorado CNGM Search Authority\\s*$", own) is None
 
-    assert norm("Early Proterozoic") == "earlyproterozoic"
-    assert safe_member("x/y/file.dump") and not safe_member("../bad") and not safe_member("/abs")
+    # Regression 0: workflow YAML must never overwrite this Python file.
+    assert own.startswith("#!/usr/bin/env python3")
+    assert re.search(r"(?m)^\s*uses:\s+actions/upload-artifact@",own) is None
+    assert re.search(r"(?m)^name:\s+Extract Colorado CNGM Search Authority\s*$",own) is None
+
+    assert norm("Early Proterozoic")=="earlyproterozoic"
+    assert norm_ws("  Early   Proterozoic ")=="Early Proterozoic"
+    assert safe_member("x/y/file.dump")
+    assert not safe_member("../bad")
+    assert not safe_member("/abs")
     assert is_allowed("https://ngmdb.usgs.gov/example.zip")
     assert not is_allowed("http://ngmdb.usgs.gov/example.zip")
     assert not is_allowed("https://example.com/example.zip")
 
-    # Regression guard for the old candidate's first failure: enumerate/select
-    # structured table names, not brittle quiet-text output.
+    # Regression 1: structured PostgreSQL TOC selection. Never parse quiet
+    # human-formatted layer output and never restore unreviewed table rows.
     toc_lines=[]
     oid=1000
-    for schema,table in WANTED_PG_TABLES:
-        toc_lines.append(f"{oid}; 0 0 TABLE DATA {schema} {table} usgs")
-        oid += 1
+    for schema,table_name in WANTED_PG_TABLES:
+        toc_lines.append(f"{oid}; 0 0 TABLE DATA {schema} {table_name} usgs")
+        oid+=1
     toc_lines.append(f"{oid}; 0 0 TABLE DATA source mapunitpolys usgs")
     selected,found=select_pg_toc_entries("\n".join(toc_lines))
-    assert MANDATORY_PG_TABLES <= found
+    assert found==MANDATORY_PG_TABLES
     assert ("source","mapunitpolys") not in found
-    assert len(selected) == len(WANTED_PG_TABLES)
+    assert len(selected)==len(WANTED_PG_TABLES)
 
-    # Regression guards for the old candidate's second failure: GDB fallback
-    # uses JSON inventory and direct CSV filenames; never a pre-created CSV dir.
-    script_text=own
-    assert re.search(r'run\(\["ogrinfo","-ro","-json",str\(gdb\)\]', script_text)
-    assert re.search(r'run\(\["ogr2ogr","-overwrite","-f","CSV",str\(p\),str\(gdb\),actual', script_text)
-    assert re.search(r"(?m)^\s*tmp_dir\.mkdir\(\)", script_text) is None
+    # Regression 2: FileGDB fallback uses JSON enumeration and direct CSV
+    # filenames—the two exact issues already encountered by the earlier CNGM
+    # candidate workflow.
+    assert re.search(r'run\(\["ogrinfo","-ro","-json",str\(gdb\)\]',own)
+    assert re.search(r'run\(\["ogr2ogr","-overwrite","-f","CSV",str\(p\),str\(gdb\),actual',own)
+    assert re.search(r"(?m)^\s*tmp_dir\.mkdir\(\)",own) is None
 
-    # Build a complete synthetic authority pack using the documented CNGM
-    # field names. This validates schema expectations, source_mapunit joining,
-    # foreign-key handling, Colorado-scope filtering, and SQLite construction
-    # before a real source download.
+    # Regression 3: PostgreSQL path probes PostGIS before pg_restore.
+    assert "validate_postgres_target(dsn)" in own
+    assert "SELECT postgis_version();" in own
+
+    # Build a complete synthetic authority pack with the exact field names
+    # documented by USGS Data Report 1210.
     with tempfile.TemporaryDirectory(prefix="cngm-authority-selftest-") as td:
         root=Path(td)
+
         def write_csv_file(name: str, fields: Sequence[str], rows: Sequence[Mapping[str,Any]]) -> Path:
             p=root/name
             with p.open("w",encoding="utf-8",newline="") as f:
@@ -661,79 +1071,138 @@ def self_test() -> int:
                     w.writerow({k:safe_text(row.get(k)) for k in fields})
             return p
 
-        csvs={}
-        csvs["vocabularies.agedict"]=write_csv_file(
-            "agedict.csv",
-            ["agedict_id","age","hierarchykey","definition","indentedname","rank","t_min_ma","t_max_ma","baseage","notes"],
-            [
-                {"agedict_id":"1","age":"Precambrian","hierarchykey":"01","definition":"synthetic test parent"},
-                {"agedict_id":"2","age":"Proterozoic","hierarchykey":"01.01","definition":"synthetic test child"},
-                {"agedict_id":"3","age":"Cretaceous","hierarchykey":"02","definition":"synthetic test age"},
-            ],
-        )
-        csvs["vocabularies.geomaterialdict"]=write_csv_file(
-            "geomaterial.csv",
-            ["geomaterial","hierarchykey","definition","indentedname","notes"],
-            [{"geomaterial":"Igneous rock","hierarchykey":"01","definition":"synthetic test geomaterial"}],
-        )
-        csvs["vocabularies.lithologydict"]=write_csv_file(
-            "lithology.csv",
-            ["lithologydict_id","lithology","hierarchykey","definition","indentedname","notes"],
-            [{"lithologydict_id":"10","lithology":"granite","hierarchykey":"01.01","definition":"synthetic test lithology"}],
-        )
-        csvs["vocabularies.confidencedict"]=write_csv_file(
-            "confidence.csv",
-            ["confidencedict_id","confidence","hierarchykey","definition","indentedname"],
-            [{"confidencedict_id":"20","confidence":"certain","hierarchykey":"01","definition":"synthetic test confidence"}],
-        )
-        csvs["vocabularies.proportiondict"]=write_csv_file(
-            "proportion.csv",
-            ["proportiondict_id","proportion","hierarchykey","definition","indentedname"],
-            [{"proportiondict_id":"30","proportion":"major","hierarchykey":"01","definition":"synthetic test proportion"}],
-        )
-
         base_units=[
             {
-                "source_unit_upstream_id":str(i+1),
+                "source_unit_upstream_id":f"earth-surface-{i+1}",
                 "source_mapunit":f"50|TEST{i:03d}",
                 "geomaterial":"Igneous rock",
                 "source_age_text":"Early Proterozoic",
             }
             for i in range(EXPECTED_BASE_SOURCE_UNITS)
         ]
-        age_rows=[
+
+        source_rows=[
             {
+                "source_descriptionofmapunits_id":str(5000+i),
                 "source_mapunit":u["source_mapunit"],
-                "agedictid_min":"2","agedictid_max":"2",
-                "confidencedictid_min":"20","confidencedictid_max":"20",
+                "mapsourceid":"50",
+                "age":"Early Proterozoic",
+                "geomaterial":"Igneous rock",
             }
-            for u in base_units
+            for i,u in enumerate(base_units)
         ]
-        # Must be filtered out because it is not one of the reviewed map50 units.
+        source_rows.append({
+            "source_descriptionofmapunits_id":"9999",
+            "source_mapunit":"31|OUTSIDE",
+            "mapsourceid":"31",
+            "age":"Cretaceous",
+            "geomaterial":"Igneous rock",
+        })
+
+        csvs={}
+        csvs["source.source_descriptionofmapunits"]=write_csv_file(
+            "source_dmu.csv",
+            ["source_descriptionofmapunits_id","source_mapunit","mapsourceid","age","geomaterial"],
+            source_rows,
+        )
+        csvs["vocabularies.agedict"]=write_csv_file(
+            "agedict.csv",
+            ["agedict_id","age","hierarchykey","definition","indentedname","rank","t_min_ma","t_max_ma","baseage","notes"],
+            [
+                {"agedict_id":"1","age":"Precambrian","hierarchykey":"01","definition":"synthetic parent"},
+                {"agedict_id":"2","age":"Proterozoic","hierarchykey":"01.01","definition":"synthetic child"},
+                {"agedict_id":"3","age":"Cretaceous","hierarchykey":"02","definition":"synthetic age"},
+            ],
+        )
+        csvs["vocabularies.geomaterialdict"]=write_csv_file(
+            "geomaterial.csv",
+            ["geomaterialdict_id","geomaterial","hierarchykey","definition","indentedname","notes"],
+            [{"geomaterialdict_id":"40","geomaterial":"Igneous rock","hierarchykey":"01","definition":"synthetic material"}],
+        )
+        csvs["vocabularies.lithologydict"]=write_csv_file(
+            "lithology.csv",
+            ["lithologydict_id","lithology","hierarchykey","definition","indentedname","notes"],
+            [{"lithologydict_id":"10","lithology":"granite","hierarchykey":"01.01","definition":"synthetic lithology"}],
+        )
+        csvs["vocabularies.confidencedict"]=write_csv_file(
+            "confidence.csv",
+            ["confidencedict_id","confidence","hierarchykey","definition","indentedname"],
+            [{"confidencedict_id":"20","confidence":"certain","hierarchykey":"01","definition":"synthetic confidence"}],
+        )
+        csvs["vocabularies.proportiondict"]=write_csv_file(
+            "proportion.csv",
+            ["proportiondict_id","proportion","hierarchykey","definition","indentedname"],
+            [{"proportiondict_id":"30","proportion":"major","hierarchykey":"01","definition":"synthetic proportion"}],
+        )
+
+        age_rows=[]
+        lith_rows=[]
+        for i,u in enumerate(base_units):
+            sid=str(5000+i)
+            age_rows.append({
+                "age_id":f"A{i}",
+                "source_descriptionofmapunitsid":sid,
+                "source_mapunit":u["source_mapunit"],
+                "agedictid_min":"2",
+                "agedictid_max":"2",
+                "confidencedictid_min":"20",
+                "confidencedictid_max":"20",
+            })
+            lith_rows.append({
+                "lithology_id":f"L{i}",
+                "source_descriptionofmapunitsid":sid,
+                "source_mapunit":u["source_mapunit"],
+                "lithologydictid":"10",
+                "confidencedictid":"20",
+                "proportiondictid":"30",
+            })
+
+        # An unrelated map must never leak into the Colorado authority pack.
         age_rows.append({
+            "age_id":"A-OUTSIDE",
+            "source_descriptionofmapunitsid":"9999",
             "source_mapunit":"31|OUTSIDE",
-            "agedictid_min":"3","agedictid_max":"3",
-            "confidencedictid_min":"20","confidencedictid_max":"20",
+            "agedictid_min":"3",
+            "agedictid_max":"3",
+            "confidencedictid_min":"20",
+            "confidencedictid_max":"20",
         })
-        lith_rows=[
-            {
-                "source_mapunit":u["source_mapunit"],
-                "lithologydictid":"10","confidencedictid":"20","proportiondictid":"30",
-            }
-            for u in base_units
-        ]
         lith_rows.append({
+            "lithology_id":"L-OUTSIDE",
+            "source_descriptionofmapunitsid":"9999",
             "source_mapunit":"31|OUTSIDE",
-            "lithologydictid":"10","confidencedictid":"20","proportiondictid":"30",
+            "lithologydictid":"10",
+            "confidencedictid":"20",
+            "proportiondictid":"30",
         })
+
+        # Preserve assignment row identity instead of assuming one row per
+        # (source_mapunit,lithology concept). The published relationship is
+        # many-to-one from lithology assignments to source units.
+        lith_rows.append({
+            "lithology_id":"L-DUP-CONCEPT",
+            "source_descriptionofmapunitsid":"5000",
+            "source_mapunit":"50|TEST000",
+            "lithologydictid":"10",
+            "confidencedictid":"20",
+            "proportiondictid":"30",
+        })
+
         csvs["assignments.age"]=write_csv_file(
             "age_assign.csv",
-            ["source_mapunit","agedictid_min","agedictid_max","confidencedictid_min","confidencedictid_max"],
+            [
+                "age_id","source_descriptionofmapunitsid","source_mapunit",
+                "agedictid_min","agedictid_max",
+                "confidencedictid_min","confidencedictid_max",
+            ],
             age_rows,
         )
         csvs["assignments.lithology"]=write_csv_file(
             "lith_assign.csv",
-            ["source_mapunit","lithologydictid","confidencedictid","proportiondictid"],
+            [
+                "lithology_id","source_descriptionofmapunitsid","source_mapunit",
+                "lithologydictid","confidencedictid","proportiondictid",
+            ],
             lith_rows,
         )
 
@@ -741,20 +1210,64 @@ def self_test() -> int:
         outdb=root/"authority.db"
         build_authority(
             csvs,
-            {"units":base_units,"polygon_count":EXPECTED_BASE_POLYGONS,"asset_sha256":"synthetic"},
+            {
+                "units":base_units,
+                "polygon_count":EXPECTED_BASE_POLYGONS,
+                "asset_sha256":"synthetic",
+            },
             outdb,
             summary,
         )
+
         con=sqlite3.connect(f"file:{outdb}?mode=ro",uri=True)
         try:
             assert con.execute("pragma quick_check").fetchone()[0].lower()=="ok"
-            assert con.execute("select count(*) from base_source_units").fetchone()[0] == EXPECTED_BASE_SOURCE_UNITS
-            assert con.execute("select count(*) from age_assignments").fetchone()[0] == EXPECTED_BASE_SOURCE_UNITS
-            assert con.execute("select count(distinct source_mapunit) from lithology_assignments").fetchone()[0] == EXPECTED_BASE_SOURCE_UNITS
-            assert con.execute("select count(*) from age_assignments where source_mapunit='31|OUTSIDE'").fetchone()[0] == 0
-            assert con.execute("select count(*) from lithology_assignments where source_mapunit='31|OUTSIDE'").fetchone()[0] == 0
+            assert con.execute("pragma foreign_key_check").fetchall()==[]
+            assert con.execute("select count(*) from base_source_units").fetchone()[0]==EXPECTED_BASE_SOURCE_UNITS
+            assert con.execute("select count(*) from age_assignments").fetchone()[0]==EXPECTED_BASE_SOURCE_UNITS
+            assert con.execute("select count(distinct source_mapunit) from lithology_assignments").fetchone()[0]==EXPECTED_BASE_SOURCE_UNITS
+            assert con.execute("select count(*) from lithology_assignments").fetchone()[0]==EXPECTED_BASE_SOURCE_UNITS+1
+            assert con.execute("select count(*) from age_assignments where source_mapunit='31|OUTSIDE'").fetchone()[0]==0
+            assert con.execute("select count(*) from lithology_assignments where source_mapunit='31|OUTSIDE'").fetchone()[0]==0
+            ids=con.execute(
+                "select earth_surface_source_unit_id,full_db_source_unit_id from base_source_units where source_mapunit='50|TEST000'"
+            ).fetchone()
+            assert ids==("earth-surface-1","5000")
         finally:
             con.close()
+
+        assert summary["coverage"]["full_source_units_exactly_matched"]==EXPECTED_BASE_SOURCE_UNITS
+
+        # Foreign-key disagreement must fail closed rather than silently choose
+        # one identifier namespace.
+        bad_age=list(age_rows)
+        bad_age[0]=dict(bad_age[0])
+        bad_age[0]["source_descriptionofmapunitsid"]="5001"
+        bad_csvs=dict(csvs)
+        bad_csvs["assignments.age"]=write_csv_file(
+            "bad_age_assign.csv",
+            [
+                "age_id","source_descriptionofmapunitsid","source_mapunit",
+                "agedictid_min","agedictid_max",
+                "confidencedictid_min","confidencedictid_max",
+            ],
+            bad_age,
+        )
+        try:
+            build_authority(
+                bad_csvs,
+                {
+                    "units":base_units,
+                    "polygon_count":EXPECTED_BASE_POLYGONS,
+                    "asset_sha256":"synthetic",
+                },
+                root/"bad.db",
+                {},
+            )
+        except RuntimeError as exc:
+            assert "foreign keys disagree" in str(exc)
+        else:
+            raise AssertionError("Conflicting assignment foreign keys were not rejected")
 
     print("self-test: OK")
     return 0
@@ -767,35 +1280,107 @@ def main() -> int:
     ap.add_argument("--pg-dsn",default=os.environ.get("CNGM_PG_DSN",""))
     ap.add_argument("--self-test",action="store_true")
     args=ap.parse_args()
-    if args.self_test: return self_test()
-    outdir=Path(args.output_dir).resolve(); shutil.rmtree(outdir,ignore_errors=True); outdir.mkdir(parents=True)
-    work=outdir/"_work"; work.mkdir()
-    base=read_base_pack()
-    url=args.source_url.strip() or resolve_full_database_url()
-    archive=work/"cngm-full-download"
-    dl=download(url,archive)
-    kind,payload,inventory=identify_payload(archive,work)
-    summary={"production_release_approved":False,"full_database_doi":FULL_DATABASE_DOI,"earth_surface_doi":EARTH_SURFACE_DOI,
-             "data_report_doi":DATA_REPORT_DOI,"source_map_id":SOURCE_MAP_ID,"download":dl,"payload_kind":kind,
-             "payload_file":payload.name,"archive_inventory_count":len(inventory),"archive_inventory_sample":inventory[:100],
-             "base":{"source_units":len(base["units"]),"polygons":base["polygon_count"],"asset_sha256":base["asset_sha256"]}}
-    tables_dir=work/"tables"; tables_dir.mkdir()
-    if kind=="pg_dump":
-        if not args.pg_dsn: raise RuntimeError("PostgreSQL dump detected but --pg-dsn/CNGM_PG_DSN was not provided")
-        csvs=restore_pg_selected(payload,args.pg_dsn,tables_dir)
-    elif kind=="sqlite": csvs=export_sqlite_tables(payload,tables_dir)
-    elif kind=="gdb": csvs=export_gdb_tables(payload,tables_dir)
-    elif kind=="sql":
-        raise RuntimeError("Plain SQL full-database payload detected. Refusing to load the entire national database without a reviewed selective restore path.")
-    else: raise RuntimeError(f"Unsupported payload kind: {kind}")
-    summary["extracted_tables"]=sorted(csvs)
-    db=outdir/"cngm-colorado-search-authority-v1.db"
-    build_authority(csvs,base,db,summary)
-    write_summary(outdir,summary,db)
-    # Remove multi-GB source/payload before artifact upload.
-    shutil.rmtree(work,ignore_errors=True)
-    print((outdir/"summary.md").read_text("utf-8"))
-    return 0
+    if args.self_test:
+        return self_test()
+
+    outdir=Path(args.output_dir).resolve()
+    summary: Dict[str,Any]={}
+    csvs: Dict[str,Path]={}
+    stage="initialize"
+
+    try:
+        shutil.rmtree(outdir,ignore_errors=True)
+        outdir.mkdir(parents=True)
+        work=outdir/"_work"
+        work.mkdir()
+
+        stage="read reviewed Stage 2 Colorado checkpoint"
+        base=read_base_pack()
+
+        stage="resolve official full CNGM download"
+        url=args.source_url.strip() or resolve_full_database_url()
+
+        stage="download official full CNGM source"
+        archive=work/"cngm-full-download"
+        dl=download(url,archive)
+
+        stage="identify official CNGM payload"
+        kind,payload,inventory=identify_payload(archive,work)
+
+        summary={
+            "production_release_approved":False,
+            "full_database_doi":FULL_DATABASE_DOI,
+            "earth_surface_doi":EARTH_SURFACE_DOI,
+            "data_report_doi":DATA_REPORT_DOI,
+            "source_map_id":SOURCE_MAP_ID,
+            "download":dl,
+            "payload_kind":kind,
+            "payload_file":payload.name,
+            "archive_inventory_count":len(inventory),
+            "archive_inventory_sample":inventory[:100],
+            "base":{
+                "source_units":len(base["units"]),
+                "polygons":base["polygon_count"],
+                "asset_sha256":base["asset_sha256"],
+            },
+        }
+
+        tables_dir=work/"tables"
+        tables_dir.mkdir()
+
+        stage=f"extract reviewed authority tables from {kind}"
+        if kind=="pg_dump":
+            if not args.pg_dsn:
+                raise RuntimeError(
+                    "PostgreSQL dump detected but --pg-dsn/CNGM_PG_DSN was not provided"
+                )
+            csvs=restore_pg_selected(payload,args.pg_dsn,tables_dir)
+        elif kind=="sqlite":
+            csvs=export_sqlite_tables(payload,tables_dir)
+        elif kind=="gdb":
+            csvs=export_gdb_tables(payload,tables_dir)
+        elif kind=="sql":
+            raise RuntimeError(
+                "Plain SQL full-database payload detected. Refusing to load the "
+                "entire national database without a reviewed selective restore path."
+            )
+        else:
+            raise RuntimeError(f"Unsupported payload kind: {kind}")
+
+        summary["extracted_tables"]=sorted(csvs)
+        write_table_schema_diagnostics(csvs,outdir/"table-schema.json")
+
+        missing=sorted(MANDATORY_PG_TABLES-{tuple(k.split(".",1)) for k in csvs})
+        if missing:
+            raise RuntimeError(
+                "Official full CNGM payload did not expose all required authority tables: "
+                + ", ".join(f"{s}.{t}" for s,t in missing)
+            )
+
+        stage="build Colorado authority SQLite"
+        db=outdir/"cngm-colorado-search-authority-v2.db"
+        build_authority(csvs,base,db,summary)
+
+        stage="write and verify authority summary"
+        write_summary(outdir,summary,db)
+
+        # Keep the small table-schema diagnostic in the successful artifact, but
+        # remove the multi-gigabyte raw source/payload before upload.
+        shutil.rmtree(work,ignore_errors=True)
+        print((outdir/"summary.md").read_text("utf-8"))
+        return 0
+
+    except Exception as exc:
+        write_failure_diagnostics(
+            outdir,
+            stage=stage,
+            exc=exc,
+            summary=summary,
+            csvs=csvs,
+        )
+        print(f"FAILED_STAGE: {stage}",file=sys.stderr)
+        raise
+
 
 if __name__=="__main__":
     try: raise SystemExit(main())
