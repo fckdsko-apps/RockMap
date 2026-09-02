@@ -22,9 +22,11 @@ DATA_MANAGER = ROOT / "app/src/main/java/com/rockmap/app/research/GeologyDataMan
 REPOSITORY = ROOT / "app/src/main/java/com/rockmap/app/research/GeologyRepository.java"
 UNIT = ROOT / "app/src/main/java/com/rockmap/app/research/GeologyUnit.java"
 RESEARCH = ROOT / "app/src/main/java/com/rockmap/app/research/ResearchActivity.java"
+MAIN = ROOT / "app/src/main/java/com/rockmap/app/MainActivity.java"
 UPDATE_WORKER = ROOT / "app/src/main/java/com/rockmap/app/research/GeologyDataUpdateWorker.java"
 BOOTSTRAP = ROOT / "app/src/main/java/com/rockmap/app/research/CngmStage2DebugBootstrap.java"
 SEARCH_HELPER = ROOT / "app/src/main/java/com/rockmap/app/research/CngmAuthoritativeSearch.java"
+SEARCH_UI = ROOT / "app/src/main/java/com/rockmap/app/research/CngmSearchUi.java"
 
 EXPECTED_SOURCE_DOI = "10.5066/P146VGVM"
 EXPECTED_SOURCE_MAP = "map50"
@@ -337,6 +339,34 @@ def load_and_validate_asset() -> Dict[str, object]:
                         f"CNGM Stage 2B lithology-search regression for {term}: "
                         f"{actual} != {expected}"
                     )
+
+            # Search-UI semantics: mapped-unit lookup stays distinct from broad mapped text.
+            morrison_like = "%morrison%"
+            morrison_unit_count = con.execute(
+                """
+                SELECT COUNT(*) FROM units
+                WHERE unit_name LIKE ? OR orig_label LIKE ? OR sgmc_label LIKE ? OR unit_link LIKE ?
+                """,
+                (morrison_like, morrison_like, morrison_like, morrison_like),
+            ).fetchone()[0]
+            if morrison_unit_count != 495:
+                raise RuntimeError(
+                    f"CNGM Stage 2B mapped-unit UI regression for Morrison: "
+                    f"{morrison_unit_count} != 495"
+                )
+
+            granite_authority = literal_units("lithology_text", "granite")
+            granite_authority |= hierarchy_units(
+                "geomaterial_concepts", "source_geomaterial", "granite"
+            )
+            granite_authority |= hierarchy_units(
+                "lithology_concepts", "lithology_assignments", "granite"
+            )
+            granite_general = literal_units("search_text", "granite") | granite_authority
+            if polygon_count(granite_authority) != 247 or polygon_count(granite_general) != 873:
+                raise RuntimeError(
+                    "CNGM Stage 2B UI regression: Granite rock-type and mapped-text scopes collapsed."
+                )
 
             # Boundary-only contacts are not positive interval overlap.
             cambrian = con.execute(
@@ -703,6 +733,1389 @@ def write_search_helper() -> None:
     print("CNGM Stage 2B authoritative search helper: generated")
 
 
+
+def write_search_ui() -> None:
+    source = r'''package com.rockmap.app.research;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.app.Dialog;
+import android.content.Context;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.ArrayAdapter;
+import android.widget.AutoCompleteTextView;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
+import android.widget.TextView;
+
+import com.rockmap.app.GuidedTourCoach;
+import com.rockmap.app.GuidedTourState;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.WeakHashMap;
+
+/** Stage 2B debug UI for understandable, explicit geology search semantics. */
+public final class CngmSearchUi {
+    interface Callback {
+        void onSearch(GeologyRepository.Filter filter, GeologyRepository.Bounds bounds,
+                      String resultTitle, String resultSummary);
+        void onBack();
+    }
+
+    private enum Kind { ROCK_TYPE, AGE, UNIT, MAPPED_TEXT }
+    private static final WeakHashMap<Activity, SavedState> SAVED_STATES = new WeakHashMap<>();
+
+    private static final class SavedState {
+        final String quickText;
+        final Option selectedQuick;
+        final String unit;
+        final String lithology;
+        final String age;
+        final boolean refineOpen;
+        final boolean visibleArea;
+
+        SavedState(String quickText, Option selectedQuick, String unit, String lithology,
+                   String age, boolean refineOpen, boolean visibleArea) {
+            this.quickText = clean(quickText);
+            this.selectedQuick = selectedQuick;
+            this.unit = clean(unit);
+            this.lithology = clean(lithology);
+            this.age = clean(age);
+            this.refineOpen = refineOpen;
+            this.visibleArea = visibleArea;
+        }
+    }
+
+    private static final class Option {
+        final String label;
+        final String subtitle;
+        final Kind kind;
+        final String query;
+
+        Option(String label, String subtitle, Kind kind, String query) {
+            this.label = clean(label);
+            this.subtitle = clean(subtitle);
+            this.kind = kind;
+            this.query = clean(query);
+        }
+    }
+
+    private static final class SearchPlan {
+        final GeologyRepository.Filter filter;
+        final GeologyRepository.Bounds bounds;
+        final String title;
+        final String summary;
+
+        SearchPlan(GeologyRepository.Filter filter, GeologyRepository.Bounds bounds,
+                   String title, String summary) {
+            this.filter = filter;
+            this.bounds = bounds;
+            this.title = title;
+            this.summary = summary;
+        }
+    }
+
+    private CngmSearchUi() {}
+
+
+    /** Lightweight, user-initiated external learning links for tapped geology polygons. */
+    public static void showLearningSearches(Activity activity, String unit, String age, String lithology) {
+        if (activity == null) return;
+        final ArrayList<String> labels = new ArrayList<>();
+        final ArrayList<String> subtitles = new ArrayList<>();
+        final ArrayList<String> queries = new ArrayList<>();
+        if (meaningfulTerm(unit, "Mapped geologic unit")) {
+            labels.add(clean(unit));
+            subtitles.add("About this mapped unit");
+            queries.add(quotedSearchTerm(unit) + " geology");
+        }
+        if (meaningfulTerm(age, "Not reported")) {
+            labels.add(clean(age));
+            subtitles.add("About this geologic age");
+            queries.add(quotedSearchTerm(age) + " geologic age explained");
+        }
+        if (meaningfulTerm(lithology, "Not reported")) {
+            labels.add(clean(lithology));
+            subtitles.add("About this rock type");
+            queries.add(quotedSearchTerm(lithology) + " geology explained");
+        }
+        String prospectingTerm = meaningfulTerm(unit, "Mapped geologic unit") ? clean(unit)
+                : meaningfulTerm(lithology, "Not reported") ? clean(lithology) : "";
+        if (!prospectingTerm.isEmpty()) {
+            labels.add(prospectingTerm);
+            subtitles.add("Explore rockhounding & prospecting context");
+            queries.add(quotedSearchTerm(prospectingTerm) + " rockhounding prospecting minerals");
+        }
+        if (queries.isEmpty()) {
+            new AlertDialog.Builder(activity)
+                    .setTitle("Learn online")
+                    .setMessage("This mapped polygon does not expose a geology term that can be searched safely.")
+                    .setPositiveButton("Close", null)
+                    .show();
+            return;
+        }
+
+        Dialog dialog = new Dialog(activity);
+        LinearLayout shell = new LinearLayout(activity);
+        shell.setOrientation(LinearLayout.VERTICAL);
+        shell.setPadding(dp(activity, 18), dp(activity, 12), dp(activity, 18), dp(activity, 10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.WHITE);
+        bg.setCornerRadii(new float[]{dp(activity, 18), dp(activity, 18), dp(activity, 18), dp(activity, 18), 0, 0, 0, 0});
+        shell.setBackground(bg);
+
+        TextView title = standaloneText(activity, "Search Google", 20f, 0xff202020, true);
+        title.setPadding(0, 0, 0, dp(activity, 4));
+        shell.addView(title);
+        TextView intro = standaloneText(activity,
+                "Choose what you want to learn about. Google results are external information and may not apply to this mapped location.",
+                13f, 0xff555555, false);
+        intro.setTextIsSelectable(true);
+        intro.setPadding(0, 0, 0, dp(activity, 8));
+        shell.addView(intro);
+
+        ScrollView scroller = new ScrollView(activity);
+        LinearLayout rows = new LinearLayout(activity);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        boolean prospectingHeadingAdded = false;
+        for (int i = 0; i < queries.size(); i++) {
+            final int index = i;
+            boolean prospecting = "Explore rockhounding & prospecting context".equals(subtitles.get(i));
+            if (prospecting && !prospectingHeadingAdded) {
+                TextView heading = standaloneText(activity, "ROCKHOUNDING & PROSPECTING", 12f, 0xff666666, true);
+                heading.setPadding(0, dp(activity, 14), 0, dp(activity, 4));
+                rows.addView(heading);
+                prospectingHeadingAdded = true;
+            }
+            LinearLayout row = new LinearLayout(activity);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(activity, 12), dp(activity, 9), dp(activity, 12), dp(activity, 9));
+            row.setMinimumHeight(dp(activity, 58));
+            row.setClickable(true);
+            row.setFocusable(true);
+            applyStandaloneSelectable(activity, row);
+            TextView primary = standaloneText(activity, labels.get(i), 15.5f, 0xff202020, true);
+            TextView secondary = standaloneText(activity, subtitles.get(i) + "   ↗", 13f, 0xff205b93, false);
+            secondary.setPadding(0, dp(activity, 2), 0, 0);
+            row.addView(primary);
+            row.addView(secondary);
+            row.setContentDescription(labels.get(i) + ". " + subtitles.get(i) + ". Opens Google in your browser.");
+            row.setOnClickListener(v -> {
+                dialog.dismiss();
+                openGoogleSearch(activity, queries.get(index));
+            });
+            rows.addView(row);
+        }
+        scroller.addView(rows);
+        shell.addView(scroller, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Button close = new Button(activity);
+        close.setText("Close");
+        close.setAllCaps(false);
+        close.setMinHeight(dp(activity, 52));
+        close.setOnClickListener(v -> dialog.dismiss());
+        shell.addView(close, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        dialog.setContentView(shell);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            window.setDimAmount(0.32f);
+            window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            window.setGravity(Gravity.BOTTOM);
+        }
+        dialog.show();
+        if (window != null) {
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private static void openGoogleSearch(Activity activity, String query) {
+        try {
+            android.net.Uri uri = android.net.Uri.parse(
+                    "https://www.google.com/search?q=" + android.net.Uri.encode(clean(query)));
+            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, uri);
+            activity.startActivity(intent);
+        } catch (RuntimeException ex) {
+            new AlertDialog.Builder(activity)
+                    .setTitle("Could not open browser")
+                    .setMessage("Android could not open the external Google search.")
+                    .setPositiveButton("Close", null)
+                    .show();
+        }
+    }
+
+    private static boolean meaningfulTerm(String value, String fallback) {
+        String clean = clean(value);
+        return !clean.isEmpty() && !clean.equalsIgnoreCase(fallback)
+                && !clean.equalsIgnoreCase("Lithology not reported");
+    }
+
+    private static String quotedSearchTerm(String value) {
+        return "\"" + clean(value).replace("\"", "") + "\"";
+    }
+
+    private static TextView standaloneText(Activity activity, String value, float sp, int color, boolean bold) {
+        TextView view = new TextView(activity);
+        view.setText(value);
+        view.setTextSize(sp);
+        view.setTextColor(color);
+        if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
+        return view;
+    }
+
+    private static void applyStandaloneSelectable(Activity activity, View view) {
+        android.util.TypedValue selectable = new android.util.TypedValue();
+        if (activity.getTheme().resolveAttribute(android.R.attr.selectableItemBackground,
+                selectable, true) && selectable.resourceId != 0) {
+            view.setBackgroundResource(selectable.resourceId);
+        }
+    }
+
+    private static int dp(Activity activity, int value) {
+        return Math.round(value * activity.getResources().getDisplayMetrics().density);
+    }
+
+    static void show(Activity activity, GeologyRepository geology,
+                     GeologyRepository.Bounds visibleBounds, Callback callback) {
+        if (activity == null || geology == null || callback == null) return;
+        new Screen(activity, geology, visibleBounds, callback).show();
+    }
+
+    private static final class Screen {
+        private final Activity activity;
+        private final GeologyRepository geology;
+        private final GeologyRepository.Bounds visibleBounds;
+        private final Callback callback;
+
+        private EditText quick;
+        private Button clearQuick;
+        private LinearLayout suggestions;
+        private LinearLayout interpretationRow;
+        private TextView interpretationText;
+        private Button changeInterpretation;
+        private Button refineToggle;
+        private LinearLayout refineBox;
+        private AutoCompleteTextView unitField;
+        private AutoCompleteTextView lithologyField;
+        private AutoCompleteTextView ageField;
+        private RadioButton allColorado;
+        private RadioButton visibleArea;
+        private Button searchButton;
+        private Button termsButton;
+        private Option selectedQuick;
+        private boolean suppressQuickWatcher;
+        private int tourStep;
+        private View graniteExampleTarget;
+
+        Screen(Activity activity, GeologyRepository geology,
+               GeologyRepository.Bounds visibleBounds, Callback callback) {
+            this.activity = activity;
+            this.geology = geology;
+            this.visibleBounds = visibleBounds;
+            this.callback = callback;
+        }
+
+        void show() {
+            GuidedTourCoach.clear(activity);
+            ScrollView scroll = new ScrollView(activity);
+            scroll.setFillViewport(true);
+            LinearLayout root = new LinearLayout(activity);
+            root.setOrientation(LinearLayout.VERTICAL);
+            root.setPadding(dp(16), dp(10), dp(16), dp(28));
+            root.setBackgroundColor(0xfffafafa);
+            scroll.addView(root, new ScrollView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+                return insets;
+            });
+
+            LinearLayout topBar = new LinearLayout(activity);
+            topBar.setOrientation(LinearLayout.HORIZONTAL);
+            topBar.setGravity(Gravity.CENTER_VERTICAL);
+            Button back = textButton("‹ Research");
+            back.setContentDescription("Back to Research");
+            back.setOnClickListener(v -> leave());
+            topBar.addView(back, new LinearLayout.LayoutParams(0, dp(48), 1f));
+            Button help = textButton("?");
+            help.setTextSize(20f);
+            help.setTypeface(Typeface.DEFAULT_BOLD);
+            help.setGravity(Gravity.CENTER);
+            help.setContentDescription("Search Geology help and guided tour");
+            help.setOnClickListener(v -> showHelp());
+            topBar.addView(help, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            root.addView(topBar);
+
+            TextView title = text("Search Geology", 24f, 0xff202020, true);
+            title.setPadding(0, dp(4), 0, dp(6));
+            root.addView(title);
+            TextView intro = helper("Search Colorado's mapped geology by rock type, geologic age, or mapped unit.");
+            intro.setPadding(0, 0, 0, dp(18));
+            root.addView(intro);
+
+            root.addView(fieldLabel("Search geology"));
+            quick = new EditText(activity);
+            quick.setSingleLine(true);
+            quick.setTextSize(16f);
+            quick.setHint("Granite, Cretaceous, Morrison...");
+            quick.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+            quick.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_menu_search, 0, 0, 0);
+            quick.setCompoundDrawablePadding(dp(8));
+            quick.setPadding(dp(12), dp(8), dp(8), dp(8));
+            quick.setMinHeight(dp(56));
+            LinearLayout quickRow = new LinearLayout(activity);
+            quickRow.setOrientation(LinearLayout.HORIZONTAL);
+            quickRow.setGravity(Gravity.CENTER_VERTICAL);
+            quickRow.addView(quick, new LinearLayout.LayoutParams(0, dp(56), 1f));
+            clearQuick = textButton("×");
+            clearQuick.setGravity(Gravity.CENTER);
+            clearQuick.setContentDescription("Clear geology search");
+            clearQuick.setVisibility(View.GONE);
+            clearQuick.setOnClickListener(v -> {
+                quick.setText("");
+                quick.requestFocus();
+                showKeyboard(quick);
+            });
+            quickRow.addView(clearQuick, new LinearLayout.LayoutParams(dp(48), dp(56)));
+            root.addView(quickRow, matchWrap());
+
+            suggestions = new LinearLayout(activity);
+            suggestions.setOrientation(LinearLayout.VERTICAL);
+            suggestions.setVisibility(View.GONE);
+            root.addView(suggestions, matchWrap());
+
+            interpretationRow = new LinearLayout(activity);
+            interpretationRow.setOrientation(LinearLayout.HORIZONTAL);
+            interpretationRow.setGravity(Gravity.CENTER_VERTICAL);
+            interpretationRow.setPadding(0, dp(6), 0, dp(6));
+            interpretationRow.setVisibility(View.GONE);
+            interpretationText = helper("");
+            interpretationText.setPadding(0, 0, dp(6), 0);
+            interpretationText.setTextIsSelectable(true);
+            interpretationRow.addView(interpretationText,
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            changeInterpretation = textButton("Change");
+            changeInterpretation.setTextSize(13f);
+            changeInterpretation.setOnClickListener(v -> changeInterpretation());
+            interpretationRow.addView(changeInterpretation,
+                    new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+            root.addView(interpretationRow, matchWrap());
+
+            refineToggle = disclosureButton("Refine search", false);
+            refineToggle.setOnClickListener(v -> toggleRefine());
+            root.addView(refineToggle, matchWrap());
+
+            refineBox = new LinearLayout(activity);
+            refineBox.setOrientation(LinearLayout.VERTICAL);
+            refineBox.setVisibility(View.GONE);
+            refineBox.setPadding(0, dp(4), 0, dp(8));
+            refineBox.addView(helper("Use a specific geology field to narrow results."));
+
+            unitField = autocompleteField("Morrison...");
+            addRefineField(refineBox, "Mapped unit or name", unitField,
+                    "Names and labels used on the geologic map");
+            lithologyField = autocompleteField("Granite...");
+            addRefineField(refineBox, "Rock type (lithology)", lithologyField,
+                    "The type of rock or sediment");
+            ageField = autocompleteField("Cretaceous...");
+            addRefineField(refineBox, "Geologic age", ageField,
+                    "When the mapped material formed or was deposited");
+            TextView combined = helper("Filters are combined.");
+            combined.setPadding(0, dp(2), 0, dp(4));
+            refineBox.addView(combined);
+            root.addView(refineBox, matchWrap());
+
+            TextView areaHeading = fieldLabel("Search area");
+            areaHeading.setPadding(0, dp(18), 0, dp(3));
+            root.addView(areaHeading);
+            RadioGroup areaGroup = new RadioGroup(activity);
+            areaGroup.setOrientation(RadioGroup.VERTICAL);
+            allColorado = radio("All Colorado", "Search all installed Colorado geology");
+            allColorado.setId(View.generateViewId());
+            visibleArea = radio("Visible map area", visibleBounds == null
+                    ? "Return to the map to search its visible area"
+                    : "Search only the area shown on the map");
+            visibleArea.setId(View.generateViewId());
+            allColorado.setChecked(true);
+            visibleArea.setEnabled(visibleBounds != null);
+            if (visibleBounds == null) visibleArea.setAlpha(0.55f);
+            areaGroup.addView(allColorado);
+            areaGroup.addView(visibleArea);
+            root.addView(areaGroup, matchWrap());
+
+            searchButton = primaryButton("SEARCH GEOLOGY");
+            searchButton.setEnabled(false);
+            searchButton.setOnClickListener(v -> submit());
+            LinearLayout.LayoutParams searchParams = matchWrap();
+            searchParams.setMargins(0, dp(18), 0, dp(8));
+            root.addView(searchButton, searchParams);
+
+            termsButton = disclosureButton("Geology search terms", false);
+            termsButton.setOnClickListener(v -> showDefinitions());
+            root.addView(termsButton, matchWrap());
+
+            installWatchers();
+            configureRefineAutocomplete();
+            restoreSavedState();
+            updateSearchButton();
+            activity.setContentView(scroll);
+            scroll.requestApplyInsets();
+        }
+
+        private void restoreSavedState() {
+            SavedState saved = SAVED_STATES.get(activity);
+            if (saved == null) return;
+            suppressQuickWatcher = true;
+            quick.setText(saved.quickText);
+            quick.setSelection(quick.getText().length());
+            suppressQuickWatcher = false;
+            selectedQuick = saved.selectedQuick;
+            unitField.setText(saved.unit);
+            lithologyField.setText(saved.lithology);
+            ageField.setText(saved.age);
+            if (saved.refineOpen) {
+                refineBox.setVisibility(View.VISIBLE);
+                refineToggle.setText("Refine search   ⌄");
+            }
+            if (saved.visibleArea && visibleBounds != null) visibleArea.setChecked(true);
+            else allColorado.setChecked(true);
+            clearQuick.setVisibility(saved.quickText.isEmpty() ? View.GONE : View.VISIBLE);
+            updateInterpretation();
+        }
+
+        private void saveState() {
+            SAVED_STATES.put(activity, new SavedState(
+                    quick.getText().toString(), selectedQuick,
+                    unitField.getText().toString(), lithologyField.getText().toString(),
+                    ageField.getText().toString(), refineBox.getVisibility() == View.VISIBLE,
+                    visibleArea.isChecked()));
+        }
+
+        private void installWatchers() {
+            quick.addTextChangedListener(new SimpleWatcher() {
+                @Override public void changed(String value) {
+                    if (suppressQuickWatcher) return;
+                    selectedQuick = null;
+                    clearQuick.setVisibility(value.trim().isEmpty() ? View.GONE : View.VISIBLE);
+                    updateInterpretation();
+                    if (quick.hasFocus()) renderSuggestions(value);
+                    updateSearchButton();
+                }
+            });
+            quick.setOnFocusChangeListener((v, hasFocus) -> {
+                if (!hasFocus) return;
+                renderSuggestions(quick.getText().toString());
+                if (tourStep == 1) {
+                    tourStep = 2;
+                    activity.getWindow().getDecorView().post(this::showTourStep);
+                }
+            });
+            quick.setOnEditorActionListener((v, actionId, event) -> {
+                if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                    submit();
+                    return true;
+                }
+                return false;
+            });
+            SimpleWatcher update = new SimpleWatcher() {
+                @Override public void changed(String value) { updateSearchButton(); }
+            };
+            unitField.addTextChangedListener(update);
+            lithologyField.addTextChangedListener(update);
+            ageField.addTextChangedListener(update);
+        }
+
+        private void configureRefineAutocomplete() {
+            configureAutocomplete(unitField, Kind.UNIT);
+            configureAutocomplete(lithologyField, Kind.ROCK_TYPE);
+            configureAutocomplete(ageField, Kind.AGE);
+        }
+
+        private void configureAutocomplete(AutoCompleteTextView field, Kind kind) {
+            field.setThreshold(1);
+            field.setOnFocusChangeListener((v, focused) -> {
+                if (focused && !field.getText().toString().trim().isEmpty()) {
+                    refreshAutocomplete(field, kind);
+                    field.showDropDown();
+                }
+            });
+            field.addTextChangedListener(new SimpleWatcher() {
+                @Override public void changed(String value) {
+                    if (field.hasFocus() && !value.trim().isEmpty()) {
+                        refreshAutocomplete(field, kind);
+                        field.showDropDown();
+                    }
+                }
+            });
+        }
+
+        private void refreshAutocomplete(AutoCompleteTextView field, Kind kind) {
+            String prefix = field.getText().toString().trim();
+            if (prefix.isEmpty()) return;
+            List<String> values;
+            if (kind == Kind.UNIT) values = unitSuggestions(prefix, 8);
+            else if (kind == Kind.AGE) values = vocabularySuggestions(prefix, Kind.AGE, 8);
+            else values = vocabularySuggestions(prefix, Kind.ROCK_TYPE, 8);
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(activity,
+                    android.R.layout.simple_dropdown_item_1line, values);
+            field.setAdapter(adapter);
+        }
+
+        private void renderSuggestions(String raw) {
+            String query = raw == null ? "" : raw.trim();
+            suggestions.removeAllViews();
+            suggestions.setVisibility(View.VISIBLE);
+            if (query.isEmpty()) {
+                renderExamples();
+                return;
+            }
+            List<Option> options = typedSuggestions(query, 5);
+            for (Option option : options) suggestions.addView(suggestionRow(option));
+            Option broad = new Option("Search mapped text for “" + query + "”",
+                    "Broader search", Kind.MAPPED_TEXT, query);
+            suggestions.addView(suggestionRow(broad));
+        }
+
+        private void renderExamples() {
+            TextView heading = microHeading("TRY AN EXAMPLE");
+            suggestions.addView(heading);
+            Option granite = new Option("Granite", "Rock type", Kind.ROCK_TYPE, "Granite");
+            View graniteRow = suggestionRow(granite);
+            graniteExampleTarget = graniteRow;
+            suggestions.addView(graniteRow);
+            suggestions.addView(suggestionRow(
+                    new Option("Sandstone", "Rock type", Kind.ROCK_TYPE, "Sandstone")));
+            suggestions.addView(suggestionRow(
+                    new Option("Cretaceous", "Geologic age", Kind.AGE, "Cretaceous")));
+            suggestions.addView(suggestionRow(
+                    new Option("Precambrian", "Geologic age", Kind.AGE, "Precambrian")));
+            suggestions.addView(suggestionRow(
+                    new Option("Morrison", "Mapped unit or name", Kind.UNIT, "Morrison")));
+            Button more = disclosureButton("Browse more examples", false);
+            more.setOnClickListener(v -> showMoreExamples());
+            suggestions.addView(more, matchWrap());
+        }
+
+        private View suggestionRow(Option option) {
+            LinearLayout row = new LinearLayout(activity);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(12), dp(9), dp(12), dp(9));
+            row.setMinimumHeight(dp(56));
+            applySelectable(row);
+            TextView primary = text(option.label, 16f, 0xff202020, false);
+            TextView secondary = text(option.subtitle, 13f, 0xff666666, false);
+            secondary.setPadding(0, dp(2), 0, 0);
+            row.addView(primary);
+            row.addView(secondary);
+            row.setClickable(true);
+            row.setFocusable(true);
+            row.setContentDescription(option.label + ". " + option.subtitle + ".");
+            row.setOnClickListener(v -> applyOption(option));
+            return row;
+        }
+
+        private void applyOption(Option option) {
+            selectedQuick = option;
+            suppressQuickWatcher = true;
+            quick.setText(option.query);
+            quick.setSelection(quick.getText().length());
+            suppressQuickWatcher = false;
+            suggestions.setVisibility(View.GONE);
+            hideKeyboard(quick);
+            quick.clearFocus();
+            updateInterpretation();
+            updateSearchButton();
+            if (tourStep == 2 && option.kind == Kind.ROCK_TYPE
+                    && "granite".equalsIgnoreCase(option.query)) {
+                tourStep = 3;
+                activity.getWindow().getDecorView().post(this::showTourStep);
+            }
+        }
+
+        private void changeInterpretation() {
+            selectedQuick = null;
+            updateInterpretation();
+            quick.requestFocus();
+            showKeyboard(quick);
+            renderSuggestions(quick.getText().toString());
+        }
+
+        private void updateInterpretation() {
+            if (selectedQuick == null) {
+                interpretationRow.setVisibility(View.GONE);
+                return;
+            }
+            interpretationText.setText("Searching as: " + interpretationLabel(selectedQuick));
+            interpretationRow.setVisibility(View.VISIBLE);
+        }
+
+        private void toggleRefine() {
+            boolean opening = refineBox.getVisibility() != View.VISIBLE;
+            refineBox.setVisibility(opening ? View.VISIBLE : View.GONE);
+            refineToggle.setText("Refine search   " + (opening ? "⌄" : "›"));
+        }
+
+        private void submit() {
+            String quickText = quick.getText().toString().trim();
+            String unitText = unitField.getText().toString().trim();
+            String lithText = lithologyField.getText().toString().trim();
+            String ageText = ageField.getText().toString().trim();
+            if (quickText.isEmpty() && unitText.isEmpty() && lithText.isEmpty() && ageText.isEmpty()) {
+                quick.setError("Enter a geology term or add a filter.");
+                return;
+            }
+            unitField.setError(null);
+            lithologyField.setError(null);
+            ageField.setError(null);
+
+            if (!lithText.isEmpty() && !isSupportedExact(lithText, Kind.ROCK_TYPE)) {
+                lithologyField.setError("Choose a supported rock type from the suggestions.");
+                lithologyField.requestFocus();
+                refreshAutocomplete(lithologyField, Kind.ROCK_TYPE);
+                lithologyField.showDropDown();
+                return;
+            }
+            if (!ageText.isEmpty() && !isSupportedExact(ageText, Kind.AGE)) {
+                ageField.setError("Choose a supported geologic age from the suggestions.");
+                ageField.requestFocus();
+                refreshAutocomplete(ageField, Kind.AGE);
+                ageField.showDropDown();
+                return;
+            }
+            if (!unitText.isEmpty() && !hasUnitMatch(unitText)) {
+                unitField.setError("No mapped unit or label matches this text.");
+                unitField.requestFocus();
+                return;
+            }
+
+            if (selectedQuick == null && !quickText.isEmpty()) {
+                List<Option> exact = exactInterpretations(quickText);
+                if (exact.size() > 1) {
+                    showMeaningChoice(quickText, exact);
+                    return;
+                }
+                selectedQuick = exact.isEmpty()
+                        ? new Option(quickText, "Mapped text", Kind.MAPPED_TEXT, quickText)
+                        : exact.get(0);
+                updateInterpretation();
+            }
+
+            if (selectedQuick != null) {
+                if (selectedQuick.kind == Kind.UNIT && !unitText.isEmpty()) {
+                    unitField.setError("Quick search already uses a mapped-unit search. Clear one of them.");
+                    return;
+                }
+                if (selectedQuick.kind == Kind.ROCK_TYPE && !lithText.isEmpty()) {
+                    lithologyField.setError("Quick search already uses a rock-type search. Clear one of them.");
+                    return;
+                }
+                if (selectedQuick.kind == Kind.AGE && !ageText.isEmpty()) {
+                    ageField.setError("Quick search already uses a geologic-age search. Clear one of them.");
+                    return;
+                }
+            }
+
+            String mappedText = "";
+            String unit = unitText;
+            String lith = lithText;
+            String age = ageText;
+            ArrayList<String> summaryParts = new ArrayList<>();
+            String title = "Geology Search";
+            if (selectedQuick != null) {
+                title = selectedQuick.query;
+                if (selectedQuick.kind == Kind.MAPPED_TEXT) mappedText = selectedQuick.query;
+                else if (selectedQuick.kind == Kind.UNIT) unit = selectedQuick.query;
+                else if (selectedQuick.kind == Kind.ROCK_TYPE) lith = selectedQuick.query;
+                else if (selectedQuick.kind == Kind.AGE) age = selectedQuick.query;
+                summaryParts.add(interpretationLabel(selectedQuick));
+            }
+            if (!unitText.isEmpty()) summaryParts.add("Mapped unit · " + unitText);
+            if (!lithText.isEmpty()) summaryParts.add("Rock type · " + lithText);
+            if (!ageText.isEmpty()) summaryParts.add("Geologic age · " + ageText);
+
+            GeologyRepository.Bounds bounds = visibleArea.isChecked() ? visibleBounds : null;
+            String area = bounds == null ? "All Colorado" : "Visible map area";
+            StringBuilder summary = new StringBuilder();
+            if (!summaryParts.isEmpty()) summary.append(String.join("\n", summaryParts)).append('\n');
+            summary.append(area);
+            if (selectedQuick != null && selectedQuick.kind == Kind.MAPPED_TEXT) {
+                summary.append("\nBroader mapped-text searches can match names and descriptive text in addition to rock-type and age information.");
+            }
+            SearchPlan plan = new SearchPlan(
+                    new GeologyRepository.Filter(mappedText, unit, lith, age),
+                    bounds, title, summary.toString());
+            saveState();
+            GuidedTourCoach.clear(activity);
+            hideKeyboard(quick);
+            callback.onSearch(plan.filter, plan.bounds, plan.title, plan.summary);
+        }
+
+        private void showMeaningChoice(String query, List<Option> choices) {
+            ArrayList<String> labels = new ArrayList<>();
+            for (Option option : choices) labels.add(interpretationLabel(option));
+            labels.add("Mapped text · “" + query + "” — broader search");
+            String[] rows = labels.toArray(new String[0]);
+            new AlertDialog.Builder(activity)
+                    .setTitle("What do you mean by “" + query + "”?")
+                    .setItems(rows, (d, which) -> {
+                        if (which < choices.size()) applyOption(choices.get(which));
+                        else applyOption(new Option(query, "Mapped text", Kind.MAPPED_TEXT, query));
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        }
+
+        private List<Option> exactInterpretations(String query) {
+            ArrayList<Option> out = new ArrayList<>();
+            File file = geology.getDatabaseFile();
+            if (file == null) return out;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
+                CngmAuthoritativeSearch.Resolution age = CngmAuthoritativeSearch.resolveAge(db, query);
+                if (!"literal-only".equals(age.method)) {
+                    out.add(new Option(displayConcept(age, query), ageSubtitle(age), Kind.AGE, query));
+                }
+                CngmAuthoritativeSearch.Resolution lith = CngmAuthoritativeSearch.resolveLithology(db, query);
+                if (!"literal-only".equals(lith.method)) {
+                    out.add(new Option(displayConcept(lith, query), "Rock type", Kind.ROCK_TYPE, query));
+                }
+                String exactUnit = exactUnitName(db, query);
+                if (!exactUnit.isEmpty()) {
+                    out.add(new Option(exactUnit, "Mapped unit or name", Kind.UNIT, exactUnit));
+                }
+            } catch (RuntimeException ignored) {
+                // Search can still safely fall back to mapped text.
+            }
+            return dedupeOptions(out, 4);
+        }
+
+        private List<Option> typedSuggestions(String query, int limit) {
+            ArrayList<Option> out = new ArrayList<>();
+            File file = geology.getDatabaseFile();
+            if (file == null) return out;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
+                addTermOptions(db, "lithology_concepts", query, "Rock type", Kind.ROCK_TYPE, out, limit);
+                addTermOptions(db, "geomaterial_concepts", query, "Rock type", Kind.ROCK_TYPE, out, limit);
+                addTermOptions(db, "age_concepts", query, "Geologic age", Kind.AGE, out, limit);
+                if (out.size() < limit) addCrosswalkOptions(db, query, out, limit);
+                if (out.size() < limit) addUnitOptions(db, query, out, limit);
+            } catch (RuntimeException ignored) {
+                return new ArrayList<>();
+            }
+            return dedupeOptions(out, limit);
+        }
+
+        private void showMoreExamples() {
+            hideKeyboard(quick);
+            LinearLayout content = new LinearLayout(activity);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(dp(18), dp(8), dp(18), dp(18));
+            content.addView(helper("Tap any example to use it as the search."));
+            content.addView(microHeading("ROCK TYPES"));
+            String[] rocks = {"Granite", "Sandstone", "Limestone", "Igneous", "Sedimentary", "Metamorphic"};
+            for (String value : rocks) {
+                if (isSupportedExact(value, Kind.ROCK_TYPE)) {
+                    content.addView(bottomSheetExample(value, "Rock type", Kind.ROCK_TYPE));
+                }
+            }
+            content.addView(microHeading("GEOLOGIC AGES"));
+            String[] ages = {"Precambrian", "Cretaceous", "Paleogene", "Neogene", "Proterozoic", "Tertiary"};
+            for (String value : ages) {
+                if (isSupportedExact(value, Kind.AGE)) {
+                    content.addView(bottomSheetExample(value, "Geologic age", Kind.AGE));
+                }
+            }
+            content.addView(microHeading("MAPPED UNITS & NAMES"));
+            LinkedHashSet<String> units = new LinkedHashSet<>();
+            units.add("Morrison");
+            units.addAll(popularUnitExamples(7));
+            for (String value : units) {
+                if (hasUnitMatch(value)) content.addView(bottomSheetExample(value, "Mapped unit or name", Kind.UNIT));
+            }
+            showBottomSheet("Browse geology examples", content);
+        }
+
+        private View bottomSheetExample(String value, String subtitle, Kind kind) {
+            Option option = new Option(value, subtitle, kind, value);
+            View row = suggestionRow(option);
+            row.setOnClickListener(v -> {
+                dismissBottomSheet();
+                applyOption(option);
+            });
+            return row;
+        }
+
+        private Dialog activeBottomSheet;
+
+        private void showBottomSheet(String title, View content) {
+            dismissBottomSheet();
+            Dialog dialog = new Dialog(activity);
+            activeBottomSheet = dialog;
+            LinearLayout shell = new LinearLayout(activity);
+            shell.setOrientation(LinearLayout.VERTICAL);
+            shell.setPadding(dp(4), dp(10), dp(4), dp(8));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(Color.WHITE);
+            bg.setCornerRadii(new float[]{dp(18), dp(18), dp(18), dp(18), 0, 0, 0, 0});
+            shell.setBackground(bg);
+            TextView heading = text(title, 20f, 0xff202020, true);
+            heading.setPadding(dp(18), dp(6), dp(18), dp(8));
+            shell.addView(heading);
+            ScrollView scroller = new ScrollView(activity);
+            scroller.addView(content);
+            shell.addView(scroller, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+            Button close = textButton("Close");
+            close.setOnClickListener(v -> dismissBottomSheet());
+            shell.addView(close, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+            dialog.setContentView(shell);
+            dialog.setOnDismissListener(d -> activeBottomSheet = null);
+            Window w = dialog.getWindow();
+            if (w != null) {
+                w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                w.setDimAmount(0.32f);
+                w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                w.setGravity(Gravity.BOTTOM);
+            }
+            dialog.show();
+            if (w != null) w.setLayout(ViewGroup.LayoutParams.MATCH_PARENT,
+                    Math.round(activity.getResources().getDisplayMetrics().heightPixels * 0.72f));
+        }
+
+        private void dismissBottomSheet() {
+            if (activeBottomSheet != null && activeBottomSheet.isShowing()) activeBottomSheet.dismiss();
+            activeBottomSheet = null;
+        }
+
+        private void showDefinitions() {
+            LinearLayout content = new LinearLayout(activity);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setPadding(dp(18), dp(4), dp(18), dp(18));
+            addDefinition(content, "Mapped unit",
+                    "A body of rock or sediment represented as a distinct unit on a geologic map. It may have a name, map label, or both.");
+            addDefinition(content, "Rock type (lithology)",
+                    "Lithology describes the type of rock or sediment in a mapped unit, such as granite, sandstone, limestone, or alluvium.");
+            addDefinition(content, "Geologic age",
+                    "The time interval when mapped rock or sediment formed or was deposited, such as Jurassic, Cretaceous, or Precambrian.");
+            addDefinition(content, "Mapped-text search",
+                    "A broader search through names, labels, descriptions, and other searchable mapped-geology text. It can return more results than a specific rock-type or age search.");
+            TextView note = helper("Geologic maps represent interpretations at the source-map scale. GPS precision does not make the mapped geology equally precise.");
+            note.setTextIsSelectable(true);
+            note.setPadding(0, dp(10), 0, dp(4));
+            content.addView(note);
+            showBottomSheet("Geology search terms", content);
+        }
+
+        private void addDefinition(LinearLayout parent, String term, String definition) {
+            TextView h = text(term, 15.5f, 0xff202020, true);
+            h.setTextIsSelectable(true);
+            h.setPadding(0, dp(12), 0, dp(2));
+            parent.addView(h);
+            TextView d = helper(definition);
+            d.setTextIsSelectable(true);
+            d.setPadding(0, 0, 0, dp(3));
+            parent.addView(d);
+        }
+
+        private void showHelp() {
+            String message = "Search uses the installed Colorado geology database and works offline. "
+                    + "RockMap distinguishes mapped-unit text, rock types, geologic ages, and broader mapped-text searches.\n\n"
+                    + "Use Geology search terms for definitions. Search results preserve source-map information separately from standardized CNGM search relationships.";
+            AlertDialog dialog = new AlertDialog.Builder(activity)
+                    .setTitle("Search Geology help")
+                    .setMessage(message)
+                    .setPositiveButton("Start Guided Tour", null)
+                    .setNegativeButton("Close", null)
+                    .create();
+            dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+                if (GuidedTourState.isActive(activity)) {
+                    new AlertDialog.Builder(activity)
+                            .setTitle("Another guided tour is active")
+                            .setMessage("Finish or exit the current RockMap guided tour before starting the Search Geology tour.")
+                            .setPositiveButton("OK", null)
+                            .show();
+                    return;
+                }
+                dialog.dismiss();
+                tourStep = 1;
+                showTourStep();
+            }));
+            dialog.show();
+        }
+
+        private void showTourStep() {
+            if (tourStep <= 0) return;
+            if (tourStep == 1) {
+                GuidedTourCoach.show(activity, 1, 5,
+                        "Search geology",
+                        "Search for a rock type, geologic age, or mapped unit.",
+                        "Tap the search field.", quick,
+                        null, null, null,
+                        this::skipTourStep, this::exitSearchTour);
+            } else if (tourStep == 2) {
+                if (graniteExampleTarget == null || !graniteExampleTarget.isAttachedToWindow()) {
+                    quick.requestFocus();
+                    renderSuggestions("");
+                    activity.getWindow().getDecorView().postDelayed(this::showTourStep, 50L);
+                    return;
+                }
+                GuidedTourCoach.show(activity, 2, 5,
+                        "Try an example",
+                        "Don't know what to search for? RockMap shows real geology terms you can explore.",
+                        "Choose Granite.", graniteExampleTarget,
+                        () -> { tourStep = 1; showTourStep(); },
+                        null, null, this::skipTourStep, this::exitSearchTour);
+            } else if (tourStep == 3) {
+                GuidedTourCoach.show(activity, 3, 5,
+                        "Know what you're searching",
+                        "RockMap shows how it interpreted your term. A rock-type search can differ from a broader mapped-text search.",
+                        "Review the search meaning.", interpretationRow,
+                        () -> { tourStep = 2; quick.requestFocus(); renderSuggestions(""); showTourStep(); },
+                        "Next", () -> { tourStep = 4; showTourStep(); },
+                        this::skipTourStep, this::exitSearchTour);
+            } else if (tourStep == 4) {
+                GuidedTourCoach.show(activity, 4, 5,
+                        "Narrow the search",
+                        "Refine Search targets a specific mapped unit, rock type, or geologic age. Search Area controls whether RockMap searches all Colorado or only the visible map.",
+                        "Refine only when you need more control.", refineToggle,
+                        () -> { tourStep = 3; showTourStep(); },
+                        "Next", () -> { tourStep = 5; showTourStep(); },
+                        this::skipTourStep, this::exitSearchTour);
+            } else {
+                GuidedTourCoach.show(activity, 5, 5,
+                        "Need a definition?",
+                        "Geology search terms explains the vocabulary used on this screen. Geology shown on the map can also be copied or searched online.",
+                        "Use this when a geology term is unfamiliar.", termsButton,
+                        () -> { tourStep = 4; showTourStep(); },
+                        "Finish", this::exitSearchTour,
+                        this::exitSearchTour, this::exitSearchTour);
+            }
+        }
+
+        private void skipTourStep() {
+            if (tourStep == 1) {
+                quick.requestFocus();
+                renderSuggestions("");
+                tourStep = 2;
+            } else if (tourStep == 2) {
+                applyOption(new Option("Granite", "Rock type", Kind.ROCK_TYPE, "Granite"));
+                tourStep = 3;
+            } else if (tourStep == 3) tourStep = 4;
+            else if (tourStep == 4) tourStep = 5;
+            else {
+                exitSearchTour();
+                return;
+            }
+            activity.getWindow().getDecorView().post(this::showTourStep);
+        }
+
+        private void exitSearchTour() {
+            tourStep = 0;
+            GuidedTourCoach.clear(activity);
+        }
+
+        private void leave() {
+            saveState();
+            dismissBottomSheet();
+            exitSearchTour();
+            hideKeyboard(quick);
+            callback.onBack();
+        }
+
+        private boolean isSupportedExact(String value, Kind kind) {
+            File file = geology.getDatabaseFile();
+            if (file == null || value == null || value.trim().isEmpty()) return false;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
+                if (kind == Kind.AGE) {
+                    return !"literal-only".equals(CngmAuthoritativeSearch.resolveAge(db, value).method);
+                }
+                if (kind == Kind.ROCK_TYPE) {
+                    return !"literal-only".equals(CngmAuthoritativeSearch.resolveLithology(db, value).method);
+                }
+                return false;
+            } catch (RuntimeException ex) {
+                return false;
+            }
+        }
+
+        private boolean hasUnitMatch(String value) {
+            File file = geology.getDatabaseFile();
+            if (file == null || value == null || value.trim().isEmpty()) return false;
+            String like = "%" + value.trim() + "%";
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+                 Cursor c = db.rawQuery(
+                         "SELECT 1 FROM units WHERE unit_name LIKE ? COLLATE NOCASE "
+                                 + "OR orig_label LIKE ? COLLATE NOCASE OR sgmc_label LIKE ? COLLATE NOCASE "
+                                 + "OR unit_link LIKE ? COLLATE NOCASE LIMIT 1",
+                         new String[]{like, like, like, like})) {
+                return c.moveToFirst();
+            } catch (RuntimeException ex) {
+                return false;
+            }
+        }
+
+        private List<String> vocabularySuggestions(String prefix, Kind kind, int limit) {
+            LinkedHashSet<String> out = new LinkedHashSet<>();
+            File file = geology.getDatabaseFile();
+            if (file == null) return new ArrayList<>();
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
+                if (kind == Kind.AGE) {
+                    addTerms(db, "age_concepts", prefix, out, limit);
+                    addCrosswalkTerms(db, prefix, out, limit);
+                } else {
+                    addTerms(db, "lithology_concepts", prefix, out, limit);
+                    addTerms(db, "geomaterial_concepts", prefix, out, limit);
+                }
+            } catch (RuntimeException ignored) {}
+            return new ArrayList<>(out);
+        }
+
+        private List<String> unitSuggestions(String prefix, int limit) {
+            ArrayList<String> out = new ArrayList<>();
+            File file = geology.getDatabaseFile();
+            if (file == null) return out;
+            String like = "%" + prefix.trim() + "%";
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+                 Cursor c = db.rawQuery(
+                         "SELECT DISTINCT unit_name FROM units WHERE unit_name LIKE ? COLLATE NOCASE "
+                                 + "AND TRIM(unit_name)<>'' ORDER BY unit_name COLLATE NOCASE LIMIT ?",
+                         new String[]{like, Integer.toString(Math.max(1, Math.min(limit, 20))) })) {
+                while (c.moveToNext()) {
+                    String v = clean(c.getString(0));
+                    if (!v.isEmpty()) out.add(v);
+                }
+            } catch (RuntimeException ignored) {}
+            return out;
+        }
+
+        private List<String> popularUnitExamples(int limit) {
+            ArrayList<String> out = new ArrayList<>();
+            File file = geology.getDatabaseFile();
+            if (file == null) return out;
+            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
+                    file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY);
+                 Cursor c = db.rawQuery(
+                         "SELECT unit_name,COUNT(*) n FROM units WHERE TRIM(unit_name)<>'' "
+                                 + "GROUP BY unit_name ORDER BY n DESC,unit_name COLLATE NOCASE LIMIT ?",
+                         new String[]{Integer.toString(Math.max(1, Math.min(limit, 12))) })) {
+                while (c.moveToNext()) {
+                    String v = clean(c.getString(0));
+                    if (!v.isEmpty() && !v.equalsIgnoreCase("Morrison")) out.add(v);
+                }
+            } catch (RuntimeException ignored) {}
+            return out;
+        }
+
+        private void addTermOptions(SQLiteDatabase db, String table, String prefix, String subtitle,
+                                    Kind kind, List<Option> out, int limit) {
+            if (out.size() >= limit) return;
+            String like = "%" + prefix.trim() + "%";
+            try (Cursor c = db.rawQuery(
+                    "SELECT term FROM " + table + " WHERE term LIKE ? COLLATE NOCASE "
+                            + "ORDER BY CASE WHEN term LIKE ? COLLATE NOCASE THEN 0 ELSE 1 END,"
+                            + "term COLLATE NOCASE LIMIT 20",
+                    new String[]{like, prefix.trim() + "%"})) {
+                while (c.moveToNext() && out.size() < limit) {
+                    String value = clean(c.getString(0));
+                    if (!value.isEmpty()) out.add(new Option(value, subtitle, kind, value));
+                }
+            }
+        }
+
+        private void addCrosswalkOptions(SQLiteDatabase db, String prefix, List<Option> out, int limit) {
+            String like = "%" + prefix.trim() + "%";
+            try (Cursor c = db.rawQuery(
+                    "SELECT query_term,min_term,max_term FROM age_query_crosswalk "
+                            + "WHERE query_term LIKE ? COLLATE NOCASE ORDER BY query_term COLLATE NOCASE",
+                    new String[]{like})) {
+                while (c.moveToNext() && out.size() < limit) {
+                    String term = clean(c.getString(0));
+                    String min = clean(c.getString(1));
+                    String max = clean(c.getString(2));
+                    String subtitle = min.equalsIgnoreCase(max)
+                            ? "Historical geologic age term · USGS maps to " + min
+                            : "Historical geologic age term · USGS maps to " + min + " through " + max;
+                    out.add(new Option(term, subtitle, Kind.AGE, term));
+                }
+            }
+        }
+
+        private void addUnitOptions(SQLiteDatabase db, String prefix, List<Option> out, int limit) {
+            String like = "%" + prefix.trim() + "%";
+            try (Cursor c = db.rawQuery(
+                    "SELECT DISTINCT unit_name FROM units WHERE unit_name LIKE ? COLLATE NOCASE "
+                            + "AND TRIM(unit_name)<>'' ORDER BY unit_name COLLATE NOCASE LIMIT 20",
+                    new String[]{like})) {
+                while (c.moveToNext() && out.size() < limit) {
+                    String value = clean(c.getString(0));
+                    if (!value.isEmpty()) out.add(new Option(value, "Mapped unit or name", Kind.UNIT, value));
+                }
+            }
+        }
+
+        private void addTerms(SQLiteDatabase db, String table, String prefix,
+                              LinkedHashSet<String> out, int limit) {
+            if (out.size() >= limit) return;
+            String like = "%" + prefix.trim() + "%";
+            try (Cursor c = db.rawQuery(
+                    "SELECT term FROM " + table + " WHERE term LIKE ? COLLATE NOCASE "
+                            + "ORDER BY term COLLATE NOCASE LIMIT 30", new String[]{like})) {
+                while (c.moveToNext() && out.size() < limit) {
+                    String value = clean(c.getString(0));
+                    if (!value.isEmpty()) out.add(value);
+                }
+            }
+        }
+
+        private void addCrosswalkTerms(SQLiteDatabase db, String prefix,
+                                       LinkedHashSet<String> out, int limit) {
+            if (out.size() >= limit) return;
+            String like = "%" + prefix.trim() + "%";
+            try (Cursor c = db.rawQuery(
+                    "SELECT query_term FROM age_query_crosswalk WHERE query_term LIKE ? COLLATE NOCASE "
+                            + "ORDER BY query_term COLLATE NOCASE LIMIT 20", new String[]{like})) {
+                while (c.moveToNext() && out.size() < limit) {
+                    String value = clean(c.getString(0));
+                    if (!value.isEmpty()) out.add(value);
+                }
+            }
+        }
+
+        private String exactUnitName(SQLiteDatabase db, String query) {
+            try (Cursor c = db.rawQuery(
+                    "SELECT unit_name FROM units WHERE unit_name=? COLLATE NOCASE "
+                            + "OR orig_label=? COLLATE NOCASE OR sgmc_label=? COLLATE NOCASE "
+                            + "ORDER BY unit_name COLLATE NOCASE LIMIT 1",
+                    new String[]{query, query, query})) {
+                return c.moveToFirst() ? clean(c.getString(0)) : "";
+            }
+        }
+
+        private List<Option> dedupeOptions(List<Option> raw, int limit) {
+            ArrayList<Option> out = new ArrayList<>();
+            LinkedHashSet<String> seen = new LinkedHashSet<>();
+            for (Option option : raw) {
+                String key = option.kind.name() + "|" + option.label.toLowerCase(Locale.US);
+                if (!seen.add(key)) continue;
+                out.add(option);
+                if (out.size() >= limit) break;
+            }
+            return out;
+        }
+
+        private String displayConcept(CngmAuthoritativeSearch.Resolution resolution, String fallback) {
+            if (resolution != null && resolution.method != null && resolution.method.startsWith("dr1210-")) {
+                return fallback;
+            }
+            if (resolution != null && !resolution.concepts.isEmpty()) {
+                String raw = resolution.concepts.get(0);
+                int colon = raw.lastIndexOf(':');
+                if (colon >= 0 && colon + 1 < raw.length()) return raw.substring(colon + 1);
+            }
+            return fallback;
+        }
+
+        private String ageSubtitle(CngmAuthoritativeSearch.Resolution age) {
+            return age != null && age.method != null && age.method.startsWith("dr1210-")
+                    ? "Historical geologic age term" : "Geologic age";
+        }
+
+        private String interpretationLabel(Option option) {
+            if (option.kind == Kind.ROCK_TYPE) return "Rock type · " + option.query;
+            if (option.kind == Kind.AGE) return "Geologic age · " + option.query;
+            if (option.kind == Kind.UNIT) return "Mapped unit · " + option.query;
+            return "Mapped text · “" + option.query + "”";
+        }
+
+        private void updateSearchButton() {
+            boolean any = !quick.getText().toString().trim().isEmpty()
+                    || !unitField.getText().toString().trim().isEmpty()
+                    || !lithologyField.getText().toString().trim().isEmpty()
+                    || !ageField.getText().toString().trim().isEmpty();
+            searchButton.setEnabled(any);
+        }
+
+        private AutoCompleteTextView autocompleteField(String hint) {
+            AutoCompleteTextView field = new AutoCompleteTextView(activity);
+            field.setSingleLine(true);
+            field.setTextSize(15f);
+            field.setHint(hint);
+            field.setPadding(dp(12), dp(8), dp(12), dp(8));
+            field.setMinHeight(dp(52));
+            return field;
+        }
+
+        private void addRefineField(LinearLayout parent, String label,
+                                    AutoCompleteTextView field, String hint) {
+            TextView h = fieldLabel(label);
+            h.setPadding(0, dp(10), 0, dp(2));
+            parent.addView(h);
+            parent.addView(field, matchWrap());
+            TextView helper = helper(hint);
+            helper.setPadding(dp(2), dp(1), 0, dp(3));
+            parent.addView(helper);
+        }
+
+        private RadioButton radio(String label, String hint) {
+            RadioButton button = new RadioButton(activity);
+            button.setText(label + "\n" + hint);
+            button.setTextSize(14.5f);
+            button.setTextColor(0xff303030);
+            button.setGravity(Gravity.CENTER_VERTICAL);
+            button.setMinHeight(dp(60));
+            button.setPadding(dp(4), dp(3), dp(4), dp(3));
+            button.setContentDescription(label + ". " + hint);
+            return button;
+        }
+
+        private Button primaryButton(String label) {
+            Button button = new Button(activity);
+            button.setText(label);
+            button.setAllCaps(false);
+            button.setTextSize(15f);
+            button.setTypeface(Typeface.DEFAULT_BOLD);
+            button.setMinHeight(dp(52));
+            return button;
+        }
+
+        private Button disclosureButton(String label, boolean expanded) {
+            Button button = textButton(label + "   " + (expanded ? "⌄" : "›"));
+            button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            button.setTextSize(15f);
+            button.setMinHeight(dp(52));
+            return button;
+        }
+
+        private Button textButton(String label) {
+            Button button = new Button(activity);
+            button.setText(label);
+            button.setAllCaps(false);
+            button.setTextSize(14f);
+            button.setMinHeight(dp(48));
+            button.setMinimumHeight(dp(48));
+            button.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+            return button;
+        }
+
+        private TextView fieldLabel(String value) {
+            TextView view = text(value, 14f, 0xff303030, true);
+            view.setPadding(0, dp(5), 0, dp(3));
+            return view;
+        }
+
+        private TextView microHeading(String value) {
+            TextView view = text(value, 12f, 0xff666666, true);
+            view.setPadding(dp(12), dp(10), dp(12), dp(4));
+            return view;
+        }
+
+        private TextView helper(String value) {
+            return text(value, 13f, 0xff555555, false);
+        }
+
+        private TextView text(String value, float sp, int color, boolean bold) {
+            TextView view = new TextView(activity);
+            view.setText(value);
+            view.setTextSize(sp);
+            view.setTextColor(color);
+            if (bold) view.setTypeface(Typeface.DEFAULT_BOLD);
+            return view;
+        }
+
+        private LinearLayout.LayoutParams matchWrap() {
+            return new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+
+        private void applySelectable(View view) {
+            android.util.TypedValue selectable = new android.util.TypedValue();
+            if (activity.getTheme().resolveAttribute(android.R.attr.selectableItemBackground,
+                    selectable, true) && selectable.resourceId != 0) {
+                view.setBackgroundResource(selectable.resourceId);
+            }
+        }
+
+        private int dp(int value) {
+            return Math.round(value * activity.getResources().getDisplayMetrics().density);
+        }
+
+        private void hideKeyboard(View view) {
+            if (view == null) return;
+            InputMethodManager imm = (InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(view.getWindowToken(), 0);
+        }
+
+        private void showKeyboard(View view) {
+            if (view == null) return;
+            InputMethodManager imm = (InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT);
+        }
+    }
+
+    private abstract static class SimpleWatcher implements android.text.TextWatcher {
+        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+        @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+            changed(s == null ? "" : s.toString());
+        }
+        @Override public void afterTextChanged(android.text.Editable s) {}
+        public abstract void changed(String value);
+    }
+
+    private static String clean(String value) {
+        return value == null ? "" : value.trim();
+    }
+}
+'''
+    SEARCH_UI.write_text(source, encoding="utf-8")
+    generated = SEARCH_UI.read_text(encoding="utf-8")
+    required = [
+        "Search Colorado's mapped geology by rock type, geologic age, or mapped unit.",
+        "Searching as: ",
+        "Geology search terms",
+        "Browse geology examples",
+        "Mapped-text search",
+        "showLearningSearches",
+        "https://www.google.com/search?q=",
+        "Clear geology search",
+        "SAVED_STATES",
+    ]
+    for marker in required:
+        if marker not in generated:
+            raise RuntimeError("CNGM search UI helper missing marker: " + marker)
+    if "Lithology filter (optional)" in generated or "Age filter (optional)" in generated:
+        raise RuntimeError("CNGM search UI reintroduced optional-field labels.")
+    print("CNGM Stage 2B search UX helper: generated")
+
+
 def inject_sources() -> None:
     replace_once(
         APP,
@@ -790,6 +2203,41 @@ def inject_sources() -> None:
     )
     replace_once(
         REPOSITORY,
+        '''    public static final class Filter {
+        public final String text;
+        public final String lithology;
+        public final String age;
+        public Filter(String text, String lithology, String age) {
+            this.text = normalize(text);
+            this.lithology = normalize(lithology);
+            this.age = normalize(age);
+        }
+    }
+''',
+        '''    public static final class Filter {
+        public final String text;
+        public final String unit;
+        public final String lithology;
+        public final String age;
+
+        public Filter(String text, String lithology, String age) {
+            this(text, "", lithology, age);
+        }
+
+        public Filter(String text, String unit, String lithology, String age) {
+            this.text = normalize(text);
+            this.unit = normalize(unit);
+            this.lithology = normalize(lithology);
+            this.age = normalize(age);
+        }
+    }
+''',
+        "public final String unit;",
+        "add explicit mapped-unit search field",
+    )
+
+    replace_once(
+        REPOSITORY,
         '''    public GeologyRepository(Context context) {
         dataManager = new GeologyDataManager(context);
     }
@@ -846,6 +2294,18 @@ def inject_sources() -> None:
                 CngmAuthoritativeSearch.logResolution("text", resolved);
                 CngmAuthoritativeSearch.appendClause(
                         clauses, args, "search_text", actual.text, resolved);
+            }
+            if (!actual.unit.isEmpty()) {
+                String like = "%" + actual.unit + "%";
+                clauses.add("(unit_name LIKE ? OR orig_label LIKE ? OR sgmc_label LIKE ? OR unit_link LIKE ?)");
+                args.add(like);
+                args.add(like);
+                args.add(like);
+                args.add(like);
+                TourDebugLog.mapDiagnostic("CNGM_SEARCH_RESOLVE",
+                        "field=unit query=" + actual.unit
+                                + " method=source-map-unit-fields authority="
+                                + CngmAuthoritativeSearch.AUTHORITY_DOI);
             }
             if (!actual.lithology.isEmpty()) {
                 CngmAuthoritativeSearch.Resolution resolved =
@@ -1075,7 +2535,13 @@ def inject_sources() -> None:
 
     replace_once(
         RESEARCH,
-        '''        visible.setText("Search Visible Area Only");
+        '''    private void showSearch() {
+        LinearLayout box = page();
+        EditText text = input("Unit, label, rock, or geology term", "");
+        EditText lith = input("Lithology filter (optional)", "");
+        EditText age = input("Age filter (optional)", "");
+        CheckBox visible = new CheckBox(this);
+        visible.setText("Search Visible Area Only");
         visible.setChecked(visibleBounds != null);
         visible.setEnabled(visibleBounds != null);
         visible.setMinHeight(dp(48));
@@ -1083,20 +2549,141 @@ def inject_sources() -> None:
         box.addView(lith);
         box.addView(age);
         box.addView(visible);
+
+        TextView suggestions = help(suggestionText(""));
+        box.addView(suggestions);
+        text.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                suggestions.setText(suggestionText(s == null ? "" : s.toString()));
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Search Geology")
+                .setView(scroll(box))
+                .setPositiveButton("Search", null)
+                .setNegativeButton("Cancel", (d, w) -> showHub())
+                .create();
+        dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            GeologyRepository.Filter filter = new GeologyRepository.Filter(
+                    text.getText().toString(), lith.getText().toString(), age.getText().toString());
+            if (filter.text.isEmpty() && filter.lithology.isEmpty() && filter.age.isEmpty()) {
+                text.setError("Enter a search or filter term.");
+                return;
+            }
+            GeologyRepository.Bounds bounds = visible.isChecked() ? visibleBounds : null;
+            dialog.dismiss();
+            runAsync("Searching geology…", () -> geology.search(filter, bounds, 0),
+                    results -> showResults(results,
+                            "Geology Search" + (filter.text.isEmpty() ? "" : ": " + text.getText().toString().trim()),
+                            bounds, queryBoundsContext(bounds, "Visible Area search")));
+        }));
+        dialog.show();
+        text.requestFocus();
+    }
 ''',
-        '''        visible.setText("Search Visible Area Only");
-        // Search Geology is statewide by default. Spatial restriction is an explicit opt-in.
-        visible.setChecked(false);
-        visible.setEnabled(visibleBounds != null);
-        visible.setMinHeight(dp(48));
-        box.addView(text);
-        box.addView(lith);
-        box.addView(age);
-        box.addView(visible);
-        box.addView(help("Searches all installed Colorado geology by default. Check this only when you want to restrict the search to the current map view."));
+        '''    private void showSearch() {
+        CngmSearchUi.show(this, geology, visibleBounds, new CngmSearchUi.Callback() {
+            @Override public void onSearch(GeologyRepository.Filter filter,
+                                           GeologyRepository.Bounds bounds,
+                                           String resultTitle,
+                                           String resultSummary) {
+                String context = bounds == null ? "" : queryBoundsContext(bounds, "Visible Area search");
+                runAsync("Searching geology…", () -> geology.search(filter, bounds, 0),
+                        results -> showResults(results, resultTitle, bounds, context, resultSummary));
+            }
+
+            @Override public void onBack() {
+                showHub();
+            }
+        });
+    }
 ''',
-        "Search Geology is statewide by default",
-        "make geology search statewide by default",
+        "CngmSearchUi.show(this, geology, visibleBounds",
+        "replace Search Geology with approved progressive-disclosure UI",
+    )
+
+    replace_once(
+        RESEARCH,
+        '''    private String currentResultTitle = "Analysis";
+    private GeologyRepository.Bounds currentResultBounds;
+''',
+        '''    private String currentResultTitle = "Analysis";
+    private GeologyRepository.Bounds currentResultBounds;
+    private String currentResultSearchSummary = "";
+''',
+        "currentResultSearchSummary",
+        "preserve Search Geology interpretation on result navigation",
+    )
+
+    replace_once(
+        RESEARCH,
+        '''    private void showResults(List<GeologyUnit> results, String resultTitle,
+                             GeologyRepository.Bounds queryBounds, String queryContextJson) {
+        GuidedTourCoach.clear(this);
+''',
+        '''    private void showResults(List<GeologyUnit> results, String resultTitle,
+                             GeologyRepository.Bounds queryBounds, String queryContextJson) {
+        showResults(results, resultTitle, queryBounds, queryContextJson, "");
+    }
+
+    private void showResults(List<GeologyUnit> results, String resultTitle,
+                             GeologyRepository.Bounds queryBounds, String queryContextJson,
+                             String resultSearchSummary) {
+        GuidedTourCoach.clear(this);
+        currentResultSearchSummary = resultSearchSummary == null ? "" : resultSearchSummary.trim();
+''',
+        "String resultSearchSummary",
+        "add Search Geology result interpretation summary",
+    )
+
+    replace_once(
+        RESEARCH,
+        '''        top.addView(title(resultTitle));
+        top.addView(help(compactSummary(safe, groups)));
+''',
+        '''        top.addView(title(resultTitle));
+        if (!currentResultSearchSummary.isEmpty()) {
+            TextView searchMeaning = help(currentResultSearchSummary);
+            searchMeaning.setTextIsSelectable(true);
+            top.addView(searchMeaning);
+            Button editSearch = button("Edit Search");
+            editSearch.setOnClickListener(v -> showSearch());
+            top.addView(editSearch);
+        }
+        top.addView(help(compactSummary(safe, groups)));
+''',
+        "TextView searchMeaning = help(currentResultSearchSummary);",
+        "show explicit search meaning on results",
+    )
+
+    replace_once(
+        RESEARCH,
+        '''        root.addView(title(group.name));
+        root.addView(help(group.detailLine()));
+''',
+        '''        root.addView(title(group.name));
+        TextView unitSummary = help("Mapped unit: " + group.name + "\\n" + group.detailLine());
+        unitSummary.setTextIsSelectable(true);
+        root.addView(unitSummary);
+''',
+        'TextView unitSummary = help("Mapped unit: " + group.name',
+        "make selected geology-unit terms copyable",
+    )
+
+    replace_once(
+        RESEARCH,
+        '''        root.addView(nav("Back to Results", v -> showResults(
+                currentResults, currentResultTitle, currentResultBounds, currentQueryContextJson)));
+''',
+        '''        root.addView(nav("Back to Results", v -> showResults(
+                currentResults, currentResultTitle, currentResultBounds, currentQueryContextJson,
+                currentResultSearchSummary)));
+''',
+        "currentResultSearchSummary)));",
+        "keep search meaning when returning from unit details",
     )
 
     replace_once(
@@ -1156,6 +2743,104 @@ def inject_sources() -> None:
     )
 
     replace_once(
+        RESEARCH,
+        '''        new AlertDialog.Builder(this)
+                .setTitle("Source & Technical Details")
+                .setMessage(text.toString())
+                .setPositiveButton("Close", null)
+                .show();
+''',
+        '''        TextView technicalBody = help(text.toString());
+        technicalBody.setTextIsSelectable(true);
+        technicalBody.setPadding(dp(20), dp(8), dp(20), dp(8));
+        new AlertDialog.Builder(this)
+                .setTitle("Source & Technical Details")
+                .setView(scroll(technicalBody))
+                .setPositiveButton("Close", null)
+                .show();
+''',
+        "TextView technicalBody = help(text.toString());",
+        "make geology source details copyable",
+    )
+
+    replace_once(
+        MAIN,
+        '''import com.rockmap.app.research.GeologyDataManager;
+''',
+        '''import com.rockmap.app.research.CngmSearchUi;
+import com.rockmap.app.research.GeologyDataManager;
+''',
+        "import com.rockmap.app.research.CngmSearchUi;",
+        "import geology learning-link UI",
+    )
+
+    replace_once(
+        MAIN,
+        '''        StringBuilder text = new StringBuilder();
+        text.append("Rock type: ").append(lith);
+''',
+        '''        StringBuilder text = new StringBuilder();
+        text.append("Mapped unit: ").append(unit);
+        text.append("\\nRock type: ").append(lith);
+''',
+        'text.append("Mapped unit: ").append(unit);',
+        "make tapped geology unit copyable in HUD body",
+    )
+
+    replace_once(
+        MAIN,
+        '''        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        Button saveArea = smallActionButton("Save as Prospecting Area");
+        saveArea.setOnClickListener(v -> saveGeologyFeatureAsProspectingArea(feature, coordinate, unit));
+        detailBox.addView(saveArea);
+''',
+        '''        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        body.setTextIsSelectable(true);
+        LinearLayout detailBox = new LinearLayout(this);
+        detailBox.setOrientation(LinearLayout.VERTICAL);
+        detailBox.addView(body);
+        TextView learnLabel = new TextView(this);
+        learnLabel.setText("Learn online\\nSearch for explanations of the geology terms shown here.");
+        learnLabel.setTextSize(13f);
+        learnLabel.setTextColor(Color.rgb(70, 70, 70));
+        learnLabel.setPadding(dp(8), dp(10), dp(8), dp(2));
+        detailBox.addView(learnLabel);
+        Button learnOnline = smallActionButton("Search Google  ↗");
+        learnOnline.setContentDescription("Search Google for educational information about this mapped geology. Opens an external browser.");
+        learnOnline.setOnClickListener(v -> CngmSearchUi.showLearningSearches(this, unit, age, lith));
+        detailBox.addView(learnOnline);
+        Button saveArea = smallActionButton("Save as Prospecting Area");
+        saveArea.setOnClickListener(v -> saveGeologyFeatureAsProspectingArea(feature, coordinate, unit));
+        detailBox.addView(saveArea);
+''',
+        "CngmSearchUi.showLearningSearches(this, unit, age, lith)",
+        "add educational web search to geology polygon HUD",
+    )
+
+    replace_once(
+        MAIN,
+        '''        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        new AlertDialog.Builder(this)
+                .setTitle(unit + " — Source Details")
+''',
+        '''        body.setPadding(dp(20), dp(8), dp(20), dp(8));
+        body.setText(text.toString());
+        body.setTextIsSelectable(true);
+        // CNGM Stage 2B: technical geology values remain copyable.
+        new AlertDialog.Builder(this)
+                .setTitle(unit + " — Source Details")
+''',
+        "CNGM Stage 2B: technical geology values remain copyable.",
+        "make tapped geology source details copyable",
+    )
+
+    replace_once(
         UPDATE_WORKER,
         '''            if (!GeologyRepository.SOURCE_DOI.equals(metadata(db, "source_doi"))) {
                 throw new IOException("Geology database source DOI is unexpected.");
@@ -1172,11 +2857,49 @@ def inject_sources() -> None:
     )
 
 
+def validate_search_ui_injection() -> None:
+    checks = {
+        REPOSITORY: [
+            "public final String unit;",
+            "method=source-map-unit-fields",
+            "CngmAuthoritativeSearch.resolveLithology",
+        ],
+        RESEARCH: [
+            "CngmSearchUi.show(this, geology, visibleBounds",
+            "String resultSearchSummary",
+            "currentResultSearchSummary",
+            'Button editSearch = button("Edit Search");',
+            "TextView unitSummary = help(\"Mapped unit: \" + group.name",
+        ],
+        MAIN: [
+            "import com.rockmap.app.research.CngmSearchUi;",
+            "CngmSearchUi.showLearningSearches(this, unit, age, lith)",
+            "CNGM Stage 2B: technical geology values remain copyable.",
+        ],
+    }
+    for path, markers in checks.items():
+        text = path.read_text(encoding="utf-8")
+        for marker in markers:
+            if marker not in text:
+                raise RuntimeError(
+                    f"Search UX injection validation failed in {path.relative_to(ROOT)}: {marker}"
+                )
+    research_text = RESEARCH.read_text(encoding="utf-8")
+    if "Lithology filter (optional)" in research_text or "Age filter (optional)" in research_text:
+        raise RuntimeError("Legacy optional geology-search labels survived the UI injection.")
+    ui_text = SEARCH_UI.read_text(encoding="utf-8")
+    if "minerals found here" in ui_text.lower() or "what can i find" in ui_text.lower():
+        raise RuntimeError("Search UX generated a location-specific mineral-occurrence claim.")
+    print("CNGM Stage 2B search UX source validation: PASS")
+
+
 def main() -> int:
     manifest = load_and_validate_asset()
     write_bootstrap(manifest)
     write_search_helper()
+    write_search_ui()
     inject_sources()
+    validate_search_ui_injection()
     print("CNGM Stage 2B authoritative-search injection complete.")
     print("Production geology files/manifests remain untouched; this APK uses a separate debug DB.")
     return 0
