@@ -838,33 +838,44 @@ public final class CngmSearchUi {
     private CngmSearchUi() {}
 
 
-    /** Lightweight, user-initiated external learning links for tapped geology polygons. */
+    /** Lightweight, user-initiated external learning links for geology terms. */
     public static void showLearningSearches(Activity activity, String unit, String age, String lithology) {
         if (activity == null) return;
         final ArrayList<String> labels = new ArrayList<>();
         final ArrayList<String> subtitles = new ArrayList<>();
         final ArrayList<String> queries = new ArrayList<>();
-        if (meaningfulTerm(unit, "Mapped geologic unit")) {
+
+        final String unitSearch = mappedUnitSearchTerm(unit);
+        final String ageSearch = searchTerm(age);
+        final String lithologySearch = searchTerm(lithology);
+
+        if (meaningfulTerm(unit, "Mapped geologic unit") && !unitSearch.isEmpty()) {
             labels.add(clean(unit));
             subtitles.add("About this mapped unit");
-            queries.add(quotedSearchTerm(unit) + " geology");
+            queries.add(searchQuery(unitSearch, ageSearch, "Colorado geology"));
         }
-        if (meaningfulTerm(age, "Not reported")) {
+        if (meaningfulTerm(age, "Not reported") && !ageSearch.isEmpty()) {
             labels.add(clean(age));
             subtitles.add("About this geologic age");
-            queries.add(quotedSearchTerm(age) + " geologic age explained");
+            queries.add(searchQuery(ageSearch, "geologic age geology"));
         }
-        if (meaningfulTerm(lithology, "Not reported")) {
+        if (meaningfulTerm(lithology, "Not reported") && !lithologySearch.isEmpty()) {
             labels.add(clean(lithology));
             subtitles.add("About this rock type");
-            queries.add(quotedSearchTerm(lithology) + " geology explained");
+            queries.add(searchQuery(lithologySearch, "geology rock type"));
         }
-        String prospectingTerm = meaningfulTerm(unit, "Mapped geologic unit") ? clean(unit)
+
+        // Prospecting searches deliberately prefer standardized rock type + age over a long
+        // source-map label. This gives the search engine useful geological concepts without
+        // RockMap asserting that any mineral occurs at the mapped location.
+        String prospectingLabel = meaningfulTerm(unit, "Mapped geologic unit") ? clean(unit)
                 : meaningfulTerm(lithology, "Not reported") ? clean(lithology) : "";
-        if (!prospectingTerm.isEmpty()) {
-            labels.add(prospectingTerm);
+        String prospectingGeology = !lithologySearch.isEmpty() ? lithologySearch : unitSearch;
+        if (!prospectingLabel.isEmpty() && !prospectingGeology.isEmpty()) {
+            labels.add(prospectingLabel);
             subtitles.add("Explore rockhounding & prospecting context");
-            queries.add(quotedSearchTerm(prospectingTerm) + " rockhounding prospecting minerals");
+            queries.add(searchQuery(prospectingGeology, ageSearch,
+                    "Colorado rockhounding prospecting minerals geology"));
         }
         if (queries.isEmpty()) {
             new AlertDialog.Builder(activity)
@@ -953,8 +964,11 @@ public final class CngmSearchUi {
 
     private static void openOnlineSearch(Activity activity, String query) {
         try {
+            // Always send a normal unquoted keyword query. Quotation marks and source-map
+            // punctuation can make obscure map labels effectively impossible to match online.
+            String onlineQuery = searchTerm(query);
             android.net.Uri uri = android.net.Uri.parse(
-                    "https://www.google.com/search?q=" + android.net.Uri.encode(clean(query)));
+                    "https://www.google.com/search?q=" + android.net.Uri.encode(onlineQuery));
             android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, uri);
             activity.startActivity(intent);
         } catch (RuntimeException ex) {
@@ -972,8 +986,54 @@ public final class CngmSearchUi {
                 && !clean.equalsIgnoreCase("Lithology not reported");
     }
 
-    private static String quotedSearchTerm(String value) {
-        return "\"" + clean(value).replace("\"", "") + "\"";
+    /**
+     * Convert a displayed geology value into forgiving search-engine keywords only.
+     * This never alters the value RockMap displays or stores.
+     */
+    private static String searchTerm(String value) {
+        String out = clean(value);
+        if (out.isEmpty()) return "";
+        out = out.replace('\u2013', ' ').replace('\u2014', ' ').replace('\u2212', ' ');
+        out = out.replaceAll("[\\p{Punct}]+", " ");
+        out = out.replaceAll("\\s+", " ").trim();
+        return out;
+    }
+
+    /**
+     * Source-map unit labels sometimes contain publication-era numeric age notation that is
+     * useful on the map but poor web-search vocabulary. Remove only that search noise, then
+     * add the separately stored standardized age as context in the query builder.
+     */
+    private static String mappedUnitSearchTerm(String value) {
+        String out = clean(value);
+        if (out.isEmpty()) return "";
+        out = out.replaceAll(
+                "(?i)\\([^)]*(?:\\bage\\b|\\bm\\.?\\s*y\\.?\\b|\\bma\\b|million\\s+years?)[^)]*\\)",
+                " ");
+        out = out.replaceAll(
+                "(?i)\\b\\d[\\d,]*(?:\\.\\d+)?\\s*[-\u2013\u2014]?\\s*m\\.?\\s*y\\.?\\b",
+                " ");
+        out = out.replaceAll(
+                "(?i)\\b\\d[\\d,]*(?:\\.\\d+)?\\s*(?:to|[-\u2013\u2014])\\s*\\d[\\d,]*(?:\\.\\d+)?\\s*(?:ma|m\\.?\\s*y\\.?)\\b",
+                " ");
+        out = out.replaceAll("(?i)\\bof\\s+age\\s+group\\b", " ");
+        out = out.replaceAll("(?i)\\bage\\s+group\\b", " ");
+        out = searchTerm(out);
+        out = out.replaceAll("(?i)\\bof\\s*$", " ").trim();
+        return out;
+    }
+
+    private static String searchQuery(String... parts) {
+        StringBuilder out = new StringBuilder();
+        if (parts != null) {
+            for (String part : parts) {
+                String normalized = searchTerm(part);
+                if (normalized.isEmpty()) continue;
+                if (out.length() > 0) out.append(' ');
+                out.append(normalized);
+            }
+        }
+        return out.toString().replaceAll("\\s+", " ").trim();
     }
 
     private static TextView standaloneText(Activity activity, String value, float sp, int color, boolean bold) {
@@ -2104,6 +2164,8 @@ public final class CngmSearchUi {
         "Browse geology examples",
         "Mapped-text search",
         "showLearningSearches",
+        "mappedUnitSearchTerm",
+        "searchQuery",
         "https://www.google.com/search?q=",
         "Clear geology search",
         "SAVED_STATES",
@@ -2116,6 +2178,10 @@ public final class CngmSearchUi {
     for provider_copy in ("Search Google", "Google results", "Opens Google", "external Google search"):
         if provider_copy in generated:
             raise RuntimeError("CNGM search UI exposed provider-specific Google wording: " + provider_copy)
+    if "quotedSearchTerm" in generated:
+        raise RuntimeError("CNGM search UI still contains exact-phrase external-search quoting.")
+    if '"\\\"" + clean(value)' in generated:
+        raise RuntimeError("CNGM search UI still constructs quoted external-search terms.")
     print("CNGM Stage 2B search UX helper: generated")
 
 
