@@ -2986,7 +2986,7 @@ import android.app.Dialog;
                 final UnitGroup onlineGroup = group;
                 LinearLayout unitBlock = new LinearLayout(this);
                 unitBlock.setOrientation(LinearLayout.VERTICAL);
-                Button unitDetails = action(group.name,
+                View unitDetails = action(group.name,
                         group.detailLine(),
                         v -> showUnitGroup(group, resultTitle));
                 unitBlock.addView(unitDetails);
@@ -3223,7 +3223,7 @@ import com.rockmap.app.TourDebugLog;
     private View cngmTourFirstOnlineTarget;
     private View cngmTourShowMapTarget;
 ''',
-        "cngmTourFirstResultTarget",
+        "private View cngmTourFirstResultTarget;",
         "add dedicated geology-tour live targets",
     )
 
@@ -3571,6 +3571,22 @@ def validate_search_ui_injection() -> None:
             raise RuntimeError(f"Geology-tour Search UI validation failed: {marker}")
 
     research_text = RESEARCH.read_text(encoding="utf-8")
+    geology_tour_contracts = [
+        "private View cngmTourFirstResultTarget;",
+        "private View cngmTourFirstOnlineTarget;",
+        "private View cngmTourShowMapTarget;",
+        "View unitDetails = action(group.name,",
+    ]
+    for contract in geology_tour_contracts:
+        if research_text.count(contract) != 1:
+            raise RuntimeError(
+                f"Geology-tour generated-source contract failed in ResearchActivity.java: "
+                f"expected exactly one {contract!r}, found {research_text.count(contract)}"
+            )
+    if "Button unitDetails = action(group.name," in research_text:
+        raise RuntimeError(
+            "Geology-tour generated-source contract failed: action(...) returns View, not Button."
+        )
     if "Lithology filter (optional)" in research_text or "Age filter (optional)" in research_text:
         raise RuntimeError("Legacy optional geology-search labels survived the UI injection.")
     main_text = MAIN.read_text(encoding="utf-8")
