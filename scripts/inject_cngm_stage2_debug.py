@@ -4153,8 +4153,9 @@ def validate_search_ui_injection() -> None:
         'FieldTourState.active(activity)',
         'GEOLOGY_TOUR_SUPPRESSED',
         'GuidedTourCoach.show(activity, host, 7, 9',
-        '"Tap any research option to continue.", null',
-        '"screen=Search online chooser step=7", null, host',
+        '"Tap the highlighted About this mapped unit option.", tourChoiceTarget',
+        '"screen=Search online chooser step=7 action=About this mapped unit",',
+        'tourChoiceTarget, host',
         'GEOLOGY_TOUR_COACH_GEOMETRY',
     ]
     ui_text = SEARCH_UI.read_text(encoding="utf-8")
