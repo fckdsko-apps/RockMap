@@ -3010,7 +3010,7 @@ import android.app.Dialog;
     private GeologyRepository.Bounds currentResultBounds;
     private String currentResultSearchSummary = "";
 ''',
-        "currentResultSearchSummary",
+        'private String currentResultSearchSummary = "";',
         "preserve Search Geology interpretation on result navigation",
     )
 
@@ -3888,6 +3888,7 @@ def validate_search_ui_injection() -> None:
         "private View cngmTourShowMapTarget;",
         "private View cngmTourEditSearchTarget;",
         "private UnitGroup cngmTourSelectedGroup;",
+        'private String currentResultSearchSummary = "";',
         "View unitDetails = action(group.name,",
         "openCngmTourAwareUnitGroup(group, resultTitle)",
         "private void handleCngmGeologyTourSearchResults",
