@@ -949,10 +949,24 @@ public final class CngmSearchUi {
             row.addView(secondary);
             if (geologyTourChooser) {
                 row.setContentDescription(labels.get(i) + ". " + subtitles.get(i)
-                        + ". Preview only during the guided tour.");
-                row.setOnClickListener(v -> TourDebugLog.mainTourAction(activity,
-                        "GEOLOGY_TOUR_PREVIEW_ROW_TAP",
-                        "screen=Search online chooser step=7 row=" + labels.get(index)));
+                        + ". Guided tour example. Tap to continue without opening the browser.");
+                row.setOnClickListener(v -> {
+                    if (geologyTourDialogHandled[0]
+                            || !CngmGeologyTourState.isActive(activity)
+                            || CngmGeologyTourState.step(activity) != 7) return;
+                    geologyTourDialogHandled[0] = true;
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_PREVIEW_ROW_TAP",
+                            "screen=Search online chooser step=7 row=" + labels.get(index)
+                                    + " action=continue-without-browser");
+                    CngmGeologyTourState.setStep(activity, 8);
+                    CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_AWAIT_MAP);
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_STATE_COMMITTED",
+                            "from=7 to=8 destination=Show Geology on Map source=online-row");
+                    dialog.dismiss();
+                    GuidedTourCoach.clear(activity);
+                    if (tourContinue != null && activity.getWindow() != null)
+                        activity.getWindow().getDecorView().post(tourContinue);
+                });
             } else {
                 row.setContentDescription(labels.get(i) + ". " + subtitles.get(i)
                         + ". Opens an external web search in your browser.");
@@ -1000,24 +1014,15 @@ public final class CngmSearchUi {
         if (geologyTourChooser) {
             CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_SEARCH_ONLINE_CHOOSER);
             TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TRANSITION",
-                    "screen=Search online chooser step=7 rows=" + queries.size() + " mode=preview-only");
+                    "screen=Search online chooser step=7 rows=" + queries.size()
+                            + " mode=tap-any-row-to-continue");
             FrameLayout host = GuidedTourCoach.prepareDialogHost(activity, dialog);
-            GuidedTourCoach.show(activity, host, 7, 8,
+            GuidedTourCoach.show(activity, host, 7, 9,
                     "Search online",
-                    "These choices let you research the mapped unit, age, rock type, or rockhounding context. During this tour they are preview-only, so the browser will not interrupt the lesson.",
-                    "Tap Next to return to the results.", null,
-                    null,
-                    "Next", () -> {
-                        geologyTourDialogHandled[0] = true;
-                        CngmGeologyTourState.setStep(activity, 8);
-                        CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_AWAIT_MAP);
-                        TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_STATE_COMMITTED",
-                                "from=7 to=8 destination=Show Geology on Map");
-                        dialog.dismiss();
-                        GuidedTourCoach.clear(activity);
-                        if (tourContinue != null && activity.getWindow() != null)
-                            activity.getWindow().getDecorView().post(tourContinue);
-                    },
+                    "These choices normally open an external web search for the mapped unit, age, rock type, or rockhounding context. The tour keeps you in RockMap.",
+                    "Tap any research option to continue.", null,
+                    () -> dialog.dismiss(),
+                    null, null,
                     () -> {
                         geologyTourDialogHandled[0] = true;
                         CngmGeologyTourState.setStep(activity, 8);
@@ -1933,7 +1938,7 @@ public final class CngmSearchUi {
                             + " searchEnabled=" + (searchButton != null && searchButton.isEnabled())
                             + " refineOpen=" + (refineBox != null && refineBox.getVisibility() == View.VISIBLE));
             if (step == 1) {
-                GuidedTourCoach.show(activity, 1, 8,
+                GuidedTourCoach.show(activity, 1, 9,
                         "Search Geology",
                         "Search Colorado's mapped geology by mapped unit, rock type, or geologic age. The tour will use the same controls you use outside the tour.",
                         "Tap Next to start a geology search.", null,
@@ -1952,7 +1957,7 @@ public final class CngmSearchUi {
                     if (!CngmGeologyTourState.PHASE_SEARCH_SUBMIT.equals(phase)) {
                         CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_SEARCH_SUBMIT);
                     }
-                    GuidedTourCoach.show(activity, 2, 8,
+                    GuidedTourCoach.show(activity, 2, 9,
                             "Run the geology search",
                             "Your geology term is ready. This is the same Search Geology button used outside the tour.",
                             "Tap SEARCH GEOLOGY.", searchButton,
@@ -1970,7 +1975,7 @@ public final class CngmSearchUi {
                     if (!CngmGeologyTourState.PHASE_SEARCH_TERM.equals(phase)) {
                         CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_SEARCH_TERM);
                     }
-                    GuidedTourCoach.show(activity, 2, 8,
+                    GuidedTourCoach.show(activity, 2, 9,
                             "Choose a geology term",
                             "Enter any mapped unit, rock type, or geologic age. Quick Examples below are optional shortcuts and use the normal app behavior.",
                             "Tap the search field and enter a geology term.", quick,
@@ -1989,7 +1994,7 @@ public final class CngmSearchUi {
                 boolean open = refineBox.getVisibility() == View.VISIBLE;
                 if (open) {
                     CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_REFINE_OPEN);
-                    GuidedTourCoach.show(activity, 5, 8,
+                    GuidedTourCoach.show(activity, 5, 9,
                             "Refine a search",
                             "Mapped unit, rock type, and geologic age can be entered separately here, and multiple filters can be combined.",
                             "Tap Next when you're ready to continue.", null,
@@ -2009,7 +2014,7 @@ public final class CngmSearchUi {
                     logTourCoachGeometry("screen=search step=5 phase=refine_open", null);
                 } else {
                     CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_DEFAULT);
-                    GuidedTourCoach.show(activity, 5, 8,
+                    GuidedTourCoach.show(activity, 5, 9,
                             "Refine a search",
                             "Refine Search exposes separate fields for mapped unit, rock type, and geologic age.",
                             "Tap Refine search.", refineToggle,
@@ -2036,7 +2041,7 @@ public final class CngmSearchUi {
                     showTourStep();
                     return;
                 }
-                GuidedTourCoach.show(activity, 6, 8,
+                GuidedTourCoach.show(activity, 6, 9,
                         "Search area",
                         "Searches normally cover all of Colorado. Visible map area limits the search to the part of the map that was on screen when you opened Search Geology.",
                         "Tap Next to continue to the research tools in your results.", null,
@@ -2567,7 +2572,7 @@ public final class CngmGeologyTourState {
     private static final String KEY_STEP = "step";
     private static final String KEY_PHASE = "phase";
     private static final String KEY_VERSION = "version";
-    private static final int TOUR_VERSION = 2;
+    private static final int TOUR_VERSION = 3;
 
     public static final String PHASE_DEFAULT = "default";
     public static final String PHASE_SEARCH_TERM = "search_term";
@@ -3611,9 +3616,10 @@ import com.rockmap.app.TourDebugLog;
                         && CngmGeologyTourState.PHASE_AWAIT_MAP.equals(
                                 CngmGeologyTourState.phase(this))) {
                     clearCngmTourExactActionHighlight();
+                    CngmGeologyTourState.setStep(this, 9);
                     CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_AWAIT_POLYGON);
-                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_ACTION",
-                            "step=8 action=Show Geology on Map expectedNext=tap mapped polygon");
+                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
+                            "from=8 to=9 destination=map expectedNext=tap mapped polygon");
                     GuidedTourCoach.clear(this);
                 }
                 returnGeology(geoJson, resultTitle, safe.size(), mapBounds);
@@ -3705,7 +3711,7 @@ import com.rockmap.app.TourDebugLog;
         TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_UNIT_DETAILS_RENDER",
                 "step=4 unit=" + (group == null ? "" : group.name)
                         + " summaryAttached=" + (target != null && target.isAttachedToWindow()));
-        GuidedTourCoach.show(this, 4, 8,
+        GuidedTourCoach.show(this, 4, 9,
                 "Mapped unit details",
                 "This view explains the selected mapped unit and its geologic context, including rock type and age when those values are available.",
                 "Tap Next to continue.", null,
@@ -3751,7 +3757,7 @@ import com.rockmap.app.TourDebugLog;
                         "screen=results step=2 target=Edit Search missing");
                 return;
             }
-            GuidedTourCoach.show(this, 2, 8,
+            GuidedTourCoach.show(this, 2, 9,
                     "No mapped matches",
                     "That search did not return any mapped geology. Edit the search and try another term or Quick Example.",
                     "Tap Edit Search.", cngmTourEditSearchTarget,
@@ -3771,7 +3777,7 @@ import com.rockmap.app.TourDebugLog;
                         "screen=results step=3 target=first result missing");
                 return;
             }
-            GuidedTourCoach.show(this, 3, 8,
+            GuidedTourCoach.show(this, 3, 9,
                     "Mapped geologic units",
                     "Results are grouped mapped geologic units. The mapped-area count tells you how many source polygons use the grouped unit; it is not a count of separate formations.",
                     "Tap this mapped unit result to view its details.", cngmTourFirstResultTarget,
@@ -3795,7 +3801,7 @@ import com.rockmap.app.TourDebugLog;
                         "screen=results step=7 target=Search online missing");
                 return;
             }
-            GuidedTourCoach.show(this, 7, 8,
+            GuidedTourCoach.show(this, 7, 9,
                     "Learn more online",
                     "Search Online can research the mapped unit, its age, its rock type, or rockhounding context without changing RockMap's mapped geology.",
                     "Tap Search online.", cngmTourFirstOnlineTarget,
@@ -3817,11 +3823,10 @@ import com.rockmap.app.TourDebugLog;
                         "screen=results step=8 target=Show Geology on Map missing");
                 return;
             }
-            highlightCngmTourExactAction(cngmTourShowMapTarget);
-            GuidedTourCoach.showMapInteraction(this, 8, 8,
-                    "Geology on the map",
-                    "Return these mapped geology results to the map, then tap a mapped geology area to inspect the unit at that location.",
-                    "Tap Show Geology on Map.",
+            GuidedTourCoach.show(this, 8, 9,
+                    "Show geology on the map",
+                    "Send these mapped geology results back to the map. The next lesson will show you how to inspect a mapped geology area.",
+                    "Tap Show Geology on Map.", cngmTourShowMapTarget,
                     () -> {
                         clearCngmTourExactActionHighlight();
                         CngmGeologyTourState.setStep(this, 7);
@@ -3905,11 +3910,11 @@ import com.rockmap.app.TourDebugLog;
 ''',
         '''                geologyOverlayController.show(geoJson, title, count);
                 if (CngmGeologyTourState.isActive(this)
-                        && CngmGeologyTourState.step(this) == 8
+                        && CngmGeologyTourState.step(this) == 9
                         && CngmGeologyTourState.PHASE_AWAIT_POLYGON.equals(
                                 CngmGeologyTourState.phase(this))) {
                     TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_TRANSITION",
-                            "screen=map step=8 geologyOverlayCount=" + count
+                            "screen=map step=9 geologyOverlayCount=" + count
                                     + " expectedNext=tap polygon");
                     mapView.post(this::maybeShowCngmGeologyMapTour);
                 }
@@ -3933,25 +3938,25 @@ import com.rockmap.app.TourDebugLog;
             return;
         }
         if (!CngmGeologyTourState.isActive(this)
-                || CngmGeologyTourState.step(this) != 8
+                || CngmGeologyTourState.step(this) != 9
                 || !CngmGeologyTourState.PHASE_AWAIT_POLYGON.equals(
                         CngmGeologyTourState.phase(this))) return;
         TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP",
-                "screen=map step=8 phase=await_polygon overlayVisible="
+                "screen=map step=9 phase=await_polygon overlayVisible="
                         + (geologyOverlayController != null && geologyOverlayController.isVisible()));
-        GuidedTourCoach.showMapInteraction(this, 8, 8,
-                "Geology on the map",
-                "Tap a mapped geology area to identify the unit beneath that location and open its geology details.",
-                "Tap a mapped geology area.",
+        GuidedTourCoach.showMapInteraction(this, 9, 9,
+                "Inspect mapped geology",
+                "The colored areas are the geology from your search. Tap any colored geology area to identify the mapped unit at that location.",
+                "Tap a colored geology area.",
                 null, null, null,
                 this::finishCngmGeologyTour, this::exitCngmGeologyTourFromMap);
         CngmSearchUi.logExternalTourCoachGeometry(this,
-                "screen=map step=8 phase=await_polygon", null);
+                "screen=map step=9 phase=await_polygon", null);
     }
 
     private void finishCngmGeologyTour() {
         CngmGeologyTourState.finish(this);
-        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_FINISH", "screen=map step=8");
+        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_FINISH", "screen=map step=9");
         GuidedTourCoach.clear(this);
     }
 
@@ -4001,16 +4006,16 @@ import com.rockmap.app.TourDebugLog;
                 return;
             }
             if (!CngmGeologyTourState.isActive(this)
-                    || CngmGeologyTourState.step(this) != 8
+                    || CngmGeologyTourState.step(this) != 9
                     || !CngmGeologyTourState.PHASE_AWAIT_POLYGON.equals(
                             CngmGeologyTourState.phase(this))) return;
             CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_MAP_DETAILS);
             GuidedTourCoach.clear(this);
             TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
-                    "step=8 phase=map_details unit=" + unit);
+                    "step=9 phase=map_details unit=" + unit);
             FrameLayout host = dialogTourRoot(geologyDialog);
-            GuidedTourCoach.show(this, host, 8, 8,
-                    "Geology on the map",
+            GuidedTourCoach.show(this, host, 9, 9,
+                    "Mapped geology details",
                     "This panel identifies the mapped unit at the location you tapped. It includes the mapped unit, rock type, age, source details, and further research actions.",
                     "Tap Finish to complete the tour.", null,
                     null, "Finish", () -> {
@@ -4026,11 +4031,11 @@ import com.rockmap.app.TourDebugLog;
                         exitCngmGeologyTourFromMap();
                     });
             CngmSearchUi.logExternalTourCoachGeometry(this,
-                    "screen=geology HUD step=8 phase=map_details", null, host);
+                    "screen=geology HUD step=9 phase=map_details", null, host);
         });
         geologyDialog.setOnDismissListener(ignored -> {
             if (CngmGeologyTourState.isActive(this)
-                    && CngmGeologyTourState.step(this) == 8
+                    && CngmGeologyTourState.step(this) == 9
                     && CngmGeologyTourState.PHASE_MAP_DETAILS.equals(
                             CngmGeologyTourState.phase(this))) {
                 finishCngmGeologyTour();
@@ -4120,12 +4125,12 @@ def validate_search_ui_injection() -> None:
         "PHASE_AWAIT_MAP",
         "PHASE_AWAIT_POLYGON",
         "PHASE_MAP_DETAILS",
-        "TOUR_VERSION = 2",
+        "TOUR_VERSION = 3",
     ]:
         if marker not in geology_tour_text:
             raise RuntimeError(f"Geology-tour state validation failed: {marker}")
     ui_tour_markers = [
-        'GuidedTourCoach.show(activity, 1, 8',
+        'GuidedTourCoach.show(activity, 1, 9',
         '"Tap SEARCH GEOLOGY.", searchButton',
         '"Tap Refine search.", refineToggle',
         'GEOLOGY_TOUR_SEARCH_STARTED',
@@ -4136,8 +4141,8 @@ def validate_search_ui_injection() -> None:
         'callback.onReturnToTourResults()',
         'FieldTourState.active(activity)',
         'GEOLOGY_TOUR_SUPPRESSED',
-        'GuidedTourCoach.show(activity, host, 7, 8',
-        '"Tap Next to return to the results.", null',
+        'GuidedTourCoach.show(activity, host, 7, 9',
+        '"Tap any research option to continue.", null',
         '"screen=Search online chooser step=7", null, host',
         'GEOLOGY_TOUR_COACH_GEOMETRY',
     ]
@@ -4160,7 +4165,11 @@ def validate_search_ui_injection() -> None:
             )
 
     for forbidden in [
-        'GuidedTourCoach.show(activity, 1, 9',
+        'GuidedTourCoach.show(activity, 1, 8',
+        'GuidedTourCoach.show(activity, 2, 8',
+        'GuidedTourCoach.show(activity, 5, 8',
+        'GuidedTourCoach.show(activity, 6, 8',
+        'GuidedTourCoach.show(activity, host, 7, 8',
         'examplesTarget',
         'geologyIntroTarget',
         'searchAreaTarget',
@@ -4203,14 +4212,13 @@ def validate_search_ui_injection() -> None:
         "GEOLOGY_TOUR_SEARCH_EMPTY",
         "GEOLOGY_TOUR_SUPPRESSED",
         "screen=unit-details from=4 to=3 action=Back to Results",
-        'GuidedTourCoach.show(this, 3, 8',
+        'GuidedTourCoach.show(this, 3, 9',
         '"Tap this mapped unit result to view its details.", cngmTourFirstResultTarget',
-        'GuidedTourCoach.show(this, 4, 8',
+        'GuidedTourCoach.show(this, 4, 9',
         '"Tap Next to continue.", null',
-        'GuidedTourCoach.show(this, 7, 8',
+        'GuidedTourCoach.show(this, 7, 9',
         '"Tap Search online.", cngmTourFirstOnlineTarget',
-        'GuidedTourCoach.showMapInteraction(this, 8, 8',
-        'highlightCngmTourExactAction(cngmTourShowMapTarget)',
+        '"Tap Show Geology on Map.", cngmTourShowMapTarget',
         'target.requestRectangleOnScreen(local, true);',
         'screen=empty-results step=2 reason=required-search-skipped-no-results',
         'CngmSearchUi.logExternalTourCoachGeometry',
@@ -4227,38 +4235,62 @@ def validate_search_ui_injection() -> None:
         raise RuntimeError("Legacy optional geology-search labels survived the UI injection.")
     main_text = MAIN.read_text(encoding="utf-8")
     for forbidden in [
-        'GuidedTourCoach.show(this, 4, 9',
-        'GuidedTourCoach.show(this, 5, 9',
-        'GuidedTourCoach.show(this, 8, 9',
-        'GuidedTourCoach.show(this, 9, 9',
+        'GuidedTourCoach.show(this, 3, 8,\n                    "Mapped geologic units"',
+        'GuidedTourCoach.show(this, 4, 8,\n                "Mapped unit details"',
+        'GuidedTourCoach.show(this, 7, 8,\n                    "Learn more online"',
+        'GuidedTourCoach.showMapInteraction(this, 8, 8,\n                    "Geology on the map"',
         '"Review the mapped unit details.", target',
         'PHASE_AWAIT_LEARN_MORE_RESULTS',
-        'CngmGeologyTourState.step(this) == 9',
         'screen=empty-results from=2 to=5',
     ]:
         if forbidden in research_text:
             raise RuntimeError(
-                "Geology-tour ResearchActivity violated the v2 action/state contract: " + forbidden
+                "Geology-tour ResearchActivity violated the v3 action/state contract: " + forbidden
             )
     for forbidden in [
-        'GuidedTourCoach.showMapInteraction(this, 9, 9',
-        'GuidedTourCoach.show(this, host, 9, 9',
         '"Review the mapped geology details.", detailBox',
-        'CngmGeologyTourState.step(this) != 9',
     ]:
         if forbidden in main_text:
             raise RuntimeError(
-                "Geology-tour MainActivity violated the v2 action/state contract: " + forbidden
+                "Geology-tour MainActivity violated the v3 action/state contract: " + forbidden
             )
     for required in [
-        'GuidedTourCoach.showMapInteraction(this, 8, 8',
-        'GuidedTourCoach.show(this, host, 8, 8',
+        'GuidedTourCoach.showMapInteraction(this, 9, 9',
+        'GuidedTourCoach.show(this, host, 9, 9',
         '"Tap Finish to complete the tour.", null',
-        '"screen=geology HUD step=8 phase=map_details", null, host',
+        '"screen=geology HUD step=9 phase=map_details", null, host',
         'PHASE_MAP_DETAILS',
     ]:
         if required not in main_text:
-            raise RuntimeError("Geology-tour MainActivity v2 marker missing: " + required)
+            raise RuntimeError("Geology-tour MainActivity v3 marker missing: " + required)
+    for required in [
+        'mode=tap-any-row-to-continue',
+        'action=continue-without-browser',
+        'from=7 to=8 destination=Show Geology on Map source=online-row',
+    ]:
+        if required not in ui_text:
+            raise RuntimeError("Geology-tour Step 7 v3 marker missing: " + required)
+    for forbidden in [
+        'mode=preview-only',
+        'Tap Next to return to the results.',
+        'Preview only during the guided tour.',
+    ]:
+        if forbidden in ui_text:
+            raise RuntimeError("Geology-tour Step 7 retained dead preview behavior: " + forbidden)
+    for required in [
+        'GuidedTourCoach.show(this, 8, 9',
+        '"Tap Show Geology on Map.", cngmTourShowMapTarget',
+        'from=8 to=9 destination=map expectedNext=tap mapped polygon',
+    ]:
+        if required not in research_text:
+            raise RuntimeError("Geology-tour Step 8 v3 marker missing: " + required)
+    for forbidden in [
+        'GuidedTourCoach.showMapInteraction(this, 8, 8',
+        'screen=map step=8 phase=await_polygon',
+    ]:
+        if forbidden in research_text or forbidden in main_text:
+            raise RuntimeError("Geology-tour old Step 8 map contract survived: " + forbidden)
+
     # The dedicated geology tour must consume the existing shared coach engine without
     # injecting geology state or callbacks into GuidedTourCoach itself.
     if "CngmGeologyTourState" in coach_text or "GEOLOGY_TOUR_" in coach_text:
