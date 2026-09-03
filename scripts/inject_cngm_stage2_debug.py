@@ -770,6 +770,7 @@ import android.widget.TextView;
 import com.rockmap.app.GuidedTourCoach;
 import com.rockmap.app.GuidedTourState;
 import com.rockmap.app.TourDebugLog;
+import com.rockmap.app.field.FieldTourState;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -783,6 +784,10 @@ public final class CngmSearchUi {
     interface Callback {
         void onSearch(GeologyRepository.Filter filter, GeologyRepository.Bounds bounds,
                       String resultTitle, String resultSummary);
+        boolean hasTourResults();
+        void onReturnToTourResults();
+        boolean hasTourUnitDetails();
+        void onReturnToTourUnitDetails();
         void onBack();
     }
 
@@ -1129,8 +1134,8 @@ public final class CngmSearchUi {
         private Option selectedQuick;
         private boolean suppressQuickWatcher;
         private int tourStep;
-        private View graniteExampleTarget;
-        private View morrisonExampleTarget;
+        private View geologyIntroTarget;
+        private View examplesTarget;
         private View searchAreaTarget;
 
         Screen(Activity activity, GeologyRepository geology,
@@ -1173,12 +1178,16 @@ public final class CngmSearchUi {
             topBar.addView(help, new LinearLayout.LayoutParams(dp(48), dp(48)));
             root.addView(topBar);
 
+            LinearLayout geologyIntro = new LinearLayout(activity);
+            geologyIntro.setOrientation(LinearLayout.VERTICAL);
             TextView title = text("Search Geology", 24f, 0xff202020, true);
             title.setPadding(0, dp(4), 0, dp(6));
-            root.addView(title);
+            geologyIntro.addView(title);
             TextView intro = helper("Search Colorado's mapped geology by rock type, geologic age, or mapped unit.");
             intro.setPadding(0, 0, 0, dp(18));
-            root.addView(intro);
+            geologyIntro.addView(intro);
+            geologyIntroTarget = geologyIntro;
+            root.addView(geologyIntro, matchWrap());
 
             root.addView(fieldLabel("Search geology"));
             quick = new EditText(activity);
@@ -1290,8 +1299,14 @@ public final class CngmSearchUi {
             scroll.requestApplyInsets();
             if (CngmGeologyTourState.isActive(activity)) {
                 int resumeStep = CngmGeologyTourState.step(activity);
+                if (resumeStep == 5) {
+                    CngmGeologyTourState.setStep(activity, 6);
+                    resumeStep = 6;
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_RECOVER",
+                            "screen=search invalidStep=5 recoveredStep=6 reason=unit-details-not-active");
+                }
                 if (resumeStep == 1 || resumeStep == 2 || resumeStep == 3
-                        || resumeStep == 5 || resumeStep == 6 || resumeStep == 7) {
+                        || resumeStep == 6 || resumeStep == 7) {
                     tourStep = resumeStep;
                     TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_RESUME",
                             "screen=search step=" + resumeStep);
@@ -1343,10 +1358,6 @@ public final class CngmSearchUi {
             quick.setOnFocusChangeListener((v, hasFocus) -> {
                 if (!hasFocus) return;
                 renderSuggestions(quick.getText().toString());
-                if (tourStep == 1) {
-                    tourStep = 2;
-                    activity.getWindow().getDecorView().post(this::showTourStep);
-                }
             });
             quick.setOnEditorActionListener((v, actionId, event) -> {
                 if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -1401,6 +1412,7 @@ public final class CngmSearchUi {
 
         private void renderSuggestions(String raw) {
             String query = raw == null ? "" : raw.trim();
+            examplesTarget = null;
             suggestions.removeAllViews();
             suggestions.setVisibility(View.VISIBLE);
             if (query.isEmpty()) {
@@ -1415,24 +1427,24 @@ public final class CngmSearchUi {
         }
 
         private void renderExamples() {
-            TextView heading = microHeading("TRY AN EXAMPLE");
-            suggestions.addView(heading);
-            Option granite = new Option("Granite", "Rock type", Kind.ROCK_TYPE, "Granite");
-            View graniteRow = suggestionRow(granite);
-            graniteExampleTarget = graniteRow;
-            suggestions.addView(graniteRow);
-            suggestions.addView(suggestionRow(
+            LinearLayout examples = new LinearLayout(activity);
+            examples.setOrientation(LinearLayout.VERTICAL);
+            examples.addView(microHeading("TRY AN EXAMPLE"));
+            examples.addView(suggestionRow(
+                    new Option("Granite", "Rock type", Kind.ROCK_TYPE, "Granite")));
+            examples.addView(suggestionRow(
                     new Option("Sandstone", "Rock type", Kind.ROCK_TYPE, "Sandstone")));
-            suggestions.addView(suggestionRow(
+            examples.addView(suggestionRow(
                     new Option("Cretaceous", "Geologic age", Kind.AGE, "Cretaceous")));
-            suggestions.addView(suggestionRow(
+            examples.addView(suggestionRow(
                     new Option("Precambrian", "Geologic age", Kind.AGE, "Precambrian")));
-            morrisonExampleTarget = suggestionRow(
-                    new Option("Morrison", "Mapped unit or name", Kind.UNIT, "Morrison"));
-            suggestions.addView(morrisonExampleTarget);
+            examples.addView(suggestionRow(
+                    new Option("Morrison", "Mapped unit or name", Kind.UNIT, "Morrison")));
             Button more = disclosureButton("Browse more examples", false);
             more.setOnClickListener(v -> showMoreExamples());
-            suggestions.addView(more, matchWrap());
+            examples.addView(more, matchWrap());
+            examplesTarget = examples;
+            suggestions.addView(examples, matchWrap());
         }
 
         private View suggestionRow(Option option) {
@@ -1464,11 +1476,6 @@ public final class CngmSearchUi {
             quick.clearFocus();
             updateInterpretation();
             updateSearchButton();
-            if (tourStep == 2 && option.kind == Kind.ROCK_TYPE
-                    && "granite".equalsIgnoreCase(option.query)) {
-                tourStep = 3;
-                activity.getWindow().getDecorView().post(this::showTourStep);
-            }
         }
 
         private void changeInterpretation() {
@@ -1583,6 +1590,23 @@ public final class CngmSearchUi {
             SearchPlan plan = new SearchPlan(
                     new GeologyRepository.Filter(mappedText, unit, lith, age),
                     bounds, title, summary.toString());
+            if (CngmGeologyTourState.isActive(activity)) {
+                int activeStep = tourStep > 0 ? tourStep : CngmGeologyTourState.step(activity);
+                if (activeStep >= 1 && activeStep <= 3) {
+                    tourStep = 3;
+                    CngmGeologyTourState.setStep(activity, 3);
+                    CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_AWAIT_RESULTS);
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_SEARCH_STARTED",
+                            "fromStep=" + activeStep + " expectedNext=4 area=" + area);
+                } else if (activeStep == 6 || activeStep == 7) {
+                    tourStep = 7;
+                    CngmGeologyTourState.setStep(activity, 7);
+                    CngmGeologyTourState.setPhase(activity,
+                            CngmGeologyTourState.PHASE_AWAIT_LEARN_MORE_RESULTS);
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_SEARCH_STARTED",
+                            "fromStep=" + activeStep + " expectedNext=8 area=" + area);
+                }
+            }
             saveState();
             GuidedTourCoach.clear(activity);
             hideKeyboard(quick);
@@ -1769,7 +1793,7 @@ public final class CngmSearchUi {
                     .setNegativeButton("Close", null)
                     .create();
             dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                if (GuidedTourState.isActive(activity)) {
+                if (GuidedTourState.isActive(activity) || FieldTourState.active(activity)) {
                     new AlertDialog.Builder(activity)
                             .setTitle("Another guided tour is active")
                             .setMessage("Finish or exit the current RockMap guided tour before starting the Search Geology tour.")
@@ -1791,105 +1815,133 @@ public final class CngmSearchUi {
                 tourStep = 0;
                 return;
             }
+            if (GuidedTourState.isActive(activity) || FieldTourState.active(activity)) {
+                int previous = CngmGeologyTourState.step(activity);
+                CngmGeologyTourState.exit(activity);
+                tourStep = 0;
+                TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_SUPPRESSED",
+                        "screen=search step=" + previous + " reason=another-tour-active");
+                return;
+            }
             if (tourStep <= 0) tourStep = CngmGeologyTourState.step(activity);
             final int step = tourStep;
             CngmGeologyTourState.setStep(activity, step);
             TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_STEP",
-                    "screen=search step=" + step + " quickAttached=" + (quick != null && quick.isAttachedToWindow()));
+                    "screen=search step=" + step
+                            + " introAttached=" + (geologyIntroTarget != null && geologyIntroTarget.isAttachedToWindow())
+                            + " examplesAttached=" + (examplesTarget != null && examplesTarget.isAttachedToWindow()));
             if (step == 1) {
+                if (geologyIntroTarget == null || !geologyIntroTarget.isAttachedToWindow()) {
+                    TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TARGET_WAIT",
+                            "screen=search step=1 target=Search Geology intro");
+                    activity.getWindow().getDecorView().postDelayed(this::showTourStep, 60L);
+                    return;
+                }
                 GuidedTourCoach.show(activity, 1, 9,
                         "Geology",
-                        "Search the mapped geology of Colorado by geologic unit, rock type, or geologic age.",
-                        "Review the Search Geology screen.", quick,
+                        "Search Colorado's mapped geology by geologic unit, rock type, or geologic age.",
+                        "Review the Search Geology screen.", geologyIntroTarget,
                         null,
                         "Next", () -> { tourStep = 2; showTourStep(); },
                         this::skipTourStep, this::exitSearchTour);
             } else if (step == 2) {
                 GuidedTourCoach.show(activity, 2, 9,
                         "Search geology",
-                        "Enter a geologic term here. You can search names like Morrison Formation, rock types like granite, or ages like Cretaceous.",
+                        "Enter a geologic term here, such as a mapped unit, rock type, or geologic age.",
                         "Use the search field when you know a term.", quick,
                         () -> { tourStep = 1; showTourStep(); },
                         "Next", () -> {
-                            quick.requestFocus();
+                            hideKeyboard(quick);
+                            quick.clearFocus();
                             renderSuggestions("");
                             tourStep = 3;
                             activity.getWindow().getDecorView().post(this::showTourStep);
                         },
                         this::skipTourStep, this::exitSearchTour);
             } else if (step == 3) {
-                if (morrisonExampleTarget == null || !morrisonExampleTarget.isAttachedToWindow()
-                        || morrisonExampleTarget.getWidth() <= 0 || morrisonExampleTarget.getHeight() <= 0) {
-                    quick.requestFocus();
+                if (examplesTarget == null || !examplesTarget.isAttachedToWindow()
+                        || examplesTarget.getWidth() <= 0 || examplesTarget.getHeight() <= 0) {
+                    hideKeyboard(quick);
+                    quick.clearFocus();
                     renderSuggestions("");
                     TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TARGET_WAIT",
-                            "screen=search step=3 target=Morrison example");
+                            "screen=search step=3 target=Quick examples group");
                     activity.getWindow().getDecorView().postDelayed(this::showTourStep, 60L);
                     return;
                 }
+                TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_STEP3_SHOWN",
+                        "target=Quick examples group action=run-any-search");
                 GuidedTourCoach.show(activity, 3, 9,
                         "Quick examples",
-                        "Examples show different kinds of geology searches without requiring you to know the database vocabulary first.",
-                        "Try Morrison.", morrisonExampleTarget,
+                        "Examples are shortcuts for common geology searches. Choose any example, or enter your own search.",
+                        "Run any geology search.", examplesTarget,
                         () -> { tourStep = 2; showTourStep(); },
-                        "Try Morrison", this::runMorrisonTourSearch,
-                        this::runMorrisonTourSearch, this::exitSearchTour);
-            } else if (step == 5) {
-                if (refineToggle == null || !refineToggle.isAttachedToWindow()) {
-                    activity.getWindow().getDecorView().postDelayed(this::showTourStep, 60L);
-                    return;
-                }
-                GuidedTourCoach.show(activity, 5, 9,
-                        "What are you searching?",
-                        "A term can appear in different parts of the geologic data. Rock type, mapped text, unit name, and age are not always the same thing.",
-                        "Open Refine search to see the specific geology fields.", refineToggle,
-                        null,
-                        "Open Refine", () -> {
-                            if (refineBox.getVisibility() != View.VISIBLE) toggleRefine();
-                            tourStep = 6;
-                            activity.getWindow().getDecorView().post(this::showTourStep);
-                        },
-                        () -> { if (refineBox.getVisibility() != View.VISIBLE) toggleRefine(); tourStep = 6; showTourStep(); },
-                        this::exitSearchTour);
+                        null, null,
+                        this::skipTourStep, this::exitSearchTour);
             } else if (step == 6) {
                 if (refineBox.getVisibility() != View.VISIBLE) toggleRefine();
                 GuidedTourCoach.show(activity, 6, 9,
                         "Narrow the search",
-                        "Use these fields when you know whether you are looking for a mapped unit, a rock type, or an age. Filters can be combined.",
+                        "Use these fields to specify a mapped unit, rock type, or geologic age. A term can appear in different parts of the geologic data, and filters can be combined.",
                         "Review the mapped unit, rock type, and geologic age fields.", refineBox,
-                        () -> { tourStep = 5; showTourStep(); },
+                        () -> {
+                            if (callback.hasTourUnitDetails()) {
+                                CngmGeologyTourState.setStep(activity, 5);
+                                TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_BACK",
+                                        "screen=search from=6 to=5 destination=unit-details");
+                                callback.onReturnToTourUnitDetails();
+                            } else {
+                                tourStep = 3;
+                                CngmGeologyTourState.setStep(activity, 3);
+                                hideKeyboard(quick);
+                                quick.clearFocus();
+                                renderSuggestions("");
+                                showTourStep();
+                            }
+                        },
                         "Next", () -> { tourStep = 7; showTourStep(); },
                         () -> { tourStep = 7; showTourStep(); }, this::exitSearchTour);
             } else if (step == 7) {
-                GuidedTourCoach.show(activity, 7, 9,
-                        "Search area",
-                        "Searches normally cover all of Colorado. Use Visible map area when you only want results from the part of the map currently on screen.",
-                        "Choose the geographic scope that fits your search.", searchAreaTarget,
-                        () -> { tourStep = 6; showTourStep(); },
-                        "Next", () -> {
-                            CngmGeologyTourState.setStep(activity, 8);
-                            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TRANSITION",
-                                    "search step=7 -> results step=8 via Morrison");
-                            runMorrisonTourSearchForResultsStep();
-                        },
-                        this::runMorrisonTourSearchForResultsStep, this::exitSearchTour);
+                if (callback.hasTourResults()) {
+                    GuidedTourCoach.show(activity, 7, 9,
+                            "Search area",
+                            "Searches normally cover all of Colorado. Use Visible map area when you only want results from the part of the map currently on screen.",
+                            "Review the geographic scope options.", searchAreaTarget,
+                            () -> { tourStep = 6; showTourStep(); },
+                            "Next", this::returnToResultsForLearnMore,
+                            this::returnToResultsForLearnMore, this::exitSearchTour);
+                } else {
+                    GuidedTourCoach.show(activity, 7, 9,
+                            "Search area",
+                            "Searches normally cover all of Colorado. Use Visible map area when you only want results from the part of the map currently on screen.",
+                            "Run a geology search to continue to the result-based lessons.", searchAreaTarget,
+                            () -> { tourStep = 6; showTourStep(); },
+                            null, null,
+                            this::finishSearchTourWithoutResults, this::exitSearchTour);
+                }
             }
         }
 
-        private void runMorrisonTourSearch() {
-            applyOption(new Option("Morrison", "Mapped unit or name", Kind.UNIT, "Morrison"));
-            CngmGeologyTourState.setStep(activity, 4);
-            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_ACTION",
-                    "step=3 action=Try Morrison expectedNext=results-step4");
-            submit();
+        private void returnToResultsForLearnMore() {
+            if (!callback.hasTourResults()) {
+                TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TARGET_FAIL",
+                        "screen=search step=7 target=reusable-results missing");
+                return;
+            }
+            CngmGeologyTourState.setStep(activity, 8);
+            CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_DEFAULT);
+            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_STATE_COMMITTED",
+                    "from=7 to=8 destination=existing-results");
+            GuidedTourCoach.clear(activity);
+            callback.onReturnToTourResults();
         }
 
-        private void runMorrisonTourSearchForResultsStep() {
-            applyOption(new Option("Morrison", "Mapped unit or name", Kind.UNIT, "Morrison"));
-            CngmGeologyTourState.setStep(activity, 8);
-            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_ACTION",
-                    "step=7 action=return to Morrison results expectedNext=learn-more");
-            submit();
+        private void finishSearchTourWithoutResults() {
+            CngmGeologyTourState.finish(activity);
+            tourStep = 0;
+            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_FINISH",
+                    "screen=search reason=result-dependent-lessons-skipped");
+            GuidedTourCoach.clear(activity);
         }
 
         void resumeTourAt(int step) {
@@ -1899,27 +1951,29 @@ public final class CngmSearchUi {
         }
 
         private void skipTourStep() {
+            int from = tourStep;
             if (tourStep == 1) tourStep = 2;
             else if (tourStep == 2) {
-                quick.requestFocus();
+                hideKeyboard(quick);
+                quick.clearFocus();
                 renderSuggestions("");
                 tourStep = 3;
             } else if (tourStep == 3) {
-                runMorrisonTourSearch();
-                return;
-            } else if (tourStep == 5) {
                 if (refineBox.getVisibility() != View.VISIBLE) toggleRefine();
                 tourStep = 6;
             } else if (tourStep == 6) tourStep = 7;
             else if (tourStep == 7) {
-                runMorrisonTourSearchForResultsStep();
+                if (callback.hasTourResults()) returnToResultsForLearnMore();
+                else finishSearchTourWithoutResults();
                 return;
             } else {
                 exitSearchTour();
                 return;
             }
             CngmGeologyTourState.setStep(activity, tourStep);
-            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_SKIP", "screen=search nextStep=" + tourStep);
+            CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_DEFAULT);
+            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_SKIP",
+                    "screen=search from=" + from + " to=" + tourStep);
             activity.getWindow().getDecorView().post(this::showTourStep);
         }
 
@@ -2332,6 +2386,8 @@ public final class CngmGeologyTourState {
     private static final String KEY_PHASE = "phase";
 
     public static final String PHASE_DEFAULT = "default";
+    public static final String PHASE_AWAIT_RESULTS = "await_results";
+    public static final String PHASE_AWAIT_LEARN_MORE_RESULTS = "await_learn_more_results";
     public static final String PHASE_AWAIT_MAP = "await_map";
     public static final String PHASE_AWAIT_POLYGON = "await_polygon";
 
@@ -2910,6 +2966,31 @@ import android.app.Dialog;
                         results -> showResults(results, resultTitle, bounds, context, resultSummary));
             }
 
+            @Override public boolean hasTourResults() {
+                return currentResults != null && !currentResults.isEmpty();
+            }
+
+            @Override public void onReturnToTourResults() {
+                TourDebugLog.mainTourAction(ResearchActivity.this, "GEOLOGY_TOUR_TRANSITION",
+                        "destination=existing-results count="
+                                + (currentResults == null ? 0 : currentResults.size()));
+                showResults(currentResults, currentResultTitle, currentResultBounds,
+                        currentQueryContextJson, currentResultSearchSummary);
+            }
+
+            @Override public boolean hasTourUnitDetails() {
+                return cngmTourSelectedGroup != null;
+            }
+
+            @Override public void onReturnToTourUnitDetails() {
+                if (cngmTourSelectedGroup == null) {
+                    CngmGeologyTourState.setStep(ResearchActivity.this, 4);
+                    onReturnToTourResults();
+                    return;
+                }
+                showUnitGroup(cngmTourSelectedGroup, cngmTourSelectedResultTitle);
+            }
+
             @Override public void onBack() {
                 showHub();
             }
@@ -2956,6 +3037,21 @@ import android.app.Dialog;
 
     replace_once(
         RESEARCH,
+        '''        List<GeologyUnit> safe = results == null ? new ArrayList<>() : results;
+        currentResults = new ArrayList<>(safe);
+        currentResultTitle = resultTitle;
+''',
+        '''        List<GeologyUnit> safe = results == null ? new ArrayList<>() : results;
+        currentResults = new ArrayList<>(safe);
+        handleCngmGeologyTourSearchResults(safe);
+        currentResultTitle = resultTitle;
+''',
+        "handleCngmGeologyTourSearchResults(safe);",
+        "advance geology tour only after real search results exist",
+    )
+
+    replace_once(
+        RESEARCH,
         '''        top.addView(title(resultTitle));
         top.addView(help(compactSummary(safe, groups)));
 ''',
@@ -2965,7 +3061,27 @@ import android.app.Dialog;
             searchMeaning.setTextIsSelectable(true);
             top.addView(searchMeaning);
             Button editSearch = button("Edit Search");
-            editSearch.setOnClickListener(v -> showSearch());
+            cngmTourEditSearchTarget = editSearch;
+            editSearch.setOnClickListener(v -> {
+                if (CngmGeologyTourState.isActive(this)) {
+                    int tourStep = CngmGeologyTourState.step(this);
+                    if (tourStep == 3) {
+                        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_RETRY_SEARCH",
+                                "screen=results step=3 action=Edit Search");
+                    } else if (tourStep == 4) {
+                        CngmGeologyTourState.setStep(this, 3);
+                        CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+                        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_BACK",
+                                "screen=results from=4 to=3 action=Edit Search");
+                    } else if (tourStep == 8) {
+                        CngmGeologyTourState.setStep(this, 7);
+                        CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+                        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_BACK",
+                                "screen=results from=8 to=7 action=Edit Search");
+                    }
+                }
+                showSearch();
+            });
             top.addView(editSearch);
         }
         top.addView(help(compactSummary(safe, groups)));
@@ -2988,7 +3104,7 @@ import android.app.Dialog;
                 unitBlock.setOrientation(LinearLayout.VERTICAL);
                 View unitDetails = action(group.name,
                         group.detailLine(),
-                        v -> showUnitGroup(group, resultTitle));
+                        v -> openCngmTourAwareUnitGroup(group, resultTitle));
                 unitBlock.addView(unitDetails);
                 Button searchOnline = button("Search online  ↗");
                 searchOnline.setTextSize(13f);
@@ -3033,13 +3149,24 @@ import android.app.Dialog;
         RESEARCH,
         '''        root.addView(nav("Back to Results", v -> showResults(
                 currentResults, currentResultTitle, currentResultBounds, currentQueryContextJson)));
+        setContentView(scroll(root));
 ''',
-        '''        root.addView(nav("Back to Results", v -> showResults(
-                currentResults, currentResultTitle, currentResultBounds, currentQueryContextJson,
-                currentResultSearchSummary)));
+        '''        root.addView(nav("Back to Results", v -> {
+                if (CngmGeologyTourState.isActive(this)
+                        && CngmGeologyTourState.step(this) == 5) {
+                    CngmGeologyTourState.setStep(this, 4);
+                    CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_BACK",
+                            "screen=unit-details from=5 to=4 action=Back to Results");
+                }
+                showResults(currentResults, currentResultTitle, currentResultBounds,
+                        currentQueryContextJson, currentResultSearchSummary);
+            }));
+        setContentView(scroll(root));
+        maybeShowCngmGeologyUnitDetailsTourCoach(group, resultTitle, unitSummary);
 ''',
-        "currentResultSearchSummary)));",
-        "keep search meaning when returning from unit details",
+        "screen=unit-details from=5 to=4 action=Back to Results",
+        "keep search meaning and tour state when returning from unit details",
     )
 
     replace_once(
@@ -3222,6 +3349,9 @@ import com.rockmap.app.TourDebugLog;
     private View cngmTourFirstResultTarget;
     private View cngmTourFirstOnlineTarget;
     private View cngmTourShowMapTarget;
+    private View cngmTourEditSearchTarget;
+    private UnitGroup cngmTourSelectedGroup;
+    private String cngmTourSelectedResultTitle = "";
 ''',
         "private View cngmTourFirstResultTarget;",
         "add dedicated geology-tour live targets",
@@ -3241,6 +3371,7 @@ import com.rockmap.app.TourDebugLog;
         cngmTourFirstResultTarget = null;
         cngmTourFirstOnlineTarget = null;
         cngmTourShowMapTarget = null;
+        cngmTourEditSearchTarget = null;
 ''',
         "cngmTourFirstOnlineTarget = null;",
         "reset dedicated geology-tour result targets",
@@ -3307,28 +3438,165 @@ import com.rockmap.app.TourDebugLog;
         RESEARCH,
         '''    private void maybeShowTourCoach() {
 ''',
-        '''    private void maybeShowCngmGeologyTourCoach() {
-        if (!CngmGeologyTourState.isActive(this)) return;
+        '''    private boolean cngmAnotherTourActive() {
+        return GuidedTourState.isActive(this)
+                || com.rockmap.app.field.FieldTourState.active(this);
+    }
+
+    private boolean suppressCngmForAnotherTour(String screen) {
+        if (!CngmGeologyTourState.isActive(this) || !cngmAnotherTourActive()) return false;
+        int step = CngmGeologyTourState.step(this);
+        CngmGeologyTourState.exit(this);
+        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SUPPRESSED",
+                "screen=" + screen + " step=" + step + " reason=another-tour-active");
+        return true;
+    }
+
+    private void handleCngmGeologyTourSearchResults(List<GeologyUnit> safe) {
+        if (!CngmGeologyTourState.isActive(this) || suppressCngmForAnotherTour("results")) return;
+        String phase = CngmGeologyTourState.phase(this);
+        int step = CngmGeologyTourState.step(this);
+        int rows = safe == null ? 0 : safe.size();
+        if (CngmGeologyTourState.PHASE_AWAIT_RESULTS.equals(phase) && step == 3) {
+            cngmTourSelectedGroup = null;
+            cngmTourSelectedResultTitle = "";
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_RESULTS_RETURNED",
+                    "from=3 rows=" + rows + " expectedNext=4");
+            CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+            if (rows > 0) {
+                CngmGeologyTourState.setStep(this, 4);
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
+                        "from=3 to=4 reason=successful-search");
+            } else {
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SEARCH_EMPTY",
+                        "step=3 rows=0 next=retry-search");
+            }
+        } else if (CngmGeologyTourState.PHASE_AWAIT_LEARN_MORE_RESULTS.equals(phase)
+                && step == 7) {
+            cngmTourSelectedGroup = null;
+            cngmTourSelectedResultTitle = "";
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_RESULTS_RETURNED",
+                    "from=7 rows=" + rows + " expectedNext=8");
+            CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+            if (rows > 0) {
+                CngmGeologyTourState.setStep(this, 8);
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
+                        "from=7 to=8 reason=successful-search");
+            } else {
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SEARCH_EMPTY",
+                        "step=7 rows=0 next=retry-search");
+            }
+        }
+    }
+
+    private void openCngmTourAwareUnitGroup(UnitGroup group, String resultTitle) {
+        if (group == null) return;
+        cngmTourSelectedGroup = group;
+        cngmTourSelectedResultTitle = resultTitle == null ? "" : resultTitle;
+        if (CngmGeologyTourState.isActive(this)
+                && CngmGeologyTourState.step(this) == 4) {
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_RESULT_SELECTED",
+                    "step=4 unit=" + group.name);
+            CngmGeologyTourState.setStep(this, 5);
+            CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
+                    "from=4 to=5 destination=unit-details");
+            GuidedTourCoach.clear(this);
+        }
+        showUnitGroup(group, resultTitle);
+    }
+
+    private void maybeShowCngmGeologyUnitDetailsTourCoach(
+            UnitGroup group, String resultTitle, View target) {
+        if (!CngmGeologyTourState.isActive(this)
+                || suppressCngmForAnotherTour("unit-details")
+                || CngmGeologyTourState.step(this) != 5 || target == null) return;
+        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_UNIT_DETAILS_RENDER",
+                "step=5 unit=" + (group == null ? "" : group.name)
+                        + " attached=" + target.isAttachedToWindow()
+                        + " size=" + target.getWidth() + "x" + target.getHeight());
+        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP5_TARGET_WAIT",
+                "target=unit-summary");
+        GuidedTourCoach.show(this, 5, 9,
+                "Mapped unit details",
+                "This view shows the selected mapped unit and its geologic context, including rock type and age when they are available.",
+                "Review the mapped unit details.", target,
+                () -> {
+                    CngmGeologyTourState.setStep(this, 4);
+                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_BACK",
+                            "from=5 to=4 destination=results");
+                    showResults(currentResults, currentResultTitle, currentResultBounds,
+                            currentQueryContextJson, currentResultSearchSummary);
+                },
+                "Next", () -> {
+                    CngmGeologyTourState.setStep(this, 6);
+                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STATE_COMMITTED",
+                            "from=5 to=6 destination=search-refine");
+                    showSearch();
+                },
+                () -> {
+                    CngmGeologyTourState.setStep(this, 6);
+                    TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SKIP",
+                            "screen=unit-details from=5 to=6");
+                    showSearch();
+                },
+                this::exitCngmGeologyTour);
+        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP5_SHOWN",
+                "target=unit-summary request=issued");
+    }
+
+    private void maybeShowCngmGeologyTourCoach() {
+        if (!CngmGeologyTourState.isActive(this) || suppressCngmForAnotherTour("results")) return;
         int step = CngmGeologyTourState.step(this);
         TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP",
                 "screen=results step=" + step
                         + " firstResult=" + (cngmTourFirstResultTarget != null && cngmTourFirstResultTarget.isAttachedToWindow())
                         + " online=" + (cngmTourFirstOnlineTarget != null && cngmTourFirstOnlineTarget.isAttachedToWindow())
                         + " showMap=" + (cngmTourShowMapTarget != null && cngmTourShowMapTarget.isAttachedToWindow()));
-        if (step == 4) {
+        if (step == 3 && (currentResults == null || currentResults.isEmpty())) {
+            if (cngmTourEditSearchTarget == null) {
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_TARGET_FAIL",
+                        "screen=results step=3 target=Edit Search missing");
+                return;
+            }
+            GuidedTourCoach.show(this, 3, 9,
+                    "No mapped matches",
+                    "That search did not return any mapped geology. Edit the search and try another term or example.",
+                    "Tap Edit Search.", cngmTourEditSearchTarget,
+                    null, null, null,
+                    () -> {
+                        CngmGeologyTourState.setStep(this, 6);
+                        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SKIP",
+                                "screen=empty-results from=3 to=6");
+                        showSearch();
+                    },
+                    this::exitCngmGeologyTour);
+        } else if (step == 4) {
             if (cngmTourFirstResultTarget == null) {
                 TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_TARGET_FAIL",
                         "screen=results step=4 target=first result missing");
                 return;
             }
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP4_TARGET_READY",
+                    "target=first-result");
             GuidedTourCoach.show(this, 4, 9,
                     "Mapped geologic units",
                     "Results show mapped geologic units that match the search. The mapped-area count tells you how many mapped polygons use that grouped unit; it is not a count of separate formations.",
-                    "Review a mapped unit result.", cngmTourFirstResultTarget,
-                    () -> { CngmGeologyTourState.setStep(this, 3); showSearch(); },
-                    "Next", () -> { CngmGeologyTourState.setStep(this, 5); showSearch(); },
-                    () -> { CngmGeologyTourState.setStep(this, 5); showSearch(); },
+                    "Tap any mapped unit result.", cngmTourFirstResultTarget,
+                    () -> {
+                        CngmGeologyTourState.setStep(this, 3);
+                        CngmGeologyTourState.setPhase(this, CngmGeologyTourState.PHASE_DEFAULT);
+                        showSearch();
+                    },
+                    null, null,
+                    () -> {
+                        TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SKIP",
+                                "screen=results step=4 action=open-first-result");
+                        if (cngmTourFirstResultTarget != null) cngmTourFirstResultTarget.performClick();
+                    },
                     this::exitCngmGeologyTour);
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_STEP4_SHOWN",
+                    "target=first-result action=tap-any-result");
         } else if (step == 8) {
             if (cngmTourFirstOnlineTarget == null) {
                 TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_TARGET_FAIL",
@@ -3372,8 +3640,8 @@ import com.rockmap.app.TourDebugLog;
 
     private void maybeShowTourCoach() {
 ''',
-        "private void maybeShowCngmGeologyTourCoach()",
-        "add dedicated geology-tour results lifecycle",
+        "private void handleCngmGeologyTourSearchResults",
+        "add event-driven dedicated geology-tour results lifecycle",
     )
 
     replace_once(
@@ -3402,6 +3670,14 @@ import com.rockmap.app.TourDebugLog;
         '''    private void onGeologyTapped(Feature feature, LatLng coordinate) {
 ''',
         '''    private void maybeShowCngmGeologyMapTour() {
+        if (CngmGeologyTourState.isActive(this)
+                && (GuidedTourState.isActive(this) || FieldTourState.active(this))) {
+            int previous = CngmGeologyTourState.step(this);
+            CngmGeologyTourState.exit(this);
+            TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SUPPRESSED",
+                    "screen=map step=" + previous + " reason=another-tour-active");
+            return;
+        }
         if (!CngmGeologyTourState.isActive(this)
                 || CngmGeologyTourState.step(this) != 9
                 || !CngmGeologyTourState.PHASE_AWAIT_POLYGON.equals(
@@ -3460,6 +3736,14 @@ import com.rockmap.app.TourDebugLog;
                 .setNegativeButton("Close", null)
                 .create();
         geologyDialog.setOnShowListener(ignored -> {
+            if (CngmGeologyTourState.isActive(this)
+                    && (GuidedTourState.isActive(this) || FieldTourState.active(this))) {
+                int previous = CngmGeologyTourState.step(this);
+                CngmGeologyTourState.exit(this);
+                TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_SUPPRESSED",
+                        "screen=geology HUD step=" + previous + " reason=another-tour-active");
+                return;
+            }
             if (!CngmGeologyTourState.isActive(this)
                     || CngmGeologyTourState.step(this) != 9) return;
             TourDebugLog.mainTourAction(this, "GEOLOGY_TOUR_TARGET_READY",
@@ -3514,8 +3798,12 @@ def validate_search_ui_injection() -> None:
         ],
         RESEARCH: [
             "CngmSearchUi.show(this, geology, visibleBounds",
+            "private void handleCngmGeologyTourSearchResults",
+            "private void openCngmTourAwareUnitGroup",
+            "private void maybeShowCngmGeologyUnitDetailsTourCoach",
             "private void maybeShowCngmGeologyTourCoach()",
             "cngmTourFirstResultTarget",
+            "cngmTourEditSearchTarget",
             "PHASE_AWAIT_POLYGON",
             "String resultSearchSummary",
             "currentResultSearchSummary",
@@ -3554,6 +3842,8 @@ def validate_search_ui_injection() -> None:
     geology_tour_text = GEOLOGY_TOUR_STATE.read_text(encoding="utf-8")
     for marker in [
         "public final class CngmGeologyTourState",
+        "PHASE_AWAIT_RESULTS",
+        "PHASE_AWAIT_LEARN_MORE_RESULTS",
         "PHASE_AWAIT_MAP",
         "PHASE_AWAIT_POLYGON",
     ]:
@@ -3561,7 +3851,15 @@ def validate_search_ui_injection() -> None:
             raise RuntimeError(f"Geology-tour state validation failed: {marker}")
     ui_tour_markers = [
         'GuidedTourCoach.show(activity, 1, 9',
-        '"Try Morrison"',
+        'geologyIntroTarget',
+        'examplesTarget',
+        'Examples are shortcuts for common geology searches.',
+        'GEOLOGY_TOUR_SEARCH_STARTED',
+        'PHASE_AWAIT_RESULTS',
+        'PHASE_AWAIT_LEARN_MORE_RESULTS',
+        'callback.onReturnToTourResults()',
+        'FieldTourState.active(activity)',
+        'GEOLOGY_TOUR_SUPPRESSED',
         'GuidedTourCoach.show(activity, host, 8, 9',
         'CngmGeologyTourState.setStep(activity, 9)',
     ]
@@ -3569,19 +3867,48 @@ def validate_search_ui_injection() -> None:
     for marker in ui_tour_markers:
         if marker not in ui_text:
             raise RuntimeError(f"Geology-tour Search UI validation failed: {marker}")
+    for forbidden in [
+        'Try Morrison',
+        'runMorrisonTourSearch',
+        'runMorrisonTourSearchForResultsStep',
+        'target=Morrison example',
+        'via Morrison',
+        'morrisonExampleTarget',
+        'graniteExampleTarget',
+    ]:
+        if forbidden in ui_text:
+            raise RuntimeError(
+                "Geology-tour Search UI still contains canned-example tour logic: " + forbidden
+            )
 
     research_text = RESEARCH.read_text(encoding="utf-8")
-    geology_tour_contracts = [
+    geology_tour_unique_contracts = [
         "private View cngmTourFirstResultTarget;",
         "private View cngmTourFirstOnlineTarget;",
         "private View cngmTourShowMapTarget;",
+        "private View cngmTourEditSearchTarget;",
+        "private UnitGroup cngmTourSelectedGroup;",
         "View unitDetails = action(group.name,",
+        "openCngmTourAwareUnitGroup(group, resultTitle)",
+        "private void handleCngmGeologyTourSearchResults",
+        "private void maybeShowCngmGeologyUnitDetailsTourCoach",
     ]
-    for contract in geology_tour_contracts:
+    for contract in geology_tour_unique_contracts:
         if research_text.count(contract) != 1:
             raise RuntimeError(
                 f"Geology-tour generated-source contract failed in ResearchActivity.java: "
                 f"expected exactly one {contract!r}, found {research_text.count(contract)}"
+            )
+    for marker in [
+        "GEOLOGY_TOUR_STATE_COMMITTED",
+        "GEOLOGY_TOUR_RESULT_SELECTED",
+        "GEOLOGY_TOUR_SEARCH_EMPTY",
+        "GEOLOGY_TOUR_SUPPRESSED",
+        "screen=unit-details from=5 to=4 action=Back to Results",
+    ]:
+        if marker not in research_text:
+            raise RuntimeError(
+                "Geology-tour generated-source marker missing in ResearchActivity.java: " + marker
             )
     if "Button unitDetails = action(group.name," in research_text:
         raise RuntimeError(
@@ -3590,6 +3917,14 @@ def validate_search_ui_injection() -> None:
     if "Lithology filter (optional)" in research_text or "Age filter (optional)" in research_text:
         raise RuntimeError("Legacy optional geology-search labels survived the UI injection.")
     main_text = MAIN.read_text(encoding="utf-8")
+    # The dedicated geology tour must consume the existing shared coach engine without
+    # injecting geology state or callbacks into GuidedTourCoach itself.
+    if "CngmGeologyTourState" in coach_text or "GEOLOGY_TOUR_" in coach_text:
+        raise RuntimeError("Dedicated geology-tour logic leaked into GuidedTourCoach.java.")
+    if "private void maybeShowTourCoach()" not in research_text:
+        raise RuntimeError("Existing Research guided-tour lifecycle was removed or renamed.")
+    if "GuidedTourState.STEP_SHOW_GEOLOGY" not in research_text:
+        raise RuntimeError("Existing Research geology-tour handoff was removed.")
     if "Search Google" in research_text or "Search Google" in main_text:
         raise RuntimeError("Provider-specific Search Google wording survived the UX injection.")
     if "minerals found here" in ui_text.lower() or "what can i find" in ui_text.lower():
