@@ -925,6 +925,7 @@ public final class CngmSearchUi {
         ScrollView scroller = new ScrollView(activity);
         LinearLayout rows = new LinearLayout(activity);
         rows.setOrientation(LinearLayout.VERTICAL);
+        final View[] geologyTourChoiceTarget = new View[]{null};
         boolean prospectingHeadingAdded = false;
         for (int i = 0; i < queries.size(); i++) {
             final int index = i;
@@ -947,6 +948,11 @@ public final class CngmSearchUi {
             secondary.setPadding(0, dp(activity, 2), 0, 0);
             row.addView(primary);
             row.addView(secondary);
+            if (geologyTourChooser
+                    && ("About this mapped unit".equals(subtitles.get(i))
+                    || geologyTourChoiceTarget[0] == null)) {
+                geologyTourChoiceTarget[0] = row;
+            }
             if (geologyTourChooser) {
                 row.setContentDescription(labels.get(i) + ". " + subtitles.get(i)
                         + ". Guided tour example. Tap to continue without opening the browser.");
@@ -1015,12 +1021,16 @@ public final class CngmSearchUi {
             CngmGeologyTourState.setPhase(activity, CngmGeologyTourState.PHASE_SEARCH_ONLINE_CHOOSER);
             TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_TRANSITION",
                     "screen=Search online chooser step=7 rows=" + queries.size()
-                            + " mode=tap-any-row-to-continue");
+                            + " mode=highlight-mapped-unit-row-to-continue");
+            View tourChoiceTarget = geologyTourChoiceTarget[0];
+            TourDebugLog.mainTourAction(activity, "GEOLOGY_TOUR_ACTION_TARGET",
+                    "screen=Search online chooser step=7 action=About this mapped unit"
+                            + " target=" + (tourChoiceTarget == null ? "missing" : "ready"));
             FrameLayout host = GuidedTourCoach.prepareDialogHost(activity, dialog);
             GuidedTourCoach.show(activity, host, 7, 9,
                     "Search online",
-                    "These choices normally open an external web search for the mapped unit, age, rock type, or rockhounding context. The tour keeps you in RockMap.",
-                    "Tap any research option to continue.", null,
+                    "These choices normally open an external web search for the mapped unit, age, rock type, or rockhounding context. The highlighted option is one example. The tour keeps you in RockMap.",
+                    "Tap the highlighted About this mapped unit option.", tourChoiceTarget,
                     () -> dialog.dismiss(),
                     null, null,
                     () -> {
@@ -1043,7 +1053,8 @@ public final class CngmSearchUi {
                         GuidedTourCoach.clear(activity);
                     });
             logExternalTourCoachGeometry(activity,
-                    "screen=Search online chooser step=7", null, host);
+                    "screen=Search online chooser step=7 action=About this mapped unit",
+                    tourChoiceTarget, host);
         }
     }
 
@@ -4264,7 +4275,11 @@ def validate_search_ui_injection() -> None:
         if required not in main_text:
             raise RuntimeError("Geology-tour MainActivity v3 marker missing: " + required)
     for required in [
-        'mode=tap-any-row-to-continue',
+        'final View[] geologyTourChoiceTarget = new View[]{null};',
+        'mode=highlight-mapped-unit-row-to-continue',
+        'action=About this mapped unit',
+        '"Tap the highlighted About this mapped unit option.", tourChoiceTarget',
+        '"screen=Search online chooser step=7 action=About this mapped unit",',
         'action=continue-without-browser',
         'from=7 to=8 destination=Show Geology on Map source=online-row',
     ]:
@@ -4272,8 +4287,12 @@ def validate_search_ui_injection() -> None:
             raise RuntimeError("Geology-tour Step 7 v3 marker missing: " + required)
     for forbidden in [
         'mode=preview-only',
+        'mode=tap-any-row-to-continue',
+        'mode=highlight-first-row-to-continue',
         'Tap Next to return to the results.',
+        'Tap any research option to continue.',
         'Preview only during the guided tour.',
+        '"screen=Search online chooser step=7", null, host',
     ]:
         if forbidden in ui_text:
             raise RuntimeError("Geology-tour Step 7 retained dead preview behavior: " + forbidden)
