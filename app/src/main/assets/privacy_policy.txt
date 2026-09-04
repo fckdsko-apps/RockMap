@@ -1,80 +1,162 @@
 ROCKMAP PRIVACY POLICY
-Last updated: August 30, 2026
 
-RockMap is an offline-first Android field-map and research application. This policy explains how RockMap accesses, uses, stores, and shares user data.
+Last updated: September 2, 2026
+
+RockMap is an offline-first Android field-map and research service. A RockMap account is required to use the Android app. This policy explains how RockMap and its service providers access, use, store, and share information when you create an account, start the RockMap trial, purchase lifetime access, use the Android app, or contact RockMap.
+
+
+PRIVACY SUMMARY
+
+RockMap stores the minimum account information needed to authenticate you and verify access, including your email address, RockMap account identifier, trial status, and lifetime-purchase entitlement. Payment details are entered with Stripe. RockMap does not require a name or postal address as part of your RockMap profile and does not store your complete payment-card number or CVC.
+
+GPS locations, tracks, saved locations, Field Records, Prospecting Areas, notes, measurements, and attached-photo references remain local to your device unless you explicitly export or share them.
+
 
 DEVELOPER AND PRIVACY CONTACT
-RockMap is developed and distributed as the RockMap project by fckdsko-apps. Privacy questions or requests can be submitted through the RockMap repository inquiry mechanism:
-https://github.com/fckdsko-apps/RockMap/issues
 
-Do not include sensitive personal information in a public issue. The developer contact shown on the RockMap Google Play listing may also be used for privacy inquiries.
+RockMap is developed and distributed as the RockMap project by fckdsko-apps. For privacy questions, account-data requests, deletion requests, support, or other private inquiries, contact contact@rockmapp.com.
+
+The RockMap GitHub issue tracker may be used for public bug reports or technical issues, but users should not post sensitive personal information there.
+
+
+ROCKMAP ACCOUNTS
+
+A RockMap account is required to sign in to and use the RockMap Android app. RockMap collects and stores the account information needed to authenticate you and determine whether your account is in a trial period or has lifetime access.
+
+RockMap account records may include:
+
+- your email address;
+- a RockMap user or account identifier;
+- authentication and session information needed to keep you signed in and protect the account;
+- account creation and relevant authentication timestamps;
+- the beginning and end of your RockMap trial;
+- lifetime-access, purchase, refund, and entitlement status; and
+- Stripe customer, checkout, payment, or transaction identifiers needed to associate a successful purchase or refund with your RockMap account.
+
+RockMap does not require a name or postal address as part of your RockMap account profile. RockMap does not operate a cloud-sync service for your field research data.
+
+
+7-DAY TRIAL AND $55 LIFETIME PURCHASE
+
+RockMap is sold as a one-time lifetime purchase, not a recurring subscription. To start the 7-day free trial, you provide a payment method through Stripe on the RockMap website. Unless you cancel before the trial ends, Stripe automatically charges $55 once for lifetime RockMap access. After that purchase, RockMap's refund policy allows 7 days to request a 100% refund of the original RockMap purchase.
+
+RockMap uses trial, payment-status, refund-status, and entitlement information to determine whether your account is allowed to use the Android app. A refund or reversed payment may cause the corresponding lifetime entitlement to be removed.
+
+
+PAYMENT PROCESSING BY STRIPE
+
+RockMap uses Stripe to process the trial payment method and the one-time lifetime purchase. Payment-card numbers, CVCs, billing details, names, postal addresses, and other payment information requested during checkout are collected and processed by Stripe under Stripe's own terms and privacy practices.
+
+RockMap does not store your complete payment-card number or CVC. RockMap also does not use your Stripe billing name or postal address as RockMap profile information. RockMap receives and retains only the information reasonably needed to associate the transaction with your RockMap account and maintain the correct entitlement, such as transaction identifiers, Stripe customer identifiers, payment status, purchase date, refund status, and related records.
+
 
 LOCATION DATA
-RockMap can access approximate or precise device location when you use GPS features.
-• Approximate location can show your current position on the map.
-• Precise location is used when you choose to save a field waypoint or field record from device GPS.
-• If you explicitly start Track Recording, RockMap runs a visible Android location foreground service so the track can continue while you use the RockMap map or temporarily place the app in the background. Android shows a persistent track-recording notification until the track is stopped.
-• RockMap does not request Android ACCESS_BACKGROUND_LOCATION permission.
-• RockMap does not send your GPS position, recorded tracks, saved waypoints, field records, trip coordinates, sample notes, or measurements to RockMap-operated servers.
 
-Location access is optional. Offline maps and non-GPS features remain available if location permission is denied.
+RockMap can access approximate or precise device location when you invoke GPS features.
 
-SAVED MARKERS, FIELD RECORDS, TRACKS, AREAS, TRIPS, NOTES, PHOTOS, AND IMPORTED FILES
-Saved locations, field records, track points, saved polygon areas, sample identifiers, trip plans, trip stops, names, notes, and coordinates are stored locally in RockMap's private app storage. RockMap does not operate an account system or RockMap cloud-sync service for this information.
+- Approximate location can be used to show your current position on the map.
+- Precise location is used when you choose to center on GPS, save a field waypoint or Field Record, run location-based Research, or use other GPS-dependent Field features.
+- If you explicitly start Track Recording, RockMap runs a visible Android location foreground service so the track can continue while RockMap is temporarily in the background. Android displays an ongoing track-recording notification until recording stops.
+- RockMap does not request Android ACCESS_BACKGROUND_LOCATION permission.
+- Your GPS position and recorded track points are stored locally for RockMap's field functions and are not sent to RockMap's account or entitlement servers.
 
-If you attach a photo to a field record, RockMap stores the Android document URI you selected and retains read access when the selected provider permits it. The original photo remains managed by the storage/photo provider you selected; RockMap does not automatically upload it.
+Location access is optional for non-GPS functions. Denying location permission does not cause RockMap to upload location through another method.
 
-When you explicitly export data, Android's document picker lets you choose where to save it. When you explicitly import a supported GPX, KML, GeoJSON, or RockMap file, RockMap reads the selected file to add supported locations, tracks, or polygon areas to local app storage. Imports are additive and do not automatically delete existing RockMap data. RockMap does not automatically upload exported or imported content to RockMap-operated servers. If you choose a cloud-storage or sharing provider in Android's system UI, that provider receives or serves the selected file under its own privacy practices.
+
+LOCAL FIELD AND RESEARCH DATA
+
+Saved locations, Field Records, recorded track points, saved Prospecting Areas, trip plans and stops, sample identifiers, notes, measurements, and related coordinates are stored locally in RockMap's private app storage. This field and research data is separate from your RockMap account and lifetime entitlement.
+
+RockMap does not automatically upload this local field data to RockMap-operated account servers. Signing in to RockMap does not cause your saved field data, GPS history, research areas, tracks, or notes to be synced to a RockMap cloud account.
+
+
+PHOTOS, IMPORTED FILES, AND EXPORTS
+
+If you attach a photo to a Field Record, RockMap stores the Android document URI you selected and retains read access when the selected provider permits it. The original photo remains managed by the storage/photo provider you selected; RockMap does not automatically upload it to RockMap's account servers.
+
+When you explicitly export data, Android's system document picker lets you choose where to save the file. When you explicitly import a supported GPX, KML, GeoJSON, or RockMap file, RockMap reads the selected file to add supported locations, tracks, or polygon areas to local app storage. RockMap does not automatically upload imported or exported field content to RockMap-operated servers.
+
+If you choose a cloud-storage or sharing provider in Android's document/share UI, that provider receives or serves the selected file under its own terms and privacy practices.
+
 
 LOCAL SAFETY ACKNOWLEDGMENT TOKEN
-Before RockMap can be used, the current release requires acknowledgment of the Safety & Data Limitations notice unless you previously chose not to show the current disclosure version again.
 
-RockMap stores a randomly generated local acknowledgment token together with the disclosure version, last acknowledgment time, acknowledgment count, and reminder preference. The token is stored only in RockMap's private app preferences. It is not an account token, authentication credential, analytics identifier, advertising identifier, or cross-app tracking identifier, and RockMap does not send it to RockMap-operated servers. The safety preferences are excluded from Android backup/device transfer. The token is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
+Before RockMap can be used, the current release requires acknowledgment of RockMap's Safety & Data Limitations notice unless you previously chose not to show the current disclosure version again.
+
+RockMap stores a randomly generated local acknowledgment token together with the disclosure version, last acknowledgment time, acknowledgment count, and reminder preference. This token is stored only in RockMap's private app preferences. It is separate from your RockMap account identifier, is not an advertising or cross-app tracking identifier, and is not sent to RockMap's account servers. The safety preferences are excluded from Android backup/device transfer. The token is not a server-verified, tamper-proof, or legal-signature record and can be removed by clearing RockMap app data.
+
 
 ANDROID BACKUP AND DEVICE TRANSFER
-RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, tracks, field records, polygon areas, and related user-created data. Depending on your Android device, account, backup provider, and backup settings, Android may restore this eligible user-created data after RockMap is reinstalled or when data is transferred to another device.
 
-Downloadable offline map files, downloaded Colorado geology snapshots, reproducible Research-result files, local safety acknowledgment preferences, first-install setup state, downloaded-data status preferences, and transient update-scan results are excluded from Android backup/device transfer. The user's selected automatic update-check frequency may remain backup-eligible as an app preference. This is why a reinstall may require RockMap's reference-data packs to be downloaded again even when Android restores eligible saved user work.
+RockMap allows Android's standard backup and device-transfer systems to include eligible local databases containing saved markers, trips, and field data. Depending on your device, Google account, and backup settings, this may cause eligible local data to be stored or transferred by the Android platform or backup provider.
 
-RockMap does not operate or receive these Android backup copies. Backup retention, deletion, encryption, and restore timing are controlled by Android and the user's backup provider. Deleting local RockMap data does not give RockMap the technical ability to force an Android/Google/Samsung backup provider to immediately erase an older provider-managed backup copy. Users can review or change the backup options made available by their device and backup provider through Android settings.
+Downloadable offline map files, downloaded Colorado geology snapshots, reproducible Research-result files, and the local safety-acknowledgment preferences are excluded from Android backup/device transfer. RockMap does not receive or control copies held by the Android backup provider.
+
 
 OFFLINE-DATA UPDATES AND NETWORK DATA
-RockMap is designed to work offline. RockMap can check the small published Core Data and Colorado Geology manifests automatically using a user-selectable frequency of Never, Daily, Weekly, or Monthly; Weekly is the default. These scheduled scans require a network connection and may run approximately rather than at an exact clock time according to Android background-work scheduling.
 
-Scheduled scans fetch only the small release manifests. They do not automatically download the large offline map, mineral, land-management, mining-claim, historic-mine, or geology data files. When RockMap identifies an available update, it stores the update status locally and, if Android notification permission is enabled, can notify the user. The user must explicitly review and approve any large data download.
+RockMap is designed to work offline for many mapping and research functions, but account authentication, entitlement checks, and user-requested data-update checks require network access.
 
-RockMap release-managed offline resources use small manifests that declare the relevant asset filename, exact byte count, and SHA-256 checksum. Before an additional resource download begins, RockMap displays the expected download size and requires an affirmative user action. Downloaded files are not activated unless their declared sizes and SHA-256 values verify.
+Account and entitlement requests may cause RockMap's hosting, authentication, and network service providers to receive ordinary connection information such as IP address, request time, device/network request metadata, and information needed to authenticate the session and determine trial or lifetime-access status.
 
-Queryable Colorado geology is distributed as a versioned RockMap SQLite snapshot built from the U.S. Geological Survey State Geologic Map Compilation (SGMC) Colorado polygons. The Android app does not perform the former unknown-size statewide FeatureServer download when you install geology. Instead, the RockMap data-build process obtains and validates the Colorado source records, creates a fixed geology database, and publishes an immutable compressed asset together with its exact compressed download size, installed size, and SHA-256 values.
+For release-managed RockMap data, the app retrieves a small update manifest first. The manifest declares the resource filename, exact byte count, and SHA-256 checksum. RockMap displays the relevant download size before you authorize the additional resource download. Downloaded files are not activated unless their byte counts and SHA-256 values match the manifest.
 
-Before you choose Download, RockMap shows the geology download size and installed size from the small manifest. RockMap then verifies the compressed asset, verifies the unpacked SQLite database, checks SQLite integrity, schema version, expected Colorado record count, Colorado-only state values, and required polygon geometry, and only then activates the new snapshot. If a geology update fails verification, an existing working geology snapshot remains available.
+Queryable Colorado geology is distributed as a versioned RockMap SQLite snapshot built from the U.S. Geological Survey State Geologic Map Compilation (SGMC) Colorado polygons. After the Colorado geology snapshot is installed, RockMap geology search and spatial queries operate on the local database. GPS positions, saved Prospecting Areas, Field Record coordinates, search terms, tracks, notes, photos, and other user-created field data are not sent to USGS as part of those local geology queries.
 
-RockMap does not include your GPS position, saved Prospecting Areas, Field Record coordinates, search terms, tracks, notes, photos, or other user-created data in scheduled or manual update-manifest requests or data-pack download requests. Once geology is installed, RockMap geology searches and spatial queries run against the local database rather than sending those queries or areas to USGS.
+Update hosts and their infrastructure, including GitHub when GitHub-hosted releases are used, may receive ordinary network information such as IP address, request time, and standard HTTP request metadata under that provider's own privacy practices.
 
-Network hosts and their infrastructure, including GitHub when GitHub-hosted releases are used, may receive ordinary network information such as IP address, request time, and standard HTTP request metadata during automatic checks, manual checks, or user-approved downloads under that provider's own privacy practices. The external USGS service is contacted by the RockMap data-build process when a new fixed geology snapshot is produced; normal installed geology queries do not contact USGS.
+RockMap does not include advertising SDKs or analytics SDKs in the current release.
 
-RockMap does not include advertising SDKs or analytics SDKs in the current release and does not use update requests to transmit saved markers, field records, tracks, trips, notes, acknowledgment tokens, photos, or GPS coordinates.
 
 PUBLIC MAP AND RESEARCH SOURCES
-RockMap uses public or publicly distributed geographic and research datasets, including OpenStreetMap/Protomaps-derived basemap data and selected USGS, BLM, Colorado Geological Survey, Colorado Department of Transportation, and U.S. Forest Service sources. Queryable geology uses a Colorado-only normalized snapshot derived from the USGS State Geologic Map Compilation (SGMC), DOI 10.5066/F7WH2N65; installed source metadata remains available in Research and export. The in-app Safety & Data Limitations notice lists the source families in more detail. Viewing installed offline source data does not upload your location to those source agencies.
 
-DATA SHARING AND SALE
-RockMap does not sell user data. RockMap does not share saved location, field, track, sample, or trip data with third parties except when you explicitly export/share a file, select a file/photo through an external provider, or when Android's backup/device-transfer functionality processes eligible local app data according to your device and account settings. Network providers may process ordinary connection metadata during automatic update checks, manual update checks, and user-approved downloads.
+RockMap uses public or publicly distributed geographic and research datasets, including OpenStreetMap/Protomaps-derived basemap data and selected data from USGS, BLM, Colorado Geological Survey, Colorado Department of Transportation, and U.S. Forest Service sources. Queryable Colorado geology uses the USGS State Geologic Map Compilation (SGMC), DOI 10.5066/F7WH2N65, as a Colorado-only local snapshot. The Safety & Data Limitations notice lists the source families in more detail.
+
+These datasets describe places and resources. Viewing or querying installed offline source data does not cause RockMap to send your GPS position to those source agencies.
+
+
+SERVICE PROVIDERS AND DATA SHARING
+
+RockMap does not sell user data and does not use account or field data for third-party advertising.
+
+RockMap uses service providers where necessary to operate the service. These providers may process limited information for the following purposes:
+
+- Stripe: payment-method collection, payment processing, fraud prevention, refunds, and transaction verification.
+- Account, authentication, hosting, and network providers: account creation, sign-in, session management, entitlement verification, security, and service delivery.
+- Android backup or device-transfer providers: processing eligible local app data according to your device and account settings.
+- Cloud-storage or sharing providers you choose: receiving or serving files that you explicitly import, export, attach, or share.
+
+RockMap does not share your locally stored GPS locations, tracks, Field Records, Prospecting Areas, notes, or measurements with Stripe merely because you create an account or make a purchase.
+
 
 DATA SECURITY
-RockMap stores working data in Android app-private storage. Network update URLs must use HTTPS and cleartext traffic is disabled. Release-managed offline-data files are checked against declared size and SHA-256 values before activation. Colorado geology additionally undergoes SQLite integrity, schema, Colorado-state, geometry, and record-count validation before activation. No storage or transmission method can be guaranteed completely secure.
 
-DATA RETENTION AND DELETION
-Saved markers, trips, tracks, field records, polygon areas, and related user-created RockMap data remain in the current local installation until you delete the relevant records in RockMap, use the User data & backup deletion controls, clear RockMap app data, or uninstall the app.
+RockMap stores local field data in Android app-private storage. Network connections used for RockMap account access, entitlement checks, payment-status processing, and release-managed downloads are intended to use encrypted HTTPS/TLS connections. Cleartext traffic is disabled in the Android app. Release-managed downloaded data are checked against declared size and SHA-256 values before activation.
 
-RockMap provides in-app controls under Safety, sources & privacy > User data & backup to delete saved locations and trips; delete tracks, field records, and polygon areas; or delete all user-created RockMap database content while leaving downloaded reference-data packs and application settings in place. Deleting field records removes RockMap's stored photo references and releases persisted document permissions when possible; it does not delete the original photos from the photo/document provider.
+No storage, authentication, payment, or transmission system can be guaranteed completely secure.
 
-Downloaded Colorado geology remains until it is replaced by a successfully verified newer snapshot, app data is cleared, or RockMap is uninstalled. The last Research result is overwritten by a later Research result and can also be cleared from Research; it is not included in Android backup/device transfer. The local safety acknowledgment remains until app data is cleared/uninstalled or a later disclosure version replaces it. Exported files remain wherever you chose to save them and must be deleted from that location.
 
-Eligible user-created databases may also exist in Android/provider-managed backup or device-transfer storage. Uninstalling RockMap removes the installed local copy but does not guarantee immediate deletion of a separate provider-managed backup. Android may restore an eligible backup on a later reinstall. RockMap cannot directly erase provider-managed backup copies; users must use the backup controls their Android device/provider makes available. RockMap has no server-side user accounts and therefore has no RockMap account data or RockMap server-side user database to delete.
+DATA RETENTION
+
+RockMap retains account information while needed to operate your account, verify trial or lifetime access, provide support, process refunds, protect the service, and meet applicable legal, tax, accounting, fraud-prevention, or dispute-resolution obligations.
+
+Transaction records that must be retained for legitimate legal, tax, accounting, security, fraud-prevention, refund, or dispute purposes may be kept after an account-deletion request for only as long as reasonably necessary for those purposes.
+
+Saved markers, Field Records, tracks, polygon areas, trips, notes, and other local field data remain on the device until you delete them in RockMap, clear RockMap app data, or uninstall the app. Exported files remain wherever you chose to save them and must be deleted from that location. Android backups are subject to the backup provider's own retention and deletion practices.
+
+
+ACCOUNT AND DATA DELETION
+
+You may request deletion of your RockMap account and associated server-side personal information by contacting contact@rockmapp.com. RockMap will delete or de-identify account information that is not required to be retained for legitimate legal, tax, accounting, security, fraud-prevention, refund, or dispute-resolution purposes.
+
+Deleting your RockMap account may permanently remove your ability to sign in and use the lifetime entitlement associated with that account. Account deletion does not automatically erase field data or exported files stored locally on your device or in locations you selected outside RockMap; those remain under your control and can be deleted separately.
+
 
 CHILDREN
-RockMap is a general-purpose field-map and research utility and is not designed specifically for children. RockMap does not knowingly operate a service that collects children's personal information on RockMap servers.
 
-CHANGES
-This policy may be updated when RockMap's features, data handling, third-party services, or distribution requirements change. The current policy identifies its latest revision date.
+RockMap is a general-purpose field-map and research utility and is not designed specifically for children. RockMap does not knowingly collect personal information from children in violation of applicable law. If RockMap learns that an account contains personal information collected from a child contrary to applicable requirements, RockMap will take appropriate steps to delete it.
+
+
+CHANGES TO THIS POLICY
+
+This policy may be updated when RockMap's account system, payment flow, app features, data handling, service providers, or distribution requirements change. The current policy identifies its latest revision date.

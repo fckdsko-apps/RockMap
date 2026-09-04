@@ -60,6 +60,11 @@ public final class FieldActivity extends Activity implements LocationRepository.
     private static final int REQ_RESEARCH = 815;
     private static final int MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 
+    // Versioned, app-private acknowledgment for the prominent first-use Track Recording disclosure.
+    private static final String TRACK_DISCLOSURE_PREFS = "rockmap.track.disclosure";
+    private static final String TRACK_DISCLOSURE_VERSION_KEY = "accepted_version";
+    private static final int TRACK_DISCLOSURE_VERSION = 1;
+
     private static final String STATE_EXPORT_KIND = "field.export.kind";
     private static final String STATE_EXPORT_FORMAT = "field.export.format";
     private static final String STATE_EXPORT_ID = "field.export.id";
@@ -506,6 +511,36 @@ public final class FieldActivity extends Activity implements LocationRepository.
     }
 
     private void startNewTrack() {
+        int acceptedVersion = getSharedPreferences(TRACK_DISCLOSURE_PREFS, MODE_PRIVATE)
+                .getInt(TRACK_DISCLOSURE_VERSION_KEY, 0);
+        if (acceptedVersion >= TRACK_DISCLOSURE_VERSION) {
+            continueStartNewTrack();
+            return;
+        }
+
+        AlertDialog disclosure = new AlertDialog.Builder(this)
+                .setTitle("Track Recording and precise location")
+                .setMessage("RockMap uses precise location to record your GPS track. While Track Recording is active, location continues to be accessed when RockMap is in the background until you stop recording. Track points are stored locally on your device and are not sent to RockMap servers.")
+                .setPositiveButton("Continue", (d, w) -> {
+                    getSharedPreferences(TRACK_DISCLOSURE_PREFS, MODE_PRIVATE)
+                            .edit()
+                            .putInt(TRACK_DISCLOSURE_VERSION_KEY, TRACK_DISCLOSURE_VERSION)
+                            .apply();
+                    continueStartNewTrack();
+                })
+                .setNegativeButton("Cancel", (d, w) -> restoreTrackTourAfterDisclosureCancel())
+                .create();
+        disclosure.setOnCancelListener(d -> restoreTrackTourAfterDisclosureCancel());
+        disclosure.show();
+    }
+
+    private void restoreTrackTourAfterDisclosureCancel() {
+        if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) {
+            getWindow().getDecorView().post(this::showTracksTourCoach);
+        }
+    }
+
+    private void continueStartNewTrack() {
         runWithPreciseLocation(() -> {
             if (FieldTourState.is(this, FieldUiNames.TRACK, 2)) {
                 FieldTourState.step(this, 3);
