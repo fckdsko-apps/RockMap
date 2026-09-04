@@ -76,10 +76,10 @@ public final class MapHudCoordinator {
         if (activity == null || transition < 0L || host == null) return;
         int count = expandedCount(host);
         boolean requestedExpanded = host.isExpanded(requested);
-        UiInvariantMonitor.state(activity, transition, "HUD_EXPAND_COMMITTED",
+        UiInvariantMonitor.state(activity, transition, "HUD_STATE_COMMITTED",
                 "requested=" + requested + " expanded=" + expandedSummary(host));
         UiInvariantMonitor.invariant(activity, transition,
-                "requested_hud_expanded", requestedExpanded,
+                "requested_hud_logically_expanded", requestedExpanded,
                 "requested=" + requested);
         UiInvariantMonitor.invariant(activity, transition,
                 "at_most_one_expanded_hud", count <= 1,
