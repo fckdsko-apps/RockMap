@@ -11,6 +11,7 @@ import sys
 
 from inject_ui_state_debug import inject_ui_state_fixes
 from inject_ui_state_debug_v2 import main as inject_ui_state_fixes_v2
+from inject_ui_state_debug_v3 import main as inject_ui_state_fixes_v3
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app/src/main/java/com/rockmap/app/RockMapApplication.java"
@@ -246,6 +247,7 @@ def main() -> int:
     # invoked only by the tour-debug workflow.
     inject_ui_state_fixes(ROOT)
     inject_ui_state_fixes_v2()
+    inject_ui_state_fixes_v3()
 
     print("Tour debugger injection complete.")
     print("Runner-only instrumentation is compatible with source-level tour diagnostics.")
