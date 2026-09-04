@@ -9,6 +9,8 @@ otherwise it applies the known baseline replacement exactly once. All edits rema
 from pathlib import Path
 import sys
 
+from inject_ui_state_debug import inject_ui_state_fixes
+
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app/src/main/java/com/rockmap/app/RockMapApplication.java"
 COACH = ROOT / "app/src/main/java/com/rockmap/app/GuidedTourCoach.java"
@@ -237,6 +239,11 @@ def main() -> int:
 """,
             "log target wait progress",
         )
+
+    # Commit-1 additions: HUD exclusivity, safe tour start/cleanup, Step-17 render barrier and
+    # invariant/Track-pipeline instrumentation.  This remains runner-only because this script is
+    # invoked only by the tour-debug workflow.
+    inject_ui_state_fixes(ROOT)
 
     print("Tour debugger injection complete.")
     print("Runner-only instrumentation is compatible with source-level tour diagnostics.")
