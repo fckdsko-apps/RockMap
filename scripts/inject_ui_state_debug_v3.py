@@ -2,6 +2,8 @@
 """Post-v2 timing fix: Field arbitration is asynchronous, so verify only after HUD_READY."""
 from pathlib import Path
 
+from inject_ui_state_debug_v4 import main as inject_ui_state_fixes_v4
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -165,7 +167,8 @@ def main() -> int:
             "MainActivity Field render API",
         )
 
-        print("HUD corrective v3 timing injection complete.")
+        inject_ui_state_fixes_v4()
+        print("HUD corrective v3 timing injection complete (including v4 current-test corrections).")
         return 0
     except Exception:
         for path, content in originals.items():
