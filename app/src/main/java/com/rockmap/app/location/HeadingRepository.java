@@ -18,12 +18,11 @@ public final class HeadingRepository implements SensorEventListener {
         void onHeadingUnavailable();
     }
 
-    private static final float FILTER_GAIN = 0.22f;
+    private static final float SENSOR_FILTER_GAIN = 0.22f;
+    private static final float COURSE_FILTER_GAIN = 0.65f;
     private static final float MIN_EMIT_DELTA_DEGREES = 0.75f;
     private static final long MIN_EMIT_INTERVAL_MS = 80L;
     private static final long MAX_QUIET_INTERVAL_MS = 400L;
-    private static final float MIN_COURSE_SPEED_MPS = 1.0f;
-    private static final float MAX_COURSE_BEARING_ACCURACY_DEGREES = 45.0f;
     private static final int SOURCE_NONE = 0;
     private static final int SOURCE_SENSOR = 1;
     private static final int SOURCE_COURSE = 2;
@@ -48,6 +47,7 @@ public final class HeadingRepository implements SensorEventListener {
     private int lastSource = SOURCE_NONE;
     private boolean unavailableEmitted;
     private long lastSensorDebugElapsedMs;
+    private long lastCourseSuppressedDebugElapsedMs;
     private int lastAccuracy = Integer.MIN_VALUE;
 
     public HeadingRepository(Activity activity, Listener listener) {
@@ -74,13 +74,22 @@ public final class HeadingRepository implements SensorEventListener {
                     this, headingSensor, SensorManager.SENSOR_DELAY_UI);
             TourDebugLog.headingDiagnostic(activity, "HEADING_START",
                     "registered=" + sensorRegistered + " sensor=" + sensorSummary(headingSensor));
-            if (sensorRegistered) return;
+            if (sensorRegistered) {
+                // If the Activity resumes while already moving, do not wait for a magnetic sample
+                // to overwrite a trustworthy GPS course. Otherwise wait for the first sensor event.
+                HeadingCoursePolicy.Decision course = evaluateCourseDecision();
+                logPolicyDecision("start", course);
+                if (course.useCourse && latestLocation != null) {
+                    acceptHeading(latestLocation.getBearing(), SOURCE_COURSE);
+                }
+                return;
+            }
         } else {
             TourDebugLog.headingDiagnostic(activity, "HEADING_START",
                     "registered=false manager=" + (sensorManager != null)
                             + " sensor=" + sensorSummary(headingSensor));
         }
-        emitCourseFallbackOrUnavailable();
+        emitBestAvailableHeading("start-no-sensor");
     }
 
     public void stop() {
@@ -95,6 +104,7 @@ public final class HeadingRepository implements SensorEventListener {
         lastSource = SOURCE_NONE;
         unavailableEmitted = false;
         lastSensorDebugElapsedMs = 0L;
+        lastCourseSuppressedDebugElapsedMs = 0L;
         lastAccuracy = Integer.MIN_VALUE;
         TourDebugLog.headingDiagnostic(activity, "HEADING_STOP", "sensor listener stopped");
     }
@@ -102,27 +112,24 @@ public final class HeadingRepository implements SensorEventListener {
     public void updateLocation(Location location) {
         latestLocation = location == null ? null : new Location(location);
         declinationDegrees = calculateDeclination(latestLocation);
+        HeadingCoursePolicy.Decision course = evaluateCourseDecision();
         TourDebugLog.headingDiagnostic(activity, "HEADING_GPS_CONTEXT",
-                locationSummary(latestLocation) + " declinationDeg=" + format(declinationDegrees)
+                locationSummary(latestLocation)
+                        + " ageMs=" + locationAgeMs(latestLocation)
+                        + " declinationDeg=" + format(declinationDegrees)
                         + " running=" + running + " registered=" + sensorRegistered
-                        + " unreliable=" + sensorUnreliable);
+                        + " unreliable=" + sensorUnreliable
+                        + " courseUsable=" + course.useCourse
+                        + " courseReason=" + course.reason);
         if (!running) return;
-
-        if (!sensorRegistered || sensorUnreliable) {
-            emitCourseFallbackOrUnavailable();
-            return;
-        }
-
-        if (lastMagneticHeading != null) {
-            acceptHeading(toTrueHeading(lastMagneticHeading), SOURCE_SENSOR);
-        }
+        emitBestAvailableHeading("gps-update", course);
     }
 
     @Override
     public void onSensorChanged(SensorEvent event) {
         if (!running || event == null || event.sensor == null || event.sensor != headingSensor) return;
         if (sensorUnreliable) {
-            emitCourseFallbackOrUnavailable();
+            emitBestAvailableHeading("sensor-unreliable-event");
             return;
         }
 
@@ -143,6 +150,28 @@ public final class HeadingRepository implements SensorEventListener {
                             + " trueDeg=" + format(trueHeading)
                             + " displayRotation=" + activity.getWindowManager().getDefaultDisplay().getRotation());
         }
+
+        HeadingCoursePolicy.Decision course = evaluateCourseDecision();
+        if (course.useCourse && latestLocation != null) {
+            // Sensor events arrive far more often than GPS fixes. Once a moving GPS course owns
+            // the arrow, do not let the next magnetic sample immediately steal it back.
+            if (lastCourseSuppressedDebugElapsedMs == 0L
+                    || now - lastCourseSuppressedDebugElapsedMs >= 750L) {
+                lastCourseSuppressedDebugElapsedMs = now;
+                TourDebugLog.headingDiagnostic(activity, "HEADING_SENSOR_SUPPRESSED_BY_COURSE",
+                        "sensorTrueDeg=" + format(trueHeading)
+                                + " gpsCourseDeg=" + format(latestLocation.getBearing())
+                                + " speedMps=" + (latestLocation.hasSpeed()
+                                    ? format(latestLocation.getSpeed()) : "n/a")
+                                + " reason=" + course.reason);
+            }
+            if (lastSource != SOURCE_COURSE) {
+                logPolicyDecision("sensor-event", course);
+                acceptHeading(latestLocation.getBearing(), SOURCE_COURSE);
+            }
+            return;
+        }
+
         acceptHeading(trueHeading, SOURCE_SENSOR);
     }
 
@@ -156,7 +185,7 @@ public final class HeadingRepository implements SensorEventListener {
                     "accuracy=" + accuracy + " unreliable=" + sensorUnreliable
                             + " sensor=" + sensorSummary(sensor));
         }
-        if (sensorUnreliable) emitCourseFallbackOrUnavailable();
+        if (running) emitBestAvailableHeading("sensor-accuracy-change");
     }
 
     private boolean remapForDisplay(float[] input, float[] output) {
@@ -200,26 +229,69 @@ public final class HeadingRepository implements SensorEventListener {
         return field.getDeclination();
     }
 
-    private void emitCourseFallbackOrUnavailable() {
+    private void emitBestAvailableHeading(String trigger) {
+        emitBestAvailableHeading(trigger, evaluateCourseDecision());
+    }
+
+    private void emitBestAvailableHeading(String trigger, HeadingCoursePolicy.Decision course) {
+        logPolicyDecision(trigger, course);
         Location location = latestLocation;
-        if (location != null
-                && location.hasBearing()
-                && location.hasSpeed()
-                && location.getSpeed() >= MIN_COURSE_SPEED_MPS
-                && (!location.hasBearingAccuracy()
-                    || location.getBearingAccuracyDegrees() <= MAX_COURSE_BEARING_ACCURACY_DEGREES)) {
-            TourDebugLog.headingDiagnostic(activity, "HEADING_COURSE_FALLBACK",
-                    locationSummary(location));
+        if (course.useCourse && location != null) {
             acceptHeading(location.getBearing(), SOURCE_COURSE);
             return;
         }
+
+        if (sensorRegistered && !sensorUnreliable) {
+            if (lastMagneticHeading != null) {
+                acceptHeading(toTrueHeading(lastMagneticHeading), SOURCE_SENSOR);
+            } else {
+                TourDebugLog.headingDiagnostic(activity, "HEADING_WAITING_FOR_SENSOR",
+                        "trigger=" + trigger + " courseReason=" + course.reason);
+            }
+            return;
+        }
+
         if (!unavailableEmitted) {
             unavailableEmitted = true;
             TourDebugLog.headingDiagnostic(activity, "HEADING_UNAVAILABLE",
-                    "registered=" + sensorRegistered + " unreliable=" + sensorUnreliable
+                    "trigger=" + trigger
+                            + " registered=" + sensorRegistered
+                            + " unreliable=" + sensorUnreliable
+                            + " courseReason=" + course.reason
                             + " " + locationSummary(location));
             listener.onHeadingUnavailable();
         }
+    }
+
+    private HeadingCoursePolicy.Decision evaluateCourseDecision() {
+        Location location = latestLocation;
+        if (location == null) return HeadingCoursePolicy.Decision.reject("missing-location");
+        return HeadingCoursePolicy.evaluate(
+                lastSource == SOURCE_COURSE,
+                locationAgeMs(location),
+                location.hasSpeed(),
+                location.hasSpeed() ? location.getSpeed() : Float.NaN,
+                location.hasBearing(),
+                location.hasBearing() ? location.getBearing() : Float.NaN,
+                location.hasBearingAccuracy(),
+                location.hasBearingAccuracy() ? location.getBearingAccuracyDegrees() : Float.NaN,
+                location.hasAccuracy(),
+                location.hasAccuracy() ? location.getAccuracy() : Float.NaN);
+    }
+
+    private void logPolicyDecision(String trigger, HeadingCoursePolicy.Decision course) {
+        String selected;
+        if (course.useCourse) selected = "gps-course";
+        else if (sensorRegistered && !sensorUnreliable && lastMagneticHeading != null) selected = "sensor";
+        else if (sensorRegistered && !sensorUnreliable) selected = "waiting-sensor";
+        else selected = "unavailable";
+        TourDebugLog.headingDiagnostic(activity, "HEADING_POLICY_DECISION",
+                "trigger=" + trigger
+                        + " selected=" + selected
+                        + " courseReason=" + course.reason
+                        + " previousSource=" + sourceName(lastSource)
+                        + " ageMs=" + locationAgeMs(latestLocation)
+                        + " " + locationSummary(latestLocation));
     }
 
     private void acceptHeading(float rawHeading, int source) {
@@ -232,7 +304,8 @@ public final class HeadingRepository implements SensorEventListener {
                     "source=" + sourceName(source) + " headingDeg=" + format(heading));
         } else {
             float delta = shortestDelta(filteredHeading, heading);
-            filteredHeading = normalize360(filteredHeading + delta * FILTER_GAIN);
+            float gain = source == SOURCE_COURSE ? COURSE_FILTER_GAIN : SENSOR_FILTER_GAIN;
+            filteredHeading = normalize360(filteredHeading + delta * gain);
         }
 
         long now = SystemClock.elapsedRealtime();
@@ -246,6 +319,10 @@ public final class HeadingRepository implements SensorEventListener {
         unavailableEmitted = false;
         lastEmittedHeading = filteredHeading;
         lastEmitElapsedMs = now;
+        TourDebugLog.headingDiagnostic(activity, "HEADING_OUTPUT",
+                "source=" + sourceName(source)
+                        + " rawDeg=" + format(heading)
+                        + " filteredDeg=" + format(filteredHeading));
         listener.onHeading(filteredHeading);
     }
 
@@ -271,6 +348,15 @@ public final class HeadingRepository implements SensorEventListener {
                 + " bearingDeg=" + (location.hasBearing() ? format(location.getBearing()) : "n/a")
                 + " bearingAccuracyDeg=" + (location.hasBearingAccuracy()
                     ? format(location.getBearingAccuracyDegrees()) : "n/a");
+    }
+
+    private static long locationAgeMs(Location location) {
+        if (location == null) return Long.MAX_VALUE;
+        long elapsedNanos = location.getElapsedRealtimeNanos();
+        if (elapsedNanos <= 0L) return Long.MAX_VALUE;
+        long ageNanos = SystemClock.elapsedRealtimeNanos() - elapsedNanos;
+        if (ageNanos < 0L) return 0L;
+        return ageNanos / 1_000_000L;
     }
 
     private static String format(float value) {
