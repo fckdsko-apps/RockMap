@@ -4,6 +4,7 @@ from pathlib import Path
 
 from inject_ui_state_debug_v4 import main as inject_ui_state_fixes_v4
 from inject_ui_state_debug_v5 import main as inject_ui_state_fixes_v5
+from inject_ui_state_debug_v6 import main as inject_ui_state_fixes_v6
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -182,7 +183,8 @@ def main() -> int:
             "v5 explicit HUD reservation field seed",
         )
         inject_ui_state_fixes_v5()
-        print("HUD corrective v3 timing injection complete (including v4/v5 current-test corrections).")
+        inject_ui_state_fixes_v6()
+        print("HUD corrective v3 timing injection complete (including v4/v5/v6 current-test corrections).")
         return 0
     except Exception:
         for path, content in originals.items():
