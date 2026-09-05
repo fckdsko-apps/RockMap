@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run HUD follow-up, compatible full-close cleanup, Field clean-first routing, then causal debugger passes through v6."""
+"""Run HUD follow-up, compatible full-close cleanup, Field routing fixes, then causal debugger passes through v6."""
 
 from inject_ui_state_debug_v8 import main as inject_ui_state_fixes_v8
 from inject_ui_state_debug_v11 import main as inject_ui_state_fixes_v11
 from inject_ui_state_debug_v10 import main as inject_ui_state_fixes_v10
 from inject_ui_state_debug_v12 import main as inject_ui_state_fixes_v12
+from inject_ui_state_debug_v13 import main as inject_ui_state_fixes_v13
 from inject_causal_tour_debugger_v2_impl import main as inject_causal_tour_debugger_v2_impl
 from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v3
 from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v4
@@ -17,6 +18,7 @@ def main() -> int:
         inject_ui_state_fixes_v11,
         inject_ui_state_fixes_v10,
         inject_ui_state_fixes_v12,
+        inject_ui_state_fixes_v13,
         inject_causal_tour_debugger_v2_impl,
         inject_causal_tour_debugger_v3,
         inject_causal_tour_debugger_v4,
