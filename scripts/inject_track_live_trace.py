@@ -30,6 +30,29 @@ def replace_once(marker: str, old: str, new: str, label: str) -> None:
     print(f"{label}: injected")
 
 
+def replace_in_region_once(marker: str, region_start: str, region_end: str,
+                           old: str, new: str, label: str) -> None:
+    text = read()
+    if marker in text:
+        print(f"{label}: already present")
+        return
+    start = text.find(region_start)
+    if start < 0:
+        raise RuntimeError(f"{label}: region start missing in {FIELD.relative_to(ROOT)}")
+    end = text.find(region_end, start + len(region_start))
+    if end < 0:
+        raise RuntimeError(f"{label}: region end missing in {FIELD.relative_to(ROOT)}")
+    region = text[start:end]
+    count = region.count(old)
+    if count != 1:
+        raise RuntimeError(
+            f"{label}: expected exactly one match inside {region_start.strip()}, found {count}"
+        )
+    patched = region.replace(old, new, 1)
+    FIELD.write_text(text[:start] + patched + text[end:], encoding="utf-8")
+    print(f"{label}: injected")
+
+
 def main() -> int:
     if not FIELD.is_file():
         raise RuntimeError(f"required file missing: {FIELD.relative_to(ROOT)}")
@@ -175,11 +198,12 @@ def main() -> int:
             "active Track GeoJSON builder and diagnostics",
         )
 
-        # The existing Track pipeline diagnostics inserted by Commit 1 sit between TRACK_SOURCE
-        # and AREA_SOURCE here. Insert the active source immediately before AREA_SOURCE so those
-        # diagnostics remain byte-for-byte intact and continue describing the historical layer.
-        replace_once(
+        # Commit 1 diagnostics add another AREA_SOURCE publication elsewhere. Restrict this edit
+        # to applyCachedSources(), where cached Track GeoJSON is actually rebound to MapLibre.
+        replace_in_region_once(
             "commit3-active-source-publish",
+            "    private void applyCachedSources() {",
+            "    private void ensureLayers(Style style) {",
             '''            setSource(style, AREA_SOURCE, areaJson);
 ''',
             '''            setSource(style, ACTIVE_TRACK_SOURCE, activeTrackJson);
@@ -240,13 +264,11 @@ def main() -> int:
         if missing:
             raise RuntimeError("active Track postcondition missing: " + ", ".join(missing))
 
-        # Scope guards: this pass must never become another recorder or mutate Track lifecycle.
-        injected_region = final[len(original):] if final.startswith(original) else final
+        # Scope guard: this pass must never become another recorder or mutate Track lifecycle.
         forbidden_new_behavior = (
             "addTrackPoint(", "createTrack(", "setTrackStatus(",
             "ACTION_START", "ACTION_PAUSE", "ACTION_RESUME", "ACTION_STOP",
         )
-        # Compare occurrence counts rather than banning legitimate baseline calls elsewhere.
         for token in forbidden_new_behavior:
             if final.count(token) != original.count(token):
                 raise RuntimeError("Commit 3 must not change Track recording lifecycle token: " + token)
