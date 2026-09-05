@@ -222,13 +222,13 @@ def patch_coach_wait_lineage(path: Path) -> None:
         "causal-v2-coach-wait-callback-close",
         '''                waitForTargetAndShow(activity, hostRoot, step, total, title, message,
                         requiredAction, liveTarget, backAction, primaryLabel, primaryAction,
-                        skipAction, exitAction, generation, nextAttempt);
+                        skipAction, exitAction, generation, attempt + 1);
             }
         }, 40L);
 ''',
         '''                waitForTargetAndShow(activity, hostRoot, step, total, title, message,
                         requiredAction, liveTarget, backAction, primaryLabel, primaryAction,
-                        skipAction, exitAction, generation, nextAttempt);
+                        skipAction, exitAction, generation, attempt + 1);
             }
         }), 40L); // marker: causal-v2-coach-wait-callback-close
 ''',
