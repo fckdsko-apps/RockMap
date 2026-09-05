@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run HUD follow-up, full-close cleanup, then causal debugger passes through v5."""
+"""Run HUD follow-up, compatible full-close cleanup, then causal debugger passes through v5."""
 
 from inject_ui_state_debug_v8 import main as inject_ui_state_fixes_v8
-from inject_ui_state_debug_v9 import main as inject_ui_state_fixes_v9
+from inject_ui_state_debug_v11 import main as inject_ui_state_fixes_v11
 from inject_ui_state_debug_v10 import main as inject_ui_state_fixes_v10
 from inject_causal_tour_debugger_v2_impl import main as inject_causal_tour_debugger_v2_impl
 from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v3
@@ -13,7 +13,7 @@ from inject_causal_tour_debugger_v5 import main as inject_causal_tour_debugger_v
 def main() -> int:
     for injector in (
         inject_ui_state_fixes_v8,
-        inject_ui_state_fixes_v9,
+        inject_ui_state_fixes_v11,
         inject_ui_state_fixes_v10,
         inject_causal_tour_debugger_v2_impl,
         inject_causal_tour_debugger_v3,
