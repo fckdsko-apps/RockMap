@@ -12,6 +12,7 @@ import sys
 from inject_ui_state_debug import inject_ui_state_fixes
 from inject_ui_state_debug_v2 import main as inject_ui_state_fixes_v2
 from inject_ui_state_debug_v3 import main as inject_ui_state_fixes_v3
+from inject_causal_tour_debugger import main as inject_causal_tour_debugger
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app/src/main/java/com/rockmap/app/RockMapApplication.java"
@@ -141,8 +142,6 @@ def main() -> int:
         "log coach shown",
     )
 
-    # Newer tour-debug source already has generation-aware wait termination. Preserve it instead
-    # of forcing the older combined guard back into the file.
     coach_text = COACH.read_text(encoding="utf-8")
     if ("TourDebugLog.coachTimeout(activity, generation, step, target);" in coach_text
             and '"target-wait"' in coach_text):
@@ -242,15 +241,15 @@ def main() -> int:
             "log target wait progress",
         )
 
-    # Commit-1 additions: HUD exclusivity, safe tour start/cleanup, Step-17 render barrier and
-    # invariant/Track-pipeline instrumentation.  This remains runner-only because this script is
-    # invoked only by the tour-debug workflow.
+    # Existing app behavior patches remain exactly as they were. The causal debugger runs only
+    # after all behavior-producing injectors so its own pass can be kept observational-only.
     inject_ui_state_fixes(ROOT)
     inject_ui_state_fixes_v2()
     inject_ui_state_fixes_v3()
+    inject_causal_tour_debugger()
 
     print("Tour debugger injection complete.")
-    print("Runner-only instrumentation is compatible with source-level tour diagnostics.")
+    print("Causal attribution/surface audits are observational-only.")
     return 0
 
 
