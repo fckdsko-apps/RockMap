@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Run v8 HUD follow-up, causal v2, readiness v3, then startup-retention/I-O v4."""
+"""Run HUD follow-up, full-close cleanup, then causal debugger passes through v5."""
 
 from inject_ui_state_debug_v8 import main as inject_ui_state_fixes_v8
+from inject_ui_state_debug_v9 import main as inject_ui_state_fixes_v9
+from inject_ui_state_debug_v10 import main as inject_ui_state_fixes_v10
 from inject_causal_tour_debugger_v2_impl import main as inject_causal_tour_debugger_v2_impl
 from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v3
 from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v4
+from inject_causal_tour_debugger_v5 import main as inject_causal_tour_debugger_v5
 
 
 def main() -> int:
-    result = inject_ui_state_fixes_v8()
-    if result not in (None, 0):
-        return int(result)
-    result = inject_causal_tour_debugger_v2_impl()
-    if result not in (None, 0):
-        return int(result)
-    result = inject_causal_tour_debugger_v3()
-    if result not in (None, 0):
-        return int(result)
-    result = inject_causal_tour_debugger_v4()
-    return 0 if result is None else int(result)
+    for injector in (
+        inject_ui_state_fixes_v8,
+        inject_ui_state_fixes_v9,
+        inject_ui_state_fixes_v10,
+        inject_causal_tour_debugger_v2_impl,
+        inject_causal_tour_debugger_v3,
+        inject_causal_tour_debugger_v4,
+        inject_causal_tour_debugger_v5,
+    ):
+        result = injector()
+        if result not in (None, 0):
+            return int(result)
+    return 0
 
 
 if __name__ == "__main__":
