@@ -169,6 +169,18 @@ def main() -> int:
         )
 
         inject_ui_state_fixes_v4()
+        # v5 needs only this single stable field anchor; seed it here so v5 can remain strict
+        # about every behavioral replacement that follows.
+        replace_once(
+            main_activity,
+            "v5-explicit-hud-reservation-field",
+            """    private int mappedResearchFrameRecoveryCount;
+""",
+            """    private int mappedResearchFrameRecoveryCount;
+    private String pendingExplicitHudSurface = ""; // marker: v5-explicit-hud-reservation-field
+""",
+            "v5 explicit HUD reservation field seed",
+        )
         inject_ui_state_fixes_v5()
         print("HUD corrective v3 timing injection complete (including v4/v5 current-test corrections).")
         return 0
