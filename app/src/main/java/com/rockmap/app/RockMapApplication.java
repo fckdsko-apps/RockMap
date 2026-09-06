@@ -64,6 +64,7 @@ public final class RockMapApplication extends Application implements Application
     }
 
     private void attach(Activity activity) {
+        SelectableTextInstaller.install(activity);
         FieldMapController controller = controller(activity);
         if (controller != null) controller.attach();
         FieldMapPolishController polish = polish(activity);
@@ -73,16 +74,17 @@ public final class RockMapApplication extends Application implements Application
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
-        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
+        activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityStarted(Activity activity) {
-        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
+        activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityResumed(Activity activity) {
-        if (!(activity instanceof MainActivity)) return;
         activity.getWindow().getDecorView().post(() -> {
+            SelectableTextInstaller.install(activity);
+            if (!(activity instanceof MainActivity)) return;
             FieldMapController controller = controller(activity);
             if (controller != null) controller.onResume();
             FieldMapPolishController polish = polishControllers.get(activity);
