@@ -3,16 +3,13 @@ package com.rockmap.app;
 import android.app.Activity;
 import android.app.Application;
 import android.content.ContentResolver;
-import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Rect;
-import android.net.Uri;
 import android.location.Location;
+import android.net.Uri;
 import android.os.Build;
-import android.os.Environment;
 import android.os.SystemClock;
-import android.provider.MediaStore;
 import android.view.View;
 
 import java.io.ByteArrayOutputStream;
@@ -27,41 +24,60 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Minimal diagnostic logger for guided tours.
+ * Opt-in production diagnostics for RockMap.
  *
- * This class does not advance tours, change UI, request target visibility, scan the view tree,
- * or repair state. It records explicit tour-state changes, Activity lifecycle events, and
- * instrumentation events emitted by GuidedTourCoach.
+ * The historical class name is retained so existing observational call sites do not need to be
+ * rewritten. Diagnostics are OFF by default. When enabled, records are kept only in a bounded
+ * app-private log until the user explicitly exports them from Data settings.
+ *
+ * This class never advances tours, changes UI, filters GPS, invokes app actions, or repairs state.
  */
 public final class TourDebugLog {
     private static final String MAIN_PREFS = "rockmap_guided_tour";
     private static final String FIELD_PREFS = "rockmap_field_tool_tour";
-    private static final String STORAGE_PREFS = "rockmap_tour_debug_storage";
-    private static final String STORAGE_URI = "downloads_uri";
-    private static final String FILE_NAME = "RockMap-Tour-Debug.txt";
+    private static final String DIAGNOSTICS_PREFS = "rockmap_diagnostics";
+    private static final String KEY_ENABLED = "enabled";
+    private static final String INTERNAL_FILE_NAME = "rockmap-diagnostics.log";
 
     private static final long MAX_INTERNAL_BYTES = 2L * 1024L * 1024L;
     private static final int KEEP_INTERNAL_BYTES = 1536 * 1024;
-    private static final long MIRROR_DELAY_MS = 400L;
 
-    private static final AtomicBoolean INSTALLED = new AtomicBoolean();
-    private static final AtomicBoolean MIRROR_SCHEDULED = new AtomicBoolean();
+    private static final AtomicBoolean INITIALIZED = new AtomicBoolean();
+    private static final AtomicBoolean HOOKS_INSTALLED = new AtomicBoolean();
     private static final AtomicLong SEQUENCE = new AtomicLong();
     private static final Object FILE_LOCK = new Object();
     private static final Object HUD_EVENT_LOCK = new Object();
     private static final Object GPS_EVENT_LOCK = new Object();
+
+    private static final String DEBUG_SCHEMA = TourDebugCausality.SCHEMA;
+    private static final String SESSION_ID = "S" + Long.toHexString(System.currentTimeMillis())
+            + "-" + android.os.Process.myPid();
+
+    /*
+     * Injector compatibility markers. Source owns these diagnostics hooks now, so the existing
+     * fail-closed tour-debug injector must treat them as already present.
+     * causal-debug-session-fields
+     * causal-debug-pref-listeners
+     * causal-debug-lifecycle-resumed
+     * causal-debug-lifecycle-destroyed
+     * causal-debug-process-identity
+     * causal-debug-coach-request-hook
+     * causal-debug-coach-shown-hook
+     * causal-debug-public-event-api
+     * causal-debug-line-prefix
+     */
+
     private static Location lastGpsFix;
     private static long lastHudFrameGeneration = Long.MIN_VALUE;
     private static long lastHudWaitGeneration = Long.MIN_VALUE;
 
     private static final ScheduledExecutorService IO =
             Executors.newSingleThreadScheduledExecutor(r -> {
-                Thread thread = new Thread(r, "rockmap-tour-debug");
+                Thread thread = new Thread(r, "rockmap-diagnostics");
                 thread.setPriority(Thread.MIN_PRIORITY);
                 return thread;
             });
@@ -70,23 +86,122 @@ public final class TourDebugLog {
     private static File internalLog;
     private static SharedPreferences mainPrefs;
     private static SharedPreferences fieldPrefs;
-    private static SharedPreferences storagePrefs;
+    private static SharedPreferences diagnosticsPrefs;
     private static SharedPreferences.OnSharedPreferenceChangeListener mainListener;
     private static SharedPreferences.OnSharedPreferenceChangeListener fieldListener;
 
     private TourDebugLog() {}
 
+    /** Initializes diagnostics without enabling them or creating any diagnostic file. */
     public static void install(Context context) {
-        if (context == null || !INSTALLED.compareAndSet(false, true)) return;
+        if (context == null) return;
+        Context application = context.getApplicationContext();
+        if (application == null) application = context;
 
-        app = context.getApplicationContext();
-        internalLog = new File(app.getFilesDir(), "rockmap-tour-debug.log");
-        mainPrefs = app.getSharedPreferences(MAIN_PREFS, Context.MODE_PRIVATE);
-        fieldPrefs = app.getSharedPreferences(FIELD_PREFS, Context.MODE_PRIVATE);
-        storagePrefs = app.getSharedPreferences(STORAGE_PREFS, Context.MODE_PRIVATE);
+        if (INITIALIZED.compareAndSet(false, true)) {
+            app = application;
+            internalLog = new File(app.getFilesDir(), INTERNAL_FILE_NAME);
+            mainPrefs = app.getSharedPreferences(MAIN_PREFS, Context.MODE_PRIVATE);
+            fieldPrefs = app.getSharedPreferences(FIELD_PREFS, Context.MODE_PRIVATE);
+            diagnosticsPrefs = app.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE);
+        }
 
-        mainListener = (prefs, key) ->
-                record("MAIN_STATE", "changed=" + clean(key, 80) + " " + mainSnapshot());
+        if (enabled()) installHooksIfNeeded();
+    }
+
+    public static boolean isEnabled(Context context) {
+        if (context == null) return false;
+        return context.getApplicationContext()
+                .getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(KEY_ENABLED, false);
+    }
+
+    public static void setEnabled(Context context, boolean value) {
+        install(context);
+        if (diagnosticsPrefs == null) return;
+        boolean current = diagnosticsPrefs.getBoolean(KEY_ENABLED, false);
+        if (current == value) {
+            if (value) installHooksIfNeeded();
+            return;
+        }
+
+        if (!value && current) {
+            recordImportant("DIAGNOSTICS", "state=disabled by_user=true");
+        }
+        diagnosticsPrefs.edit().putBoolean(KEY_ENABLED, value).apply();
+        if (value) {
+            installHooksIfNeeded();
+            recordImportant("DIAGNOSTICS", "state=enabled by_user=true");
+            recordProcessStart();
+        }
+    }
+
+    public static boolean hasDiagnostics(Context context) {
+        install(context);
+        synchronized (FILE_LOCK) {
+            return internalLog != null && internalLog.isFile() && internalLog.length() > 0L;
+        }
+    }
+
+    public static long diagnosticBytes(Context context) {
+        install(context);
+        synchronized (FILE_LOCK) {
+            return internalLog != null && internalLog.isFile() ? internalLog.length() : 0L;
+        }
+    }
+
+    public static String suggestedExportFileName() {
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        return "RockMap-Diagnostics-" + stamp + ".txt";
+    }
+
+    /** Writes diagnostics only to a URI explicitly selected by the user. */
+    public static boolean exportTo(Context context, Uri uri) {
+        if (context == null || uri == null) return false;
+        install(context);
+        try {
+            byte[] bytes;
+            synchronized (FILE_LOCK) {
+                if (internalLog == null || !internalLog.isFile() || internalLog.length() <= 0L) {
+                    return false;
+                }
+                bytes = readFile(internalLog);
+            }
+            ContentResolver resolver = context.getApplicationContext().getContentResolver();
+            try (OutputStream output = resolver.openOutputStream(uri, "wt")) {
+                if (output == null) return false;
+                output.write(bytes);
+                output.flush();
+            }
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    public static boolean clear(Context context) {
+        install(context);
+        synchronized (FILE_LOCK) {
+            if (internalLog == null || !internalLog.exists()) return true;
+            return internalLog.delete();
+        }
+    }
+
+    private static boolean enabled() {
+        return diagnosticsPrefs != null && diagnosticsPrefs.getBoolean(KEY_ENABLED, false);
+    }
+
+    private static void installHooksIfNeeded() {
+        if (!enabled() || app == null || !HOOKS_INSTALLED.compareAndSet(false, true)) return;
+
+        mainListener = (prefs, key) -> {
+            record("MAIN_STATE", "changed=" + clean(key, 80) + " " + mainSnapshot());
+            if ("tour_step".equals(key) || "tour_state".equals(key)) {
+                TourDebugCausality.onMainTourStepChanged(
+                        mainPrefs.getInt("tour_step", 1),
+                        mainPrefs.getString("tour_state", "not_offered"));
+            }
+        };
         fieldListener = (prefs, key) ->
                 record("FIELD_STATE", "changed=" + clean(key, 80) + " " + fieldSnapshot());
 
@@ -105,6 +220,7 @@ public final class TourDebugLog {
                         }
 
                         @Override public void onActivityResumed(Activity activity) {
+                            TourDebugCausality.onActivityResumed(activity);
                             recordImportant("ACTIVITY",
                                     activityName(activity) + " resumed focus=" + activity.hasWindowFocus()
                                             + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
@@ -125,14 +241,19 @@ public final class TourDebugLog {
                         }
 
                         @Override public void onActivityDestroyed(Activity activity) {
+                            TourDebugCausality.onActivityDestroyed(activity);
                             recordImportant("ACTIVITY",
                                     activityName(activity) + " destroyed finishing=" + activity.isFinishing());
                         }
                     });
         }
+    }
 
+    private static void recordProcessStart() {
         recordImportant("PROCESS_START",
-                "version=" + safeVersion()
+                "debugSchema=" + DEBUG_SCHEMA
+                        + " session=" + SESSION_ID
+                        + " version=" + safeVersion()
                         + " code=" + safeVersionCode()
                         + " sdk=" + Build.VERSION.SDK_INT
                         + " device=" + Build.MANUFACTURER + "/" + Build.MODEL
@@ -143,6 +264,7 @@ public final class TourDebugLog {
 
     public static void coachRequest(Activity activity, long generation, int step, int total,
                                     String title, String requiredAction, View target) {
+        TourDebugCausality.onCoachRequest(activity, step, generation);
         recordImportant("COACH_REQUEST",
                 "gen=" + generation
                         + " activity=" + activityName(activity)
@@ -154,19 +276,15 @@ public final class TourDebugLog {
 
     public static void coachWait(Activity activity, long generation, int step, View target) {
         record("TARGET_WAIT_START",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " target={" + targetSummary(target) + "}");
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " target={" + targetSummary(target) + "}");
     }
 
     public static void coachWaitProgress(Activity activity, long generation, int step,
                                          int attempt, View target) {
         record("TARGET_WAIT_PROGRESS",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " attempt=" + attempt
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " attempt=" + attempt
                         + " elapsedApproxMs=" + (attempt * 40L)
                         + " target={" + targetSummary(target) + "}");
     }
@@ -174,10 +292,8 @@ public final class TourDebugLog {
     public static void coachTargetReady(Activity activity, long generation, int step,
                                         int attempt, View target) {
         recordImportant("TARGET_READY",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " attempt=" + attempt
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " attempt=" + attempt
                         + " elapsedApproxMs=" + (attempt * 40L)
                         + " target={" + targetSummary(target) + "}");
     }
@@ -185,28 +301,23 @@ public final class TourDebugLog {
     public static void coachSuperseded(Activity activity, long generation, int step,
                                        String stage, View target) {
         recordImportant("REQUEST_SUPERSEDED",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " stage=" + clean(stage, 80)
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " stage=" + clean(stage, 80)
                         + " target={" + targetSummary(target) + "}");
     }
 
     public static void coachTimeout(Activity activity, long generation, int step, View target) {
         recordImportant("TARGET_WAIT_TIMEOUT",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " attempts=250"
-                        + " elapsedApproxMs=10000"
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " attempts=250 elapsedApproxMs=10000"
                         + " target={" + targetSummary(target) + "}");
     }
 
     public static void coachShown(Activity activity, long generation, int step, int total,
                                   String title, View target, boolean dialogHost) {
+        TourDebugCausality.onCoachShown(activity, step, generation);
         recordImportant("COACH_SHOWN",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
+                "gen=" + generation + " activity=" + activityName(activity)
                         + " step=" + step + "/" + total
                         + " title=" + clean(title, 180)
                         + " host=" + (dialogHost ? "dialog-popup" : "activity-content")
@@ -220,21 +331,15 @@ public final class TourDebugLog {
     public static void coachAbort(Activity activity, long generation, int step,
                                   String reason, View target) {
         recordImportant("COACH_ABORT",
-                "gen=" + generation
-                        + " activity=" + activityName(activity)
-                        + " step=" + step
-                        + " reason=" + clean(reason, 140)
+                "gen=" + generation + " activity=" + activityName(activity)
+                        + " step=" + step + " reason=" + clean(reason, 140)
                         + " target={" + targetSummary(target) + "}");
     }
 
-    /** HUD lifecycle instrumentation. This is strictly observational and never requests layout. */
     public static void hudLifecycle(Activity activity, String event, long generation,
                                     String reason, String expandedTool, int measurementCount,
                                     View hud, View requiredTarget, long startedElapsed) {
         String type = clean(event, 60);
-        // Frame/global-layout polling used to evict the user actions we actually needed to debug.
-        // Keep one frame and one wait record per render generation; terminal and state-changing
-        // events remain lossless and are mirrored immediately below.
         synchronized (HUD_EVENT_LOCK) {
             if ("HUD_FRAME_RECHECK".equals(type)) {
                 if (lastHudFrameGeneration == generation) return;
@@ -259,10 +364,11 @@ public final class TourDebugLog {
         if ("HUD_READY".equals(type) || "HUD_SUPERSEDED".equals(type)
                 || "HUD_RECOVERY".equals(type) || "HUD_PASSIVE_IGNORED".equals(type)) {
             recordImportant(type, detail);
-        } else record(type, detail);
+        } else {
+            record(type, detail);
+        }
     }
 
-    /** Durable action-level evidence for Measure/Prospecting point transitions. */
     public static void measurementPoint(Activity activity, String event,
                                         int beforeCount, int afterCount,
                                         String beforeTool, int beforeStep, String beforePhase,
@@ -279,7 +385,6 @@ public final class TourDebugLog {
                         + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
     }
 
-    /** Durable main-tour button/state transition evidence. */
     public static void mainTourAction(Activity activity, String event, String detail) {
         recordImportant(clean(event, 60),
                 "activity=" + activityName(activity)
@@ -287,22 +392,26 @@ public final class TourDebugLog {
                         + " main={" + mainSnapshot() + "} field={" + fieldSnapshot() + "}");
     }
 
-    /** Observational compass diagnostics. Does not alter heading, sensors, map state, or lifecycle. */
+    /** Structured application/causal event. Diagnostic-only. */
+    public static void causalEvent(String event, String detail) {
+        recordImportant(clean(event, 60), clean(detail, 5000));
+    }
+
+    public static void appDiagnostic(String event, String detail) {
+        record(clean(event, 60), clean(detail, 3000));
+    }
+
     public static void headingDiagnostic(Activity activity, String event, String detail) {
         record(clean(event, 60),
                 "activity=" + activityName(activity) + " " + clean(detail, 1800));
     }
 
-    /** Observational MapLibre compass/GPS-render diagnostics. */
     public static void mapDiagnostic(String event, String detail) {
-        record(clean(event, 60), clean(detail, 1800));
+        appDiagnostic(event, detail);
     }
 
-    /**
-     * Records every live GPS fix that reaches MainActivity plus displacement from the prior fix.
-     * This is diagnostic only: no location is rejected, filtered, substituted, or modified here.
-     */
     public static void gpsFix(Activity activity, Location location) {
+        if (!enabled()) return;
         if (location == null) {
             recordImportant("GPS_FIX_NULL", "activity=" + activityName(activity));
             return;
@@ -369,13 +478,6 @@ public final class TourDebugLog {
         else record("GPS_FIX", detail);
     }
 
-    private static String numberOrNa(float value) {
-        return Float.isFinite(value) && value >= 0f
-                ? String.format(Locale.US, "%.2f", value) : "n/a";
-    }
-
-    /** Snapshot the Research workspace/mapped-control presentation without mutating it. */
-    /** Records mineral-result sorting without changing Research or guided-tour state. */
     public static void mineralSortDiagnostic(Activity activity, String event, String detail) {
         recordImportant(clean(event, 60),
                 "activity=" + activityName(activity)
@@ -395,6 +497,11 @@ public final class TourDebugLog {
                         + " drag={" + targetSummary(dragControl) + "}"
                         + " collapse={" + targetSummary(collapseControl) + "}"
                         + " collapsedReopen={" + targetSummary(collapsedReopen) + "}");
+    }
+
+    private static String numberOrNa(float value) {
+        return Float.isFinite(value) && value >= 0f
+                ? String.format(Locale.US, "%.2f", value) : "n/a";
     }
 
     private static String mainSnapshot() {
@@ -430,7 +537,6 @@ public final class TourDebugLog {
 
             Object tag = target.getTag();
             CharSequence description = target.getContentDescription();
-
             Rect visible = new Rect();
             boolean globalVisible = false;
             boolean logicallyVisible = target.isAttachedToWindow()
@@ -485,32 +591,42 @@ public final class TourDebugLog {
     }
 
     private static void record(String type, String detail) {
-        enqueue(type, detail, false);
+        enqueue(type, detail);
     }
 
     private static void recordImportant(String type, String detail) {
-        enqueue(type, detail, true);
+        enqueue(type, detail);
     }
 
-    private static void enqueue(String type, String detail, boolean immediateMirror) {
-        if (app == null || internalLog == null) return;
+    private static void enqueue(String type, String detail) {
+        if (!enabled() || app == null || internalLog == null) return;
 
         long sequence = SEQUENCE.incrementAndGet();
         long elapsed = SystemClock.elapsedRealtime();
         String timestamp = new SimpleDateFormat(
                 "yyyy-MM-dd HH:mm:ss.SSS", Locale.US).format(new Date());
 
+        String context;
+        try {
+            context = TourDebugCausality.contextSummary();
+        } catch (Throwable ignored) {
+            context = "cause=unavailable";
+        }
+
         String line = timestamp
                 + " | +" + elapsed + "ms"
                 + " | #" + sequence
+                + " | session=" + SESSION_ID
+                + " | schema=" + DEBUG_SCHEMA
                 + " | " + clean(type, 60)
+                + " | " + clean(context, 700)
                 + " | " + clean(detail, 5000)
                 + "\n";
 
-        IO.execute(() -> appendLine(line, immediateMirror));
+        IO.execute(() -> appendLine(line));
     }
 
-    private static void appendLine(String line, boolean immediateMirror) {
+    private static void appendLine(String line) {
         synchronized (FILE_LOCK) {
             try {
                 trimIfNeeded();
@@ -519,23 +635,9 @@ public final class TourDebugLog {
                     output.flush();
                 }
             } catch (IOException ignored) {
-                return;
+                // Diagnostics must never interfere with RockMap.
             }
         }
-
-        if (immediateMirror) {
-            mirrorToDownloads();
-        } else {
-            scheduleMirror();
-        }
-    }
-
-    private static void scheduleMirror() {
-        if (!MIRROR_SCHEDULED.compareAndSet(false, true)) return;
-        IO.schedule(() -> {
-            MIRROR_SCHEDULED.set(false);
-            mirrorToDownloads();
-        }, MIRROR_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
     private static void trimIfNeeded() throws IOException {
@@ -550,7 +652,8 @@ public final class TourDebugLog {
         if (start < bytes.length) start++;
 
         try (FileOutputStream output = new FileOutputStream(internalLog, false)) {
-            output.write("[older Tour Debug entries trimmed]\n".getBytes(StandardCharsets.UTF_8));
+            output.write("[older RockMap diagnostics entries trimmed]\n"
+                    .getBytes(StandardCharsets.UTF_8));
             output.write(bytes, Math.min(start, bytes.length),
                     bytes.length - Math.min(start, bytes.length));
         }
@@ -565,68 +668,6 @@ public final class TourDebugLog {
                 output.write(buffer, 0, count);
             }
             return output.toByteArray();
-        }
-    }
-
-    private static void mirrorToDownloads() {
-        if (app == null || internalLog == null
-                || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            return;
-        }
-
-        try {
-            byte[] bytes;
-            synchronized (FILE_LOCK) {
-                if (!internalLog.isFile()) return;
-                bytes = readFile(internalLog);
-            }
-
-            ContentResolver resolver = app.getContentResolver();
-            Uri uri = storedUri();
-
-            if (uri != null && !rewrite(resolver, uri, bytes)) {
-                storagePrefs.edit().remove(STORAGE_URI).apply();
-                uri = null;
-            }
-
-            if (uri == null) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, FILE_NAME);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOADS + "/RockMap");
-
-                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                if (uri != null) {
-                    storagePrefs.edit().putString(STORAGE_URI, uri.toString()).apply();
-                    rewrite(resolver, uri, bytes);
-                }
-            }
-        } catch (Throwable ignored) {
-            // Diagnostics must never interfere with RockMap.
-        }
-    }
-
-    private static Uri storedUri() {
-        if (storagePrefs == null) return null;
-        String raw = storagePrefs.getString(STORAGE_URI, "");
-        if (raw == null || raw.trim().isEmpty()) return null;
-
-        try {
-            return Uri.parse(raw);
-        } catch (Throwable ignored) {
-            return null;
-        }
-    }
-
-    private static boolean rewrite(ContentResolver resolver, Uri uri, byte[] bytes) {
-        try (OutputStream output = resolver.openOutputStream(uri, "wt")) {
-            if (output == null) return false;
-            output.write(bytes);
-            output.flush();
-            return true;
-        } catch (Throwable ignored) {
-            return false;
         }
     }
 
