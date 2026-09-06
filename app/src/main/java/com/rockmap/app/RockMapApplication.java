@@ -95,6 +95,7 @@ public final class RockMapApplication extends Application implements Application
     }
 
     @Override public void onActivityResumed(Activity activity) {
+        UiInvariantMonitor.onActivityResumed(activity);
         activity.getWindow().getDecorView().post(() -> {
             DataInstallProgressController dataProgress = dataProgress(activity);
             if (dataProgress != null) dataProgress.attach();
