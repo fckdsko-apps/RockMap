@@ -2,8 +2,11 @@
 """Make non-interactive RockMap information copyable without changing controls.
 
 Scope is deliberately presentation-only: Research HUD result trees, Field pages, Field HUD status
-text, and the main map's informational detail dialogs. Buttons, editable fields, check/radio
-controls, and tappable rows remain interactive.
+text, and main-map informational detail dialogs. Buttons, editable fields, check/radio controls,
+and tappable rows remain interactive.
+
+Geology-specific MainActivity bodies are intentionally left to the later CNGM Stage 2 injector,
+which already makes those geology terms/details copyable and relies on exact pre-injection anchors.
 """
 from pathlib import Path
 import re
@@ -179,45 +182,45 @@ def main() -> int:
             "        SelectableText.applyToTree(content);",
             "Main bounded dialog content selectable")
         if not main_bounded:
-            print("Main boundedScrollableContent helper not found; using explicit detail-body coverage")
+            print("Main boundedScrollableContent helper not found; explicit detail coverage remains")
 
-        for start_token, end_token, marker, label in (
-            ("    private void onGeologyTapped(", "    private void showGeologySourceDetails(",
-             "selectable-geology-detail", "Geology detail selectable"),
-            ("    private void showGeologySourceDetails(", "    private static String mostSpecificGeologyAge(",
-             "selectable-geology-source-detail", "Geology source details selectable"),
-            ("    public void onMapFeaturesTapped(", "    private String compactClaimQuality(",
-             "selectable-location-info-detail", "Location/land/claim details selectable"),
-        ):
-            text = MAIN.read_text(encoding="utf-8")
-            if marker in text:
-                print(f"{label}: already present")
-                continue
+        text = MAIN.read_text(encoding="utf-8")
+        marker = "selectable-location-info-detail"
+        if marker not in text:
+            start_token = "    public void onMapFeaturesTapped("
+            end_token = "    private String compactClaimQuality("
             start = text.find(start_token)
             end = text.find(end_token, start + len(start_token)) if start >= 0 else -1
             if start < 0 or end < 0:
-                raise RuntimeError(f"{label}: method region missing")
+                raise RuntimeError("Location/land/claim details selectable: method region missing")
             region = text[start:end]
             matches = list(re.finditer(r"(^\s*body\.setText\([^\n]+\);\s*$)", region, re.M))
             if len(matches) != 1:
-                raise RuntimeError(f"{label}: expected one body.setText assignment, found {len(matches)}")
+                raise RuntimeError(
+                    f"Location/land/claim details selectable: expected one body.setText assignment, found {len(matches)}")
             m = matches[0]
-            insert = m.group(1) + f"\n        SelectableText.informational(body); // marker: {marker}"
+            insert = m.group(1) + "\n        SelectableText.informational(body); // marker: " + marker
             region = region[:m.start()] + insert + region[m.end():]
             MAIN.write_text(text[:start] + region + text[end:], encoding="utf-8")
-            print(f"{label}: injected")
+            print("Location/land/claim details selectable: injected")
+        else:
+            print("Location/land/claim details selectable: already present")
 
         checks = {
             RESEARCH: ("selectable-research-scroll-tree", "selectable-research-status"),
             FIELD: ("selectable-field-scroll-tree", "selectable-field-help"),
             MAP_FIELD: ("selectable-field-hud-text",),
-            MAIN: ("selectable-geology-detail", "selectable-location-info-detail"),
+            MAIN: ("selectable-location-info-detail",),
         }
         for path, markers in checks.items():
             final = path.read_text(encoding="utf-8")
             absent = [m for m in markers if m not in final]
             if absent:
                 raise RuntimeError(f"{path.name}: missing postconditions {absent}")
+
+        main_final = MAIN.read_text(encoding="utf-8")
+        if "selectable-geology-detail" in main_final or "selectable-geology-source-detail" in main_final:
+            raise RuntimeError("selectable-text pass unexpectedly modified CNGM geology call sites")
 
         forbidden = ("CREATE TABLE", "ALTER TABLE", "deleteTrack(", "insertTrackPoint(",
                      "requestLocationUpdates(", "CameraUpdateFactory")
@@ -229,7 +232,8 @@ def main() -> int:
                     raise RuntimeError(f"selectable-text pass changed forbidden token {token} in {path.name}")
 
         print("Selectable informational text pass complete.")
-        print("Non-interactive Research/Field/HUD/detail text can now be long-pressed and copied.")
+        print("Non-interactive Research/Field/HUD/location text can now be long-pressed and copied.")
+        print("Geology-specific copyability remains owned by the later CNGM Stage 2 pass.")
         return 0
     except Exception:
         for path, original in originals.items():
