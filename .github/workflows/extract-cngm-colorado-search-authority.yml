@@ -32,8 +32,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$GITHUB_REF_NAME" != "tour-debug" ]; then
-            echo "::error::This scientific extraction checkpoint must be run against tour-debug, not $GITHUB_REF_NAME."
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "::error::This scientific extraction checkpoint must be run against main, not $GITHUB_REF_NAME."
             exit 1
           fi
 
