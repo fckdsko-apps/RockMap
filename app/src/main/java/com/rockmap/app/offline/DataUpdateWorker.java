@@ -2,6 +2,7 @@ package com.rockmap.app.offline;
 
 import android.content.Context;
 import android.os.StatFs;
+import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
 
@@ -37,6 +38,11 @@ public final class DataUpdateWorker extends Worker {
     private static final int MAX_REDIRECTS = 5;
     private static final int MAX_MANIFEST_BYTES = 1_000_000;
     private static final long STORAGE_MARGIN_BYTES = 64L * 1024L * 1024L;
+    private static final long PROGRESS_MIN_BYTES = 1024L * 1024L;
+    private static final long PROGRESS_MIN_MS = 300L;
+
+    private long lastProgressBytes = -1L;
+    private long lastProgressElapsed = -1L;
 
     public DataUpdateWorker(@NonNull Context appContext, @NonNull WorkerParameters params) {
         super(appContext, params);
@@ -57,6 +63,7 @@ public final class DataUpdateWorker extends Worker {
         }
 
         try {
+            publish("Preparing core RockMap data…", 0L, 0L, true, true);
             String rawManifest = downloadSmallText(BuildConfig.DATA_MANIFEST_URL, MAX_MANIFEST_BYTES);
             DataManifest manifest = DataManifestParser.parse(rawManifest);
             if (!manifest.isRenderable()) {
@@ -67,9 +74,6 @@ public final class DataUpdateWorker extends Worker {
 
             DataManifest activeBeforeUpdate = manager.getActiveManifest();
             DataManifest previousBeforeUpdate = manager.getPreviousManifest();
-
-            // Immutable filenames protect the currently active and rollback snapshots.
-            // A manifest may reuse a filename only when its hash/size describe identical content.
             enforceImmutableReferencedFiles(manager, manifest, activeBeforeUpdate, previousBeforeUpdate);
 
             long bytesNeeded = 0;
@@ -79,13 +83,20 @@ public final class DataUpdateWorker extends Worker {
             }
             ensureFreeSpace(manager.getMapsDir(), Math.addExact(bytesNeeded, STORAGE_MARGIN_BYTES));
 
+            long downloaded = 0L;
+            publish(bytesNeeded > 0L ? "Downloading core RockMap data…" : "Verifying core RockMap data…",
+                    0L, bytesNeeded, bytesNeeded <= 0L, true);
             for (DataFileSpec spec : manifest.files) {
                 File target = manager.resolve(spec.fileName);
                 if (isAlreadyValid(target, spec)) continue;
-                downloadAndVerify(spec, target);
+                downloadAndVerify(spec, target, downloaded, bytesNeeded);
+                downloaded = Math.addExact(downloaded, spec.bytes);
+                publish("Downloading core RockMap data…", downloaded, bytesNeeded, false, true);
             }
 
-            // Recheck the entire target snapshot before switching the active manifest.
+            publish("Download complete. Verifying and activating core data…",
+                    downloaded, bytesNeeded, true, true);
+
             for (DataFileSpec spec : manifest.files) {
                 if (!spec.required) continue;
                 File target = manager.resolve(spec.fileName);
@@ -94,7 +105,6 @@ public final class DataUpdateWorker extends Worker {
                 }
             }
 
-            // Preserve the last active manifest for runtime rollback before activating the new one.
             File active = manager.getActiveManifestFile();
             if (active.isFile()) {
                 byte[] previousBytes = OfflineDataManager.readBytes(active, MAX_MANIFEST_BYTES);
@@ -102,9 +112,6 @@ public final class DataUpdateWorker extends Worker {
             }
 
             replaceFileAtomically(active, rawManifest.getBytes(StandardCharsets.UTF_8));
-
-            // Keep everything referenced by the active and previous snapshots. This ensures a
-            // semantically valid-but-unrenderable new style can be rolled back on the device.
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
                 if (manifest.find("mineral_localities") != null && manifest.find("minerals") != null) {
@@ -126,6 +133,7 @@ public final class DataUpdateWorker extends Worker {
             } else {
                 manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
             }
+            publish("Core RockMap data installed.", bytesNeeded, bytesNeeded, false, true);
             return Result.success();
         } catch (ArithmeticException ex) {
             return fail(manager, "Map update rejected because declared file sizes overflowed safely.");
@@ -140,7 +148,24 @@ public final class DataUpdateWorker extends Worker {
 
     private Result fail(OfflineDataManager manager, String message) {
         manager.setLastUpdateStatus(message);
+        publish("Core data installation stopped.", 0L, 0L, true, true);
         return Result.failure();
+    }
+
+    private void publish(String phase, long done, long total, boolean indeterminate, boolean force) {
+        long now = SystemClock.elapsedRealtime();
+        long safeDone = Math.max(0L, done);
+        long safeTotal = Math.max(0L, total);
+        if (!force && lastProgressBytes >= 0L
+                && safeDone - lastProgressBytes < PROGRESS_MIN_BYTES
+                && lastProgressElapsed >= 0L
+                && now - lastProgressElapsed < PROGRESS_MIN_MS) {
+            return;
+        }
+        lastProgressBytes = safeDone;
+        lastProgressElapsed = now;
+        setProgressAsync(DataInstallProgress.value(
+                DataInstallProgress.PACKAGE_CORE, phase, safeDone, safeTotal, indeterminate));
     }
 
     private void enforceImmutableReferencedFiles(OfflineDataManager manager, DataManifest incoming,
@@ -183,7 +208,8 @@ public final class DataUpdateWorker extends Worker {
         }
     }
 
-    private void downloadAndVerify(DataFileSpec spec, File target)
+    private void downloadAndVerify(DataFileSpec spec, File target,
+                                   long completedBefore, long totalBytes)
             throws IOException, NoSuchAlgorithmException {
         File part = new File(target.getParentFile(), spec.fileName + ".part");
         if (part.exists() && !part.delete()) throw new IOException("Cannot remove stale partial file: " + spec.id);
@@ -208,6 +234,8 @@ public final class DataUpdateWorker extends Worker {
                     if (total > spec.bytes) throw new IOException("Download exceeded declared size for " + spec.id);
                     output.write(buffer, 0, read);
                     digest.update(buffer, 0, read);
+                    publish("Downloading core RockMap data…",
+                            Math.addExact(completedBefore, total), totalBytes, false, false);
                 }
                 output.flush();
                 fileOutput.getFD().sync();
@@ -300,7 +328,6 @@ public final class DataUpdateWorker extends Worker {
 
     private static void moveReplaceAtomically(File source, File target) throws IOException {
         try {
-            // POSIX rename is atomic within this app-internal filesystem and replaces target.
             Os.rename(source.getAbsolutePath(), target.getAbsolutePath());
         } catch (ErrnoException ex) {
             throw new IOException("Atomic file activation failed: " + ex.getMessage(), ex);
