@@ -4,6 +4,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.StatFs;
+import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
 
@@ -12,6 +13,7 @@ import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
 import com.rockmap.app.BuildConfig;
+import com.rockmap.app.offline.DataInstallProgress;
 import com.rockmap.app.offline.DataValidators;
 
 import org.json.JSONException;
@@ -43,6 +45,8 @@ public final class GeologyDataUpdateWorker extends Worker {
     private static final int MAX_REDIRECTS = 5;
     private static final int MAX_MANIFEST_BYTES = 1_000_000;
     private static final long STORAGE_MARGIN_BYTES = 64L * 1024L * 1024L;
+    private static final long PROGRESS_MIN_BYTES = 1024L * 1024L;
+    private static final long PROGRESS_MIN_MS = 300L;
 
     private static final Set<String> REQUIRED_UNIT_COLUMNS = new HashSet<>(Arrays.asList(
             "object_id", "state", "orig_label", "sgmc_label", "unit_link", "unit_name",
@@ -51,6 +55,9 @@ public final class GeologyDataUpdateWorker extends Worker {
             "ref_id", "reference_text", "digital_url", "ngmdb1", "ngmdb2", "ngmdb3", "rgba",
             "south", "west", "north", "east", "geometry_json", "search_text", "lithology_text",
             "age_text"));
+
+    private long lastProgressBytes = -1L;
+    private long lastProgressElapsed = -1L;
 
     public GeologyDataUpdateWorker(@NonNull Context appContext, @NonNull WorkerParameters params) {
         super(appContext, params);
@@ -73,6 +80,7 @@ public final class GeologyDataUpdateWorker extends Worker {
         File assetPart = null;
         File databasePart = null;
         try {
+            publish("Preparing Colorado geology…", 0L, 0L, true, true);
             String rawManifest = downloadSmallText(BuildConfig.GEOLOGY_MANIFEST_URL);
             GeologyManifest incoming = GeologyManifestParser.parse(rawManifest);
             if (!incoming.isPublished()) {
@@ -86,11 +94,13 @@ public final class GeologyDataUpdateWorker extends Worker {
 
             File finalDatabase = new File(manager.getResearchDir(), incoming.database.fileName);
             if (isAlreadyValid(finalDatabase, incoming.database)) {
+                publish("Verifying installed Colorado geology…", 0L, 0L, true, true);
                 validateDatabase(finalDatabase, incoming);
                 activateManifest(manager, rawManifest, incoming, activeBefore);
                 cleanupUnreferencedDatabases(manager);
                 manager.setLastUpdateStatus("Colorado geology installed: " + incoming.version
                         + " (" + incoming.source.recordCount + " mapped areas)." );
+                publish("Colorado geology installed.", 0L, 0L, false, true);
                 return Result.success();
             }
 
@@ -102,7 +112,10 @@ public final class GeologyDataUpdateWorker extends Worker {
             deleteStalePart(assetPart);
             deleteStalePart(databasePart);
 
+            publish("Downloading Colorado geology…", 0L, incoming.asset.bytes, false, true);
             downloadAndVerify(incoming.asset, assetPart);
+            publish("Download complete. Installing and verifying Colorado geology…",
+                    incoming.asset.bytes, incoming.asset.bytes, true, true);
             gunzipAndVerify(assetPart, databasePart, incoming.database);
             validateDatabase(databasePart, incoming);
             moveReplaceAtomically(databasePart, finalDatabase);
@@ -117,6 +130,8 @@ public final class GeologyDataUpdateWorker extends Worker {
             cleanupUnreferencedDatabases(manager);
             manager.setLastUpdateStatus("Colorado geology installed: " + incoming.version
                     + " (" + incoming.source.recordCount + " mapped areas)." );
+            publish("Colorado geology installed.", incoming.asset.bytes, incoming.asset.bytes,
+                    false, true);
             return Result.success();
         } catch (ArithmeticException ex) {
             return fail(manager, "Colorado geology download rejected because declared sizes overflowed safely.");
@@ -134,7 +149,25 @@ public final class GeologyDataUpdateWorker extends Worker {
 
     private Result fail(GeologyDataManager manager, String message) {
         manager.setLastUpdateStatus(message);
+        publish("Colorado geology installation stopped.", 0L, 0L, true, true);
         return Result.failure();
+    }
+
+    private void publish(String phase, long done, long total, boolean indeterminate, boolean force) {
+        long now = SystemClock.elapsedRealtime();
+        long safeDone = Math.max(0L, done);
+        long safeTotal = Math.max(0L, total);
+        if (!force && lastProgressBytes >= 0L
+                && safeDone - lastProgressBytes < PROGRESS_MIN_BYTES
+                && lastProgressElapsed >= 0L
+                && now - lastProgressElapsed < PROGRESS_MIN_MS) {
+            return;
+        }
+        lastProgressBytes = safeDone;
+        lastProgressElapsed = now;
+        setProgressAsync(DataInstallProgress.value(
+                DataInstallProgress.PACKAGE_GEOLOGY, phase,
+                safeDone, safeTotal, indeterminate));
     }
 
     private void enforceImmutableDatabaseName(GeologyDataManager manager, GeologyManifest incoming,
@@ -177,6 +210,7 @@ public final class GeologyDataUpdateWorker extends Worker {
                     if (total > asset.bytes) throw new IOException("Geology download exceeded declared size.");
                     output.write(buffer, 0, read);
                     digest.update(buffer, 0, read);
+                    publish("Downloading Colorado geology…", total, asset.bytes, false, false);
                 }
                 output.flush();
                 fileOutput.getFD().sync();
