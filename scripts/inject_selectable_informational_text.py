@@ -54,7 +54,6 @@ def insert_method_prologue(path: Path, marker: str, method_name: str, line: str,
     if marker in text:
         print(f"{label}: already present")
         return True
-    # Match a private method declaration on one line whose name and first parameter are stable.
     pattern = re.compile(r"(^\s*private\s+[^\n{]+\b" + re.escape(method_name) + r"\([^\n]*\)\s*\{\s*$)", re.M)
     match = pattern.search(text)
     if not match:
@@ -71,9 +70,6 @@ def main() -> int:
         raise RuntimeError("required source missing: " + ", ".join(missing))
     originals = {p: p.read_text(encoding="utf-8") for p in FILES}
     try:
-        # Research workspace: every dynamically supplied fixed/result tree is scanned after it is
-        # built. This covers Geology, Mineral Evidence, Historic Mines, source/result summaries,
-        # coordinates, and changing status text without touching tab/action buttons.
         replace_once(
             RESEARCH,
             "selectable-research-import",
@@ -107,9 +103,6 @@ def main() -> int:
             "Research status selectable",
         )
 
-        # Field full-screen pages: scan the content before attaching it to the ScrollView. This
-        # catches help copy, saved-object details, coordinates, research snapshots, import/export
-        # summaries, etc. Pinned action/button rows are intentionally excluded.
         replace_once(
             FIELD,
             "selectable-field-import",
@@ -157,8 +150,6 @@ def main() -> int:
             FIELD.write_text(text[:start] + region + text[end:], encoding="utf-8")
             print(f"{label}: injected")
 
-        # Field map HUD status text is created through hudText(). Keep drag headers and controls
-        # untouched; only the status/result TextViews become selectable.
         replace_once(
             MAP_FIELD,
             "selectable-field-map-import",
@@ -173,18 +164,16 @@ def main() -> int:
                 raise RuntimeError("Field HUD hudText() method missing")
             end = text.find("    }\n", start)
             region = text[start:end]
-            old = "        return t;\n"
+            old = "        return view;\n"
             if region.count(old) != 1:
                 raise RuntimeError("Field HUD hudText() return anchor missing/ambiguous")
             region = region.replace(old,
-                    "        SelectableText.informational(t); // marker: selectable-field-hud-text\n        return t;\n", 1)
+                    "        SelectableText.informational(view); // marker: selectable-field-hud-text\n        return view;\n", 1)
             MAP_FIELD.write_text(text[:start] + region + text[end:], encoding="utf-8")
             print("Field HUD informational text selectable: injected")
         else:
             print("Field HUD informational text selectable: already present")
 
-        # Main map custom dialog bodies (including the screenshots that motivated this change)
-        # use bounded scroll containers. Scan their supplied content trees centrally when possible.
         main_bounded = insert_method_prologue(
             MAIN, "selectable-main-bounded-content", "boundedScrollableContent",
             "        SelectableText.applyToTree(content);",
@@ -192,7 +181,6 @@ def main() -> int:
         if not main_bounded:
             print("Main boundedScrollableContent helper not found; using explicit detail-body coverage")
 
-        # Explicitly cover critical map information dialogs regardless of helper implementation.
         for start_token, end_token, marker, label in (
             ("    private void onGeologyTapped(", "    private void showGeologySourceDetails(",
              "selectable-geology-detail", "Geology detail selectable"),
@@ -210,8 +198,6 @@ def main() -> int:
             if start < 0 or end < 0:
                 raise RuntimeError(f"{label}: method region missing")
             region = text[start:end]
-            # Add after the final body text assignment in the region. Source-details and location
-            # dialogs have one such assignment; geology detail has one as well.
             matches = list(re.finditer(r"(^\s*body\.setText\([^\n]+\);\s*$)", region, re.M))
             if len(matches) != 1:
                 raise RuntimeError(f"{label}: expected one body.setText assignment, found {len(matches)}")
@@ -221,8 +207,6 @@ def main() -> int:
             MAIN.write_text(text[:start] + region + text[end:], encoding="utf-8")
             print(f"{label}: injected")
 
-        # Postconditions: selection support must exist in all four presentation families and may
-        # not alter persistence, map geometry, GPS, recording, or database code.
         checks = {
             RESEARCH: ("selectable-research-scroll-tree", "selectable-research-status"),
             FIELD: ("selectable-field-scroll-tree", "selectable-field-help"),
