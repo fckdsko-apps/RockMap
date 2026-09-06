@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Causal debugger v4: retain startup evidence and reduce diagnostic I/O pressure.
 
-Diagnostic-only. This pass changes logger retention/mirroring and schema identity. It does not
-move UI, change application/tour state, retry actions, or alter HUD ownership.
+Diagnostic-only. This pass changes legacy logger retention/mirroring and schema identity. Production
+opt-in diagnostics own their private retention/export policy directly and are validated here instead
+of being rewritten back into the obsolete automatic Downloads-mirror design.
 """
 from pathlib import Path
 
@@ -27,7 +28,50 @@ def replace_once(path: Path, marker: str, old: str, new: str, label: str) -> Non
     print(f"{label}: injected")
 
 
+def production_diagnostics_log(path: Path) -> bool:
+    current = text(path)
+    if "Opt-in production diagnostics for RockMap." not in current:
+        return False
+
+    required = (
+        'private static final String DIAGNOSTICS_PREFS = "rockmap_diagnostics";',
+        'private static final String KEY_ENABLED = "enabled";',
+        'private static final String INTERNAL_FILE_NAME = "rockmap-diagnostics.log";',
+        'public static void setEnabled(Context context, boolean value)',
+        'public static boolean exportTo(Context context, Uri uri)',
+        'public static boolean clear(Context context)',
+        'if (!enabled() || app == null || internalLog == null) return;',
+    )
+    missing = [token for token in required if token not in current]
+    if missing:
+        raise RuntimeError(
+            "production diagnostics logger is present but required opt-in/private-log contract "
+            f"is incomplete: {missing}"
+        )
+
+    forbidden = (
+        "MIRROR_DELAY_MS",
+        "publishMirror",
+        "scheduleMirror",
+        "MediaStore.Downloads",
+        'FILE_NAME = "RockMap-Tour-Debug.txt"',
+    )
+    present = [token for token in forbidden if token in current]
+    if present:
+        raise RuntimeError(
+            "production diagnostics logger unexpectedly contains legacy automatic-export behavior: "
+            f"{present}"
+        )
+
+    print("production opt-in diagnostics retention/export contract: validated")
+    print("legacy causal-v4 automatic-mirror patches: intentionally skipped")
+    return True
+
+
 def patch_log(path: Path) -> None:
+    if production_diagnostics_log(path):
+        return
+
     replace_once(
         path,
         "causal-v4-retention-limits",
@@ -167,7 +211,10 @@ def main() -> int:
                 raise RuntimeError(f"causal v4 scope guard failed: causality contains {token}")
 
         print("Causal debugger v4 retention/I-O diagnostics complete.")
-        print("Startup prefix is pinned; routine causal events use batched mirroring.")
+        if production_diagnostics_log(log):
+            print("Production diagnostics own private retention and explicit export; no auto-mirror restored.")
+        else:
+            print("Startup prefix is pinned; routine causal events use batched mirroring.")
         return 0
     except Exception:
         for path, content in originals.items():
