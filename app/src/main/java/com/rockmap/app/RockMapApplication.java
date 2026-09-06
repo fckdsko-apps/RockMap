@@ -18,6 +18,7 @@ public final class RockMapApplication extends Application implements Application
     private final WeakHashMap<Activity, FieldMapController> controllers = new WeakHashMap<>();
     private final WeakHashMap<Activity, FieldMapPolishController> polishControllers = new WeakHashMap<>();
     private final WeakHashMap<Activity, TransientMapAttributionController> attributionControllers = new WeakHashMap<>();
+    private final WeakHashMap<Activity, DataInstallProgressController> dataProgressControllers = new WeakHashMap<>();
 
     @Override public void onCreate() {
         super.onCreate();
@@ -63,6 +64,17 @@ public final class RockMapApplication extends Application implements Application
         return controller;
     }
 
+    private DataInstallProgressController dataProgress(Activity activity) {
+        if (!(activity instanceof InitialDataSetupActivity)
+                && !(activity instanceof DataUpdateSettingsActivity)) return null;
+        DataInstallProgressController controller = dataProgressControllers.get(activity);
+        if (controller == null) {
+            controller = new DataInstallProgressController(activity);
+            dataProgressControllers.put(activity, controller);
+        }
+        return controller;
+    }
+
     private void attach(Activity activity) {
         FieldMapController controller = controller(activity);
         if (controller != null) controller.attach();
@@ -70,19 +82,23 @@ public final class RockMapApplication extends Application implements Application
         if (polish != null) polish.attach();
         TransientMapAttributionController attribution = attribution(activity);
         if (attribution != null) attribution.attach();
+        DataInstallProgressController dataProgress = dataProgress(activity);
+        if (dataProgress != null) dataProgress.attach();
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) {
-        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
+        activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityStarted(Activity activity) {
-        if (activity instanceof MainActivity) activity.getWindow().getDecorView().post(() -> attach(activity));
+        activity.getWindow().getDecorView().post(() -> attach(activity));
     }
 
     @Override public void onActivityResumed(Activity activity) {
-        if (!(activity instanceof MainActivity)) return;
         activity.getWindow().getDecorView().post(() -> {
+            DataInstallProgressController dataProgress = dataProgress(activity);
+            if (dataProgress != null) dataProgress.attach();
+            if (!(activity instanceof MainActivity)) return;
             FieldMapController controller = controller(activity);
             if (controller != null) controller.onResume();
             FieldMapPolishController polish = polishControllers.get(activity);
@@ -109,5 +125,7 @@ public final class RockMapApplication extends Application implements Application
         if (polish != null) polish.destroy();
         TransientMapAttributionController attribution = attributionControllers.remove(activity);
         if (attribution != null) attribution.destroy();
+        DataInstallProgressController dataProgress = dataProgressControllers.remove(activity);
+        if (dataProgress != null) dataProgress.destroy();
     }
 }
