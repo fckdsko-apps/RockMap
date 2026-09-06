@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - production-diagnostics-install-progress
   workflow_dispatch:
 
 permissions:
