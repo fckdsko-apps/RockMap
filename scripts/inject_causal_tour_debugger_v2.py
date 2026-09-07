@@ -15,6 +15,7 @@ from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v
 from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v4
 from inject_causal_tour_debugger_v6 import main as inject_causal_tour_debugger_v6
 from inject_causal_tour_debugger_v7 import main as inject_causal_tour_debugger_v7
+from inject_causal_tour_debugger_v8 import main as inject_causal_tour_debugger_v8
 
 
 def main() -> int:
@@ -34,6 +35,7 @@ def main() -> int:
         inject_causal_tour_debugger_v4,
         inject_causal_tour_debugger_v6,
         inject_causal_tour_debugger_v7,
+        inject_causal_tour_debugger_v8,
     ):
         result = injector()
         if result not in (None, 0):
