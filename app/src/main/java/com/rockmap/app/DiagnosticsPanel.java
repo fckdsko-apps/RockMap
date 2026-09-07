@@ -2,24 +2,20 @@ package com.rockmap.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.ContentResolver;
-import android.content.ContentValues;
+import android.content.Intent;
 import android.graphics.Color;
-import android.net.Uri;
-import android.os.Build;
-import android.os.Environment;
-import android.provider.MediaStore;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.File;
 import java.util.Locale;
 
 /** Adds opt-in production diagnostics controls to RockMap's Data settings. */
 public final class DiagnosticsPanel {
+    private static final int EXPORT_DIAGNOSTICS_REQUEST = 9151;
+
     private DiagnosticsPanel() {}
 
     public static void addTo(Activity activity, LinearLayout parent) {
@@ -36,7 +32,7 @@ public final class DiagnosticsPanel {
         TextView explanation = body(activity,
                 "Off by default. When enabled, RockMap keeps a bounded diagnostic log on this device. "
                         + "It can include current coordinates, feature state, errors, and app events needed to diagnose problems. "
-                        + "Nothing is exported unless you tap Export diagnostics.");
+                        + "Nothing is exported unless you tap Export diagnostics and choose where to save it.");
         parent.addView(explanation);
 
         TextView status = body(activity, "");
@@ -78,18 +74,7 @@ public final class DiagnosticsPanel {
                 refresh.run();
                 return;
             }
-            Uri destination = createExportDestination(activity);
-            if (destination == null || !TourDebugLog.exportTo(activity, destination)) {
-                deleteFailedDestination(activity, destination);
-                Toast.makeText(activity, "Diagnostics could not be exported.", Toast.LENGTH_LONG).show();
-                return;
-            }
-            Toast.makeText(activity,
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                            ? "Diagnostics exported to Downloads/RockMap."
-                            : "Diagnostics exported to RockMap's app documents folder.",
-                    Toast.LENGTH_LONG).show();
-            refresh.run();
+            beginExport(activity);
         });
 
         clear.setOnClickListener(v -> new AlertDialog.Builder(activity)
@@ -108,41 +93,35 @@ public final class DiagnosticsPanel {
         refresh.run();
     }
 
-    private static Uri createExportDestination(Activity activity) {
-        String name = TourDebugLog.suggestedExportFileName();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH,
-                        Environment.DIRECTORY_DOWNLOADS + "/RockMap");
-                return activity.getContentResolver().insert(
-                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            } catch (RuntimeException ignored) {
-                return null;
-            }
+    /** Opens Android's document picker so RockMap never chooses the export folder for the user. */
+    private static void beginExport(Activity activity) {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, TourDebugLog.suggestedExportFileName());
+        try {
+            activity.startActivityForResult(intent, EXPORT_DIAGNOSTICS_REQUEST);
+        } catch (RuntimeException ex) {
+            Toast.makeText(activity,
+                    "Android could not open a location picker for diagnostics.",
+                    Toast.LENGTH_LONG).show();
         }
-
-        File base = activity.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
-        if (base == null) return null;
-        File dir = new File(base, "RockMap");
-        if (!dir.isDirectory() && !dir.mkdirs()) return null;
-        return Uri.fromFile(new File(dir, name));
     }
 
-    private static void deleteFailedDestination(Activity activity, Uri uri) {
-        if (uri == null) return;
-        try {
-            if ("content".equalsIgnoreCase(uri.getScheme())) {
-                ContentResolver resolver = activity.getContentResolver();
-                resolver.delete(uri, null, null);
-            } else if ("file".equalsIgnoreCase(uri.getScheme()) && uri.getPath() != null) {
-                new File(uri.getPath()).delete();
-            }
-        } catch (RuntimeException ignored) {
-            // Export failure must never interfere with RockMap.
+    /** Returns true when this result belongs to the diagnostics save picker. */
+    public static boolean handleActivityResult(Activity activity, int requestCode,
+                                               int resultCode, Intent data) {
+        if (requestCode != EXPORT_DIAGNOSTICS_REQUEST) return false;
+        if (activity == null) return true;
+        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+            return true;
         }
+
+        boolean exported = TourDebugLog.exportTo(activity, data.getData());
+        Toast.makeText(activity,
+                exported ? "Diagnostics exported." : "Diagnostics could not be exported.",
+                exported ? Toast.LENGTH_LONG : Toast.LENGTH_LONG).show();
+        return true;
     }
 
     private static TextView body(Activity activity, String text) {
