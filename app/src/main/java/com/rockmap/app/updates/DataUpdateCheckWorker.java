@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters;
 
 import com.rockmap.app.BuildConfig;
 import com.rockmap.app.TourDebugLog;
+import com.rockmap.app.WholeAppDiagnostics;
 import com.rockmap.app.offline.DataUpdatePreviewer;
 import com.rockmap.app.offline.OfflineDataManager;
 import com.rockmap.app.research.GeologyDataPreviewer;
@@ -33,11 +34,19 @@ public final class DataUpdateCheckWorker extends Worker {
     @Override
     public Result doWork() {
         Context app = getApplicationContext();
+        long diagnostic = WholeAppDiagnostics.start("updates", "scheduled_manifest_scan",
+                "attempt=" + getRunAttemptCount());
+        WholeAppDiagnostics.worker("DataUpdateCheckWorker", "start",
+                "attempt=" + getRunAttemptCount());
 
         // A fresh installation is handled by InitialDataSetupActivity, not by an "update" alert.
         if (!new OfflineDataManager(app).hasRenderableActivePack()) {
             TourDebugLog.mapDiagnostic("DATA_UPDATE_SCAN",
                     "type=scheduled state=skipped reason=initial_core_data_not_ready");
+            WholeAppDiagnostics.worker("DataUpdateCheckWorker", "skipped",
+                    "reason=initial_core_data_not_ready");
+            WholeAppDiagnostics.success(diagnostic, "updates", "scheduled_manifest_scan",
+                    "state=skipped initial_core_data_not_ready");
             return Result.success();
         }
 
@@ -94,9 +103,14 @@ public final class DataUpdateCheckWorker extends Worker {
                 if (geology.get() == null && geologyError.get().isEmpty()) {
                     geologyError.set("Geology update check timed out.");
                 }
+                WholeAppDiagnostics.worker("DataUpdateCheckWorker", "timeout",
+                        "coreError=" + coreError.get() + " geologyError=" + geologyError.get());
             }
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
+            WholeAppDiagnostics.failure(diagnostic, "updates", "scheduled_manifest_scan",
+                    "state=interrupted retry=true", ex);
+            WholeAppDiagnostics.worker("DataUpdateCheckWorker", "retry", "reason=interrupted");
             return Result.retry();
         }
 
@@ -110,8 +124,20 @@ public final class DataUpdateCheckWorker extends Worker {
         }
 
         if (core.get() == null && geology.get() == null) {
+            WholeAppDiagnostics.worker("DataUpdateCheckWorker", "retry",
+                    "reason=no_manifest_results coreError=" + coreError.get()
+                            + " geologyError=" + geologyError.get());
+            WholeAppDiagnostics.failure(diagnostic, "updates", "scheduled_manifest_scan",
+                    "state=no_manifest_results retry=true coreError=" + coreError.get()
+                            + " geologyError=" + geologyError.get(), null);
             return Result.retry();
         }
+        WholeAppDiagnostics.worker("DataUpdateCheckWorker", "success",
+                "hasUpdate=" + state.hasUpdate() + " coreError=" + coreError.get()
+                        + " geologyError=" + geologyError.get());
+        WholeAppDiagnostics.success(diagnostic, "updates", "scheduled_manifest_scan",
+                "hasUpdate=" + state.hasUpdate() + " coreError=" + coreError.get()
+                        + " geologyError=" + geologyError.get());
         return Result.success();
     }
 }
