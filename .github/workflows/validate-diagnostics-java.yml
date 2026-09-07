@@ -54,4 +54,5 @@ jobs:
           set -euo pipefail
           gradle --no-daemon --stacktrace \
             :app:compileDebugJavaWithJavac \
-            -x prepareOfflinePlaceIndex
+            -x prepareOfflinePlaceIndex \
+            -x verifyOfflinePlaceIndex
