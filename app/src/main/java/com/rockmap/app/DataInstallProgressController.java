@@ -37,6 +37,7 @@ public final class DataInstallProgressController {
     private TextView status;
     private ProgressBar progress;
     private boolean attached;
+    private String lastWorkSignature = "";
 
     public DataInstallProgressController(Activity activity) {
         this.activity = activity;
@@ -56,6 +57,8 @@ public final class DataInstallProgressController {
         liveData = WorkManager.getInstance(activity).getWorkInfosForUniqueWorkLiveData(workName);
         observer = this::render;
         liveData.observeForever(observer);
+        WholeAppDiagnostics.event("WORK_OBSERVER",
+                "workName=" + workName + " state=attached activity=" + activity.getClass().getSimpleName());
     }
 
     public void destroy() {
@@ -63,6 +66,8 @@ public final class DataInstallProgressController {
         liveData = null;
         observer = null;
         attached = false;
+        WholeAppDiagnostics.event("WORK_OBSERVER",
+                "workName=" + workName + " state=destroyed activity=" + activity.getClass().getSimpleName());
     }
 
     private boolean ensureUi() {
@@ -134,6 +139,7 @@ public final class DataInstallProgressController {
         if (panel == null || status == null || progress == null
                 || activity.isFinishing() || activity.isDestroyed()) return;
 
+        logWorkState(infos);
         WorkInfo active = chooseActive(infos);
         if (active == null) {
             panel.setVisibility(View.GONE);
@@ -174,6 +180,40 @@ public final class DataInstallProgressController {
                 + formatBytes(cappedDone) + " of " + formatBytes(total);
         status.setText(text);
         progress.setContentDescription(text);
+    }
+
+    private void logWorkState(List<WorkInfo> infos) {
+        StringBuilder signature = new StringBuilder();
+        StringBuilder detail = new StringBuilder("workName=").append(workName);
+        if (infos == null || infos.isEmpty()) {
+            signature.append("empty");
+            detail.append(" entries=0");
+        } else {
+            detail.append(" entries=").append(infos.size());
+            for (WorkInfo info : infos) {
+                if (info == null) continue;
+                Data data = info.getProgress();
+                String phase = data.getString(DataInstallProgress.KEY_PHASE);
+                long done = data.getLong(DataInstallProgress.KEY_BYTES_DONE, 0L);
+                long total = data.getLong(DataInstallProgress.KEY_BYTES_TOTAL, 0L);
+                int percent = total > 0L ? (int) Math.min(100L, (Math.max(0L, done) * 100L) / total) : -1;
+                String compact = info.getId() + ":" + info.getState() + ":" + info.getRunAttemptCount()
+                        + ":" + percent + ":" + (phase == null ? "" : phase);
+                signature.append('|').append(compact);
+                detail.append(" [id=").append(info.getId())
+                        .append(" state=").append(info.getState())
+                        .append(" attempt=").append(info.getRunAttemptCount())
+                        .append(" percent=").append(percent)
+                        .append(" done=").append(done)
+                        .append(" total=").append(total)
+                        .append(" phase=").append(phase == null ? "" : phase.replace('\n', ' '))
+                        .append(']');
+            }
+        }
+        String current = signature.toString();
+        if (current.equals(lastWorkSignature)) return;
+        lastWorkSignature = current;
+        WholeAppDiagnostics.event("WORK_STATE", detail.toString());
     }
 
     private static WorkInfo chooseActive(List<WorkInfo> infos) {
