@@ -79,7 +79,6 @@ public final class TrackRecordingService extends Service implements LocationList
                 WholeAppDiagnostics.service("TrackRecordingService", "recording", "trackId=" + trackId + " action=resume");
             }
         } else if (ACTION_STOP.equals(action)) {
-            WholeAppDiagnostics.service("TrackRecordingService", "stopping", "trackId=" + trackId);
             finishTrack();
         } else {
             WholeAppDiagnostics.service("TrackRecordingService", "ignored", "reason=unknown_action action=" + action);
@@ -115,6 +114,7 @@ public final class TrackRecordingService extends Service implements LocationList
     }
 
     private void finishTrack() {
+        WholeAppDiagnostics.service("TrackRecordingService", "stopping", "trackId=" + trackId);
         removeUpdates();
         if (trackId > 0L) database.setTrackStatus(trackId, FieldDatabase.TRACK_COMPLETE, System.currentTimeMillis());
         WholeAppDiagnostics.service("TrackRecordingService", "complete", "trackId=" + trackId);
