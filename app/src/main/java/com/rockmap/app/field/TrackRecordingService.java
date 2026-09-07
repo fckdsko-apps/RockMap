@@ -80,8 +80,12 @@ public final class TrackRecordingService extends Service implements LocationList
             }
         } else if (ACTION_STOP.equals(action)) {
             finishTrack();
-        } else {
-            WholeAppDiagnostics.service("TrackRecordingService", "ignored", "reason=unknown_action action=" + action);
+        }
+        if (!ACTION_START.equals(action) && !ACTION_PAUSE.equals(action)
+                && !ACTION_RESUME.equals(action) && !ACTION_STOP.equals(action)
+                && !"com.rockmap.app.field.DELETE_TRACK".equals(action)) {
+            WholeAppDiagnostics.service("TrackRecordingService", "ignored",
+                    "reason=unknown_action action=" + action);
         }
         return START_NOT_STICKY;
     }
