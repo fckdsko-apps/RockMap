@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Expose production diagnostics controls from the existing Technical diagnostics dialog.
 
-Presentation-only. The production logger/storage contract lives in TourDebugLog and DiagnosticsPanel;
-this pass only makes those already-source-owned controls reachable from MainActivity without changing
-Offline Data installation behavior, map state, tours, or CNGM search semantics.
+Presentation/export plumbing only. The production logger/storage contract lives in TourDebugLog and
+DiagnosticsPanel. This pass makes the source-owned controls reachable from MainActivity and routes
+Android's user-selected document-picker result back to DiagnosticsPanel without changing Offline
+Data installation behavior, map state, tours, or CNGM search semantics.
 """
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "app/src/main/java/com/rockmap/app/MainActivity.java"
 PANEL = ROOT / "app/src/main/java/com/rockmap/app/DiagnosticsPanel.java"
-MARKER = "production-diagnostics-controls-visible"
+UI_MARKER = "production-diagnostics-controls-visible"
+RESULT_MARKER = "production-diagnostics-export-result"
 
-OLD = '''    private void showDataDiagnostics() {
+OLD_UI = '''    private void showDataDiagnostics() {
         String diagnostics = "RockMap " + BuildConfig.VERSION_NAME
                 + (mapController == null ? "\\n\\nMap diagnostics unavailable."
                     : "\\n\\n" + mapController.describeLabelDiagnostics()
@@ -34,7 +36,7 @@ OLD = '''    private void showDataDiagnostics() {
     }
 '''
 
-NEW = '''    private void showDataDiagnostics() {
+NEW_UI = '''    private void showDataDiagnostics() {
         String diagnostics = "RockMap " + BuildConfig.VERSION_NAME
                 + (mapController == null ? "\\n\\nMap diagnostics unavailable."
                     : "\\n\\n" + mapController.describeLabelDiagnostics()
@@ -71,41 +73,83 @@ NEW = '''    private void showDataDiagnostics() {
     }
 '''
 
+OLD_RESULT = '''    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == RESEARCH_REQUEST) {
+'''
+
+NEW_RESULT = '''    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (DiagnosticsPanel.handleActivityResult(this, requestCode, resultCode, data)) return; // marker: production-diagnostics-export-result
+        if (requestCode == RESEARCH_REQUEST) {
+'''
+
+
+def replace_once(current: str, marker: str, old: str, new: str, label: str) -> str:
+    if marker in current:
+        print(f"{label}: already present")
+        return current
+    count = current.count(old)
+    if count != 1:
+        raise RuntimeError(f"{label}: expected exactly one anchor, found {count}")
+    print(f"{label}: injected")
+    return current.replace(old, new, 1)
+
 
 def main() -> int:
     for path in (MAIN, PANEL):
         if not path.is_file():
             raise RuntimeError(f"required source missing: {path.relative_to(ROOT)}")
 
-    current = MAIN.read_text(encoding="utf-8")
-    if MARKER in current:
-        required = (
-            "DiagnosticsPanel.addTo(this, content)",
-            'readoutHeading.setText("Current technical state")',
-            '.setTitle("Technical diagnostics")',
-        )
-        missing = [token for token in required if token not in current]
-        if missing:
-            raise RuntimeError("production diagnostics UI marker present but contract incomplete: " + ", ".join(missing))
-        print("Production diagnostics controls: already present")
-        return 0
+    panel = PANEL.read_text(encoding="utf-8")
+    required_panel = (
+        "Intent.ACTION_CREATE_DOCUMENT",
+        "TourDebugLog.suggestedExportFileName()",
+        "public static boolean handleActivityResult(",
+        "TourDebugLog.exportTo(activity, data.getData())",
+    )
+    missing_panel = [token for token in required_panel if token not in panel]
+    if missing_panel:
+        raise RuntimeError("production diagnostics user-selected export contract incomplete: "
+                           + ", ".join(missing_panel))
+    forbidden_panel = (
+        "MediaStore.Downloads",
+        "Environment.DIRECTORY_DOWNLOADS",
+        "Downloads/RockMap",
+        "createExportDestination",
+    )
+    present_forbidden = [token for token in forbidden_panel if token in panel]
+    if present_forbidden:
+        raise RuntimeError("production diagnostics still contains fixed export destination: "
+                           + ", ".join(present_forbidden))
 
-    count = current.count(OLD)
-    if count != 1:
-        raise RuntimeError(
-            f"Production diagnostics controls: expected exactly one Technical diagnostics method anchor, found {count}"
-        )
+    original = MAIN.read_text(encoding="utf-8")
+    updated = replace_once(original, UI_MARKER, OLD_UI, NEW_UI,
+                           "Production diagnostics controls")
+    updated = replace_once(updated, RESULT_MARKER, OLD_RESULT, NEW_RESULT,
+                           "Production diagnostics export result routing")
 
-    updated = current.replace(OLD, NEW, 1)
-    if updated.count('Button diagnostics = smallActionButton("Technical diagnostics")') != current.count(
+    if updated.count('Button diagnostics = smallActionButton("Technical diagnostics")') != original.count(
             'Button diagnostics = smallActionButton("Technical diagnostics")'):
         raise RuntimeError("Production diagnostics UI unexpectedly changed Offline Data entry control")
-    if "DiagnosticsPanel.addTo(this, content)" not in updated:
-        raise RuntimeError("Production diagnostics UI postcondition missing")
+
+    required_main = (
+        "DiagnosticsPanel.addTo(this, content)",
+        "DiagnosticsPanel.handleActivityResult(this, requestCode, resultCode, data)",
+        'readoutHeading.setText("Current technical state")',
+        '.setTitle("Technical diagnostics")',
+    )
+    missing_main = [token for token in required_main if token not in updated]
+    if missing_main:
+        raise RuntimeError("production diagnostics MainActivity postcondition missing: "
+                           + ", ".join(missing_main))
 
     MAIN.write_text(updated, encoding="utf-8")
     print("Production diagnostics controls exposed through Technical diagnostics.")
-    print("Scope: presentation-only; existing technical readout retained below opt-in controls.")
+    print("Diagnostics export uses Android's user-selected document destination.")
+    print("Scope: UI/export plumbing only; existing technical readout retained below opt-in controls.")
     return 0
 
 
