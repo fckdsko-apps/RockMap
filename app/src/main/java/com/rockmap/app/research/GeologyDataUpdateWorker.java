@@ -13,6 +13,7 @@ import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
 import com.rockmap.app.BuildConfig;
+import com.rockmap.app.WholeAppDiagnostics;
 import com.rockmap.app.offline.DataInstallProgress;
 import com.rockmap.app.offline.DataValidators;
 
@@ -58,6 +59,7 @@ public final class GeologyDataUpdateWorker extends Worker {
 
     private long lastProgressBytes = -1L;
     private long lastProgressElapsed = -1L;
+    private long diagnosticOperation;
 
     public GeologyDataUpdateWorker(@NonNull Context appContext, @NonNull WorkerParameters params) {
         super(appContext, params);
@@ -72,6 +74,12 @@ public final class GeologyDataUpdateWorker extends Worker {
     }
 
     private Result doWorkLocked() {
+        diagnosticOperation = WholeAppDiagnostics.start("data", "geology_install",
+                "attempt=" + getRunAttemptCount());
+        WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "start",
+                "attempt=" + getRunAttemptCount());
+        WholeAppDiagnostics.storageSnapshot("geology_install_start");
+
         GeologyDataManager manager = new GeologyDataManager(getApplicationContext());
         if (!DataValidators.isSafeHttpsUrl(BuildConfig.GEOLOGY_MANIFEST_URL)) {
             return fail(manager, "Colorado geology manifest URL is not configured safely.");
@@ -83,6 +91,11 @@ public final class GeologyDataUpdateWorker extends Worker {
             publish("Preparing Colorado geology…", 0L, 0L, true, true);
             String rawManifest = downloadSmallText(BuildConfig.GEOLOGY_MANIFEST_URL);
             GeologyManifest incoming = GeologyManifestParser.parse(rawManifest);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "manifest_parsed",
+                    "version=" + incoming.version + " published=" + incoming.isPublished()
+                            + " records=" + incoming.source.recordCount
+                            + " assetBytes=" + incoming.asset.bytes
+                            + " databaseBytes=" + incoming.database.bytes);
             if (!incoming.isPublished()) {
                 return fail(manager, incoming.message.isEmpty()
                         ? "No Colorado geology pack is currently published." : incoming.message);
@@ -94,17 +107,29 @@ public final class GeologyDataUpdateWorker extends Worker {
 
             File finalDatabase = new File(manager.getResearchDir(), incoming.database.fileName);
             if (isAlreadyValid(finalDatabase, incoming.database)) {
+                WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "database_reused",
+                        "file=" + incoming.database.fileName + " bytes=" + incoming.database.bytes);
                 publish("Verifying installed Colorado geology…", 0L, 0L, true, true);
                 validateDatabase(finalDatabase, incoming);
+                WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "database_validated",
+                        "stage=existing records=" + incoming.source.recordCount);
                 activateManifest(manager, rawManifest, incoming, activeBefore);
                 cleanupUnreferencedDatabases(manager);
                 manager.setLastUpdateStatus("Colorado geology installed: " + incoming.version
                         + " (" + incoming.source.recordCount + " mapped areas)." );
                 publish("Colorado geology installed.", 0L, 0L, false, true);
+                WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "success",
+                        "version=" + incoming.version + " reused=true records=" + incoming.source.recordCount);
+                WholeAppDiagnostics.storageSnapshot("geology_install_success");
+                WholeAppDiagnostics.success(diagnosticOperation, "data", "geology_install",
+                        "version=" + incoming.version + " reused=true records=" + incoming.source.recordCount);
                 return Result.success();
             }
 
             long needed = Math.addExact(incoming.asset.bytes, incoming.database.bytes);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "plan_ready",
+                    "neededBytes=" + needed + " assetBytes=" + incoming.asset.bytes
+                            + " databaseBytes=" + incoming.database.bytes);
             ensureFreeSpace(manager.getResearchDir(), Math.addExact(needed, STORAGE_MARGIN_BYTES));
 
             assetPart = new File(manager.getResearchDir(), incoming.asset.fileName + ".part");
@@ -113,34 +138,55 @@ public final class GeologyDataUpdateWorker extends Worker {
             deleteStalePart(databasePart);
 
             publish("Downloading Colorado geology…", 0L, incoming.asset.bytes, false, true);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "asset_download_start",
+                    "file=" + incoming.asset.fileName + " bytes=" + incoming.asset.bytes);
             downloadAndVerify(incoming.asset, assetPart);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "asset_verified",
+                    "file=" + incoming.asset.fileName + " bytes=" + incoming.asset.bytes);
             publish("Download complete. Installing and verifying Colorado geology…",
                     incoming.asset.bytes, incoming.asset.bytes, true, true);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "unpack_start",
+                    "installedBytes=" + incoming.database.bytes);
             gunzipAndVerify(assetPart, databasePart, incoming.database);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "unpack_verified",
+                    "installedBytes=" + incoming.database.bytes);
             validateDatabase(databasePart, incoming);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "database_validated",
+                    "stage=staged records=" + incoming.source.recordCount);
             moveReplaceAtomically(databasePart, finalDatabase);
             databasePart = null;
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "database_activated",
+                    "file=" + incoming.database.fileName);
 
             // Recheck immutable bytes after filesystem activation, before switching the active manifest.
             if (!isAlreadyValid(finalDatabase, incoming.database)) {
                 throw new IOException("Activated geology database failed final SHA-256 verification.");
             }
             validateDatabase(finalDatabase, incoming);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "database_validated",
+                    "stage=activated records=" + incoming.source.recordCount);
             activateManifest(manager, rawManifest, incoming, activeBefore);
             cleanupUnreferencedDatabases(manager);
             manager.setLastUpdateStatus("Colorado geology installed: " + incoming.version
                     + " (" + incoming.source.recordCount + " mapped areas)." );
             publish("Colorado geology installed.", incoming.asset.bytes, incoming.asset.bytes,
                     false, true);
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "success",
+                    "version=" + incoming.version + " reused=false records=" + incoming.source.recordCount
+                            + " downloadedBytes=" + incoming.asset.bytes);
+            WholeAppDiagnostics.storageSnapshot("geology_install_success");
+            WholeAppDiagnostics.success(diagnosticOperation, "data", "geology_install",
+                    "version=" + incoming.version + " reused=false records=" + incoming.source.recordCount
+                            + " downloadedBytes=" + incoming.asset.bytes);
             return Result.success();
         } catch (ArithmeticException ex) {
-            return fail(manager, "Colorado geology download rejected because declared sizes overflowed safely.");
+            return fail(manager, "Colorado geology download rejected because declared sizes overflowed safely.", ex);
         } catch (JSONException ex) {
-            return fail(manager, "Colorado geology manifest rejected: " + ex.getMessage());
+            return fail(manager, "Colorado geology manifest rejected: " + ex.getMessage(), ex);
         } catch (IOException | NoSuchAlgorithmException ex) {
-            return fail(manager, "Colorado geology update failed; previous geology was kept: " + ex.getMessage());
+            return fail(manager, "Colorado geology update failed; previous geology was kept: " + ex.getMessage(), ex);
         } catch (RuntimeException ex) {
-            return fail(manager, "Colorado geology update aborted safely: " + ex.getMessage());
+            return fail(manager, "Colorado geology update aborted safely: " + ex.getMessage(), ex);
         } finally {
             if (assetPart != null) assetPart.delete();
             if (databasePart != null) databasePart.delete();
@@ -148,8 +194,15 @@ public final class GeologyDataUpdateWorker extends Worker {
     }
 
     private Result fail(GeologyDataManager manager, String message) {
+        return fail(manager, message, null);
+    }
+
+    private Result fail(GeologyDataManager manager, String message, Throwable error) {
         manager.setLastUpdateStatus(message);
         publish("Colorado geology installation stopped.", 0L, 0L, true, true);
+        WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "failure", message);
+        WholeAppDiagnostics.storageSnapshot("geology_install_failure");
+        WholeAppDiagnostics.failure(diagnosticOperation, "data", "geology_install", message, error);
         return Result.failure();
     }
 
@@ -168,6 +221,11 @@ public final class GeologyDataUpdateWorker extends Worker {
         setProgressAsync(DataInstallProgress.value(
                 DataInstallProgress.PACKAGE_GEOLOGY, phase,
                 safeDone, safeTotal, indeterminate));
+        if (force) {
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "progress",
+                    "phase=" + phase + " done=" + safeDone + " total=" + safeTotal
+                            + " indeterminate=" + indeterminate);
+        }
     }
 
     private void enforceImmutableDatabaseName(GeologyDataManager manager, GeologyManifest incoming,
@@ -251,8 +309,14 @@ public final class GeologyDataUpdateWorker extends Worker {
     }
 
     private void validateDatabase(File file, GeologyManifest manifest) throws IOException {
+        long diagnostic = WholeAppDiagnostics.start("database", "geology_validate",
+                "file=" + file.getName() + " bytes=" + file.length()
+                        + " expectedRecords=" + manifest.source.recordCount);
         if (!file.isFile() || file.length() != manifest.database.bytes) {
-            throw new IOException("Geology database is missing or has the wrong size.");
+            IOException error = new IOException("Geology database is missing or has the wrong size.");
+            WholeAppDiagnostics.failure(diagnostic, "database", "geology_validate",
+                    "stage=size", error);
+            throw error;
         }
         try (SQLiteDatabase db = SQLiteDatabase.openDatabase(
                 file.getAbsolutePath(), null, SQLiteDatabase.OPEN_READONLY)) {
@@ -290,8 +354,18 @@ public final class GeologyDataUpdateWorker extends Worker {
             long missingGeometry = scalarLong(db,
                     "SELECT COUNT(*) FROM units WHERE geometry_json IS NULL OR length(trim(geometry_json)) < 10");
             if (missingGeometry != 0L) throw new IOException("Geology database contains missing polygon geometry.");
+            WholeAppDiagnostics.success(diagnostic, "database", "geology_validate",
+                    "schema=" + schemaVersion + " rows=" + count + " wrongState=" + wrongState
+                            + " missingGeometry=" + missingGeometry);
+        } catch (IOException ex) {
+            WholeAppDiagnostics.failure(diagnostic, "database", "geology_validate",
+                    "stage=validation", ex);
+            throw ex;
         } catch (RuntimeException ex) {
-            throw new IOException("Geology SQLite validation failed: " + ex.getMessage(), ex);
+            IOException wrapped = new IOException("Geology SQLite validation failed: " + ex.getMessage(), ex);
+            WholeAppDiagnostics.failure(diagnostic, "database", "geology_validate",
+                    "stage=sqlite_runtime", ex);
+            throw wrapped;
         }
     }
 
