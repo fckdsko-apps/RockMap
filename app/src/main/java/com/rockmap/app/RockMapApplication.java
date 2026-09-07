@@ -26,12 +26,13 @@ public final class RockMapApplication extends Application implements Application
         // Keep the source-level debugger marker expected by scripts/inject_tour_debug.py.
         // The injector is idempotent and will leave this alone when it sees the marker.
         TourDebugLog.install(this);
-        WholeAppDiagnostics.install(this);
 
         // Manifest-only background checks. This schedules no large data transfer.
         DataUpdateScheduler.ensureScheduled(this);
         DataUpdateScheduler.ensureNotificationChannel(this);
 
+        // Whole-app diagnostics remain opt-in; installation only observes the enable preference.
+        WholeAppDiagnostics.install(this);
         registerActivityLifecycleCallbacks(this);
     }
 
