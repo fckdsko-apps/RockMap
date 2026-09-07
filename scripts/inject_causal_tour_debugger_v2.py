@@ -16,6 +16,7 @@ from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v
 from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v4
 from inject_causal_tour_debugger_v6 import main as inject_causal_tour_debugger_v6
 from inject_production_diagnostics_noise_policy import main as inject_production_diagnostics_noise_policy
+from inject_production_diagnostics_cleanup_v2 import main as inject_production_diagnostics_cleanup_v2
 
 
 def main() -> int:
@@ -36,9 +37,11 @@ def main() -> int:
         inject_causal_tour_debugger_v3,
         inject_causal_tour_debugger_v4,
         inject_causal_tour_debugger_v6,
-        # Final production policy runs after legacy causal injectors so test hooks stay available
-        # while routine persistence remains compact and false-positive warnings are suppressed.
+        # Existing production retention/noise policy remains authoritative for opt-in storage/export.
         inject_production_diagnostics_noise_policy,
+        # Final targeted cleanup from the causal-v5 field-log audit. This pass is observational only
+        # and fail-closes if the production toggle/manual-export contract disappears.
+        inject_production_diagnostics_cleanup_v2,
     ):
         result = injector()
         if result not in (None, 0):
