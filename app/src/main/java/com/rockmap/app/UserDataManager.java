@@ -31,14 +31,14 @@ public final class UserDataManager {
     }
 
     public static void deleteSavedLocationsAndTrips(Context context, Callback callback) {
-        run(context, callback, () -> {
+        run(context, "delete_saved_locations_and_trips", callback, () -> {
             RockMapDatabase.get(context).clearAllTables();
             clearImportedWaypointOwnership(context);
         });
     }
 
     public static void deleteFieldData(Context context, Callback callback) {
-        run(context, callback, () -> {
+        run(context, "delete_field_data", callback, () -> {
             FieldDatabase field = FieldDatabase.get(context);
             if (field.getActiveTrack() != null) {
                 throw new IllegalStateException(
@@ -54,7 +54,7 @@ public final class UserDataManager {
     }
 
     public static void deleteAllUserCreatedData(Context context, Callback callback) {
-        run(context, callback, () -> {
+        run(context, "delete_all_user_created_data", callback, () -> {
             FieldDatabase field = FieldDatabase.get(context);
             if (field.getActiveTrack() != null) {
                 throw new IllegalStateException(
@@ -71,12 +71,16 @@ public final class UserDataManager {
         });
     }
 
-    private static void run(Context context, Callback callback, ThrowingRunnable work) {
+    private static void run(Context context, String operation, Callback callback, ThrowingRunnable work) {
         Handler main = new Handler(Looper.getMainLooper());
+        final long diagnostic = WholeAppDiagnostics.start("storage", operation, "state=queued");
+        WholeAppDiagnostics.storageSnapshot(operation + "_start");
         EXECUTOR.execute(() -> {
             try {
                 work.run();
-                TourDebugLog.mapDiagnostic("USER_DATA_DELETE", "state=success");
+                TourDebugLog.mapDiagnostic("USER_DATA_DELETE", "state=success operation=" + operation);
+                WholeAppDiagnostics.success(diagnostic, "storage", operation, "state=success");
+                WholeAppDiagnostics.storageSnapshot(operation + "_success");
                 main.post(callback::onSuccess);
             } catch (Exception ex) {
                 String message = ex.getMessage();
@@ -85,7 +89,10 @@ public final class UserDataManager {
                 }
                 final String safe = message;
                 TourDebugLog.mapDiagnostic("USER_DATA_DELETE",
-                        "state=error message=" + safe.replace('\n', ' '));
+                        "state=error operation=" + operation + " message=" + safe.replace('\n', ' '));
+                WholeAppDiagnostics.failure(diagnostic, "storage", operation,
+                        "state=error message=" + safe.replace('\n', ' '), ex);
+                WholeAppDiagnostics.storageSnapshot(operation + "_failure");
                 main.post(() -> callback.onError(safe));
             }
         });
@@ -175,7 +182,9 @@ public final class UserDataManager {
             if (flags == 0) continue;
             try {
                 resolver.releasePersistableUriPermission(permission.getUri(), flags);
-            } catch (SecurityException ignored) {
+            } catch (SecurityException ex) {
+                WholeAppDiagnostics.event("URI_PERMISSION",
+                        "state=release_failed error=" + WholeAppDiagnostics.errorSummary(ex));
             }
         }
     }
