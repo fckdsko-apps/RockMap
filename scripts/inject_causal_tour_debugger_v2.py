@@ -10,6 +10,7 @@ from inject_track_hidden_notice import main as inject_track_hidden_notice
 from inject_track_row_delete import main as inject_track_row_delete
 from inject_commit4_trip_areas import main as inject_commit4_trip_areas
 from inject_selectable_informational_text import main as inject_selectable_informational_text
+from inject_production_diagnostics_ui import main as inject_production_diagnostics_ui
 from inject_causal_tour_debugger_v2_impl import main as inject_causal_tour_debugger_v2_impl
 from inject_causal_tour_debugger_v3 import main as inject_causal_tour_debugger_v3
 from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v4
@@ -28,6 +29,8 @@ def main() -> int:
         inject_commit4_trip_areas,
         # Presentation-only rule: non-interactive reference text should be selectable/copyable.
         inject_selectable_informational_text,
+        # Production diagnostics controls must be reachable from the existing Technical diagnostics UI.
+        inject_production_diagnostics_ui,
         inject_causal_tour_debugger_v2_impl,
         inject_causal_tour_debugger_v3,
         inject_causal_tour_debugger_v4,
