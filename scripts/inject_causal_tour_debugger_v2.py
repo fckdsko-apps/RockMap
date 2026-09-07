@@ -17,6 +17,7 @@ from inject_causal_tour_debugger_v4 import main as inject_causal_tour_debugger_v
 from inject_causal_tour_debugger_v6 import main as inject_causal_tour_debugger_v6
 from inject_production_diagnostics_noise_policy import main as inject_production_diagnostics_noise_policy
 from inject_production_diagnostics_cleanup_v2 import main as inject_production_diagnostics_cleanup_v2
+from inject_production_diagnostics_cleanup_v3 import main as inject_production_diagnostics_cleanup_v3
 
 
 def main() -> int:
@@ -42,6 +43,9 @@ def main() -> int:
         # Final targeted cleanup from the causal-v5 field-log audit. This pass is observational only
         # and fail-closes if the production toggle/manual-export contract disappears.
         inject_production_diagnostics_cleanup_v2,
+        # Clean-room diagnostics-only follow-up: narrow known Activity handoff attribution and
+        # duplicate full-snapshot suppression. It does not modify app UI or feature behavior.
+        inject_production_diagnostics_cleanup_v3,
     ):
         result = injector()
         if result not in (None, 0):
