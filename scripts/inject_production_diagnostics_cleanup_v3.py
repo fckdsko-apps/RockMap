@@ -136,32 +136,52 @@ def patch_snapshot_dedup() -> None:
     replace_once(
         CAUSALITY,
         "production-diagnostics-cleanup-v3-snapshot-fields",
-        '''    private static long lastFailureSnapshotElapsed;
+        '''    private static long lastErrorSnapshotElapsed; // marker: causal-v3-error-snapshot-state
 ''',
-        '''    private static long lastFailureSnapshotElapsed;
+        '''    private static long lastErrorSnapshotElapsed; // marker: causal-v3-error-snapshot-state
     private static final long DUPLICATE_FAILURE_SNAPSHOT_MS = 10000L;
     private static final java.util.HashMap<String, Long> FAILURE_SNAPSHOT_TIMES =
             new java.util.HashMap<>();
     // marker: production-diagnostics-cleanup-v3-snapshot-fields
 ''',
-        "bounded duplicate snapshot timing state",
+        "duplicate snapshot timing state",
     )
 
     replace_once(
         CAUSALITY,
         "production-diagnostics-cleanup-v3-finding-detail",
-        '''        requestFailureSnapshot(activity, code);
+        '''        requestFailureSnapshot(activity, severity, code);
 ''',
-        '''        requestFailureSnapshot(activity, code, detail);
+        '''        requestFailureSnapshot(activity, severity, code, detail);
         // marker: production-diagnostics-cleanup-v3-finding-detail
 ''',
         "pass stable finding detail to snapshot dedup",
     )
 
-    regex_replace_once(
+    replace_once(
         CAUSALITY,
         "production-diagnostics-cleanup-v3-snapshot-dedup",
-        r'''    private static void requestFailureSnapshot\(Activity activity, String reason\) \{.*?\n    \}\n\n    private static int parseTrailingStep''',
+        '''    private static void requestFailureSnapshot(Activity activity, String severity, String reason) {
+        final long now = SystemClock.elapsedRealtime();
+        final boolean error = "ERROR".equalsIgnoreCase(empty(severity, ""));
+        synchronized (LOCK) {
+            if (error) {
+                // A recent WARNING must never suppress the first snapshot for a real ERROR.
+                if (now - lastErrorSnapshotElapsed < 500L) return;
+                lastErrorSnapshotElapsed = now;
+                lastFailureSnapshotElapsed = now;
+            } else {
+                if (now - lastFailureSnapshotElapsed < 500L) return;
+                lastFailureSnapshotElapsed = now;
+            }
+        }
+        // marker: causal-v3-severity-aware-snapshot-call
+        Activity target = activity != null ? activity : lastResumedActivity();
+        if (target == null || target.isFinishing() || target.isDestroyed()) return;
+        target.runOnUiThread(() -> TourDebugSurfaceAudit.snapshot(target,
+                "finding:" + clean(reason, 100)));
+    }
+''',
         '''    private static String failureSnapshotSignature(Activity activity, String reason,
                                                    String detail) {
         String stable = clean(detail, 800);
@@ -173,8 +193,10 @@ def patch_snapshot_dedup() -> None:
         return activityName(activity) + "|" + clean(reason, 100) + "|" + stable;
     }
 
-    private static void requestFailureSnapshot(Activity activity, String reason, String detail) {
+    private static void requestFailureSnapshot(Activity activity, String severity, String reason,
+                                               String detail) {
         final long now = SystemClock.elapsedRealtime();
+        final boolean error = "ERROR".equalsIgnoreCase(empty(severity, ""));
         final String signature = failureSnapshotSignature(activity, reason, detail);
         final long duplicateAgeMs;
         synchronized (LOCK) {
@@ -185,9 +207,16 @@ def patch_snapshot_dedup() -> None:
                 duplicateAgeMs = now - previousSame;
             } else {
                 duplicateAgeMs = -1L;
-                // Preserve the existing cross-finding 500 ms guard exactly as before.
-                if (now - lastFailureSnapshotElapsed < 500L) return;
-                lastFailureSnapshotElapsed = now;
+                if (error) {
+                    // Preserve the existing severity rule: a recent WARNING must never suppress
+                    // the first snapshot for a real ERROR.
+                    if (now - lastErrorSnapshotElapsed < 500L) return;
+                    lastErrorSnapshotElapsed = now;
+                    lastFailureSnapshotElapsed = now;
+                } else {
+                    if (now - lastFailureSnapshotElapsed < 500L) return;
+                    lastFailureSnapshotElapsed = now;
+                }
                 if (FAILURE_SNAPSHOT_TIMES.size() >= 64) FAILURE_SNAPSHOT_TIMES.clear();
                 FAILURE_SNAPSHOT_TIMES.put(signature, now);
             }
@@ -200,13 +229,13 @@ def patch_snapshot_dedup() -> None:
                             + " signature=" + clean(signature, 500));
             return;
         }
+        // marker: causal-v3-severity-aware-snapshot-call
         Activity target = activity != null ? activity : lastResumedActivity();
         if (target == null || target.isFinishing() || target.isDestroyed()) return;
         target.runOnUiThread(() -> TourDebugSurfaceAudit.snapshot(target,
                 "finding:" + clean(reason, 100)));
     } // marker: production-diagnostics-cleanup-v3-snapshot-dedup
-
-    private static int parseTrailingStep''',
+''',
         "deduplicate only repeated full failure snapshots",
     )
 
@@ -236,10 +265,11 @@ def validate_contract(originals) -> None:
         'known-activity-handoff-user',
         'DUPLICATE_FAILURE_SNAPSHOT_MS = 10000L',
         'SURFACE_SNAPSHOT_DEDUP',
-        'requestFailureSnapshot(activity, code, detail)',
+        'requestFailureSnapshot(activity, severity, code, detail)',
         'TourDebugLog.causalEvent("DEBUG_FINDING"',
         'production-diagnostics-cleanup-v2-pending-step',
         'production-diagnostics-cleanup-v2-no-progress-watchdog',
+        'causal-v3-severity-aware-snapshot-call',
     )
     missing = [token for token in required if token not in causality]
     if missing:
