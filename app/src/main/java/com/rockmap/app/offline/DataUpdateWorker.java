@@ -11,6 +11,7 @@ import androidx.work.Worker;
 import androidx.work.WorkerParameters;
 
 import com.rockmap.app.BuildConfig;
+import com.rockmap.app.WholeAppDiagnostics;
 
 import org.json.JSONException;
 
@@ -43,6 +44,7 @@ public final class DataUpdateWorker extends Worker {
 
     private long lastProgressBytes = -1L;
     private long lastProgressElapsed = -1L;
+    private long diagnosticOperation;
 
     public DataUpdateWorker(@NonNull Context appContext, @NonNull WorkerParameters params) {
         super(appContext, params);
@@ -57,6 +59,12 @@ public final class DataUpdateWorker extends Worker {
     }
 
     private Result doWorkLocked() {
+        diagnosticOperation = WholeAppDiagnostics.start("data", "core_install",
+                "attempt=" + getRunAttemptCount());
+        WholeAppDiagnostics.worker("DataUpdateWorker", "start",
+                "attempt=" + getRunAttemptCount());
+        WholeAppDiagnostics.storageSnapshot("core_install_start");
+
         OfflineDataManager manager = new OfflineDataManager(getApplicationContext());
         if (!DataValidators.isSafeHttpsUrl(BuildConfig.DATA_MANIFEST_URL)) {
             return fail(manager, "Data manifest URL is not configured for this GitHub repository.");
@@ -66,6 +74,9 @@ public final class DataUpdateWorker extends Worker {
             publish("Preparing core RockMap data…", 0L, 0L, true, true);
             String rawManifest = downloadSmallText(BuildConfig.DATA_MANIFEST_URL, MAX_MANIFEST_BYTES);
             DataManifest manifest = DataManifestParser.parse(rawManifest);
+            WholeAppDiagnostics.worker("DataUpdateWorker", "manifest_parsed",
+                    "version=" + manifest.version + " files=" + manifest.files.size()
+                            + " renderable=" + manifest.isRenderable());
             if (!manifest.isRenderable()) {
                 String message = manifest.message == null || manifest.message.trim().isEmpty()
                         ? "No RockMap offline data pack has been published yet." : manifest.message;
@@ -81,6 +92,9 @@ public final class DataUpdateWorker extends Worker {
                 File target = manager.resolve(spec.fileName);
                 if (!isAlreadyValid(target, spec)) bytesNeeded = Math.addExact(bytesNeeded, spec.bytes);
             }
+            WholeAppDiagnostics.worker("DataUpdateWorker", "plan_ready",
+                    "version=" + manifest.version + " bytesNeeded=" + bytesNeeded
+                            + " files=" + manifest.files.size());
             ensureFreeSpace(manager.getMapsDir(), Math.addExact(bytesNeeded, STORAGE_MARGIN_BYTES));
 
             long downloaded = 0L;
@@ -88,14 +102,26 @@ public final class DataUpdateWorker extends Worker {
                     0L, bytesNeeded, bytesNeeded <= 0L, true);
             for (DataFileSpec spec : manifest.files) {
                 File target = manager.resolve(spec.fileName);
-                if (isAlreadyValid(target, spec)) continue;
+                if (isAlreadyValid(target, spec)) {
+                    WholeAppDiagnostics.worker("DataUpdateWorker", "file_reused",
+                            "id=" + spec.id + " bytes=" + spec.bytes);
+                    continue;
+                }
+                WholeAppDiagnostics.worker("DataUpdateWorker", "file_download_start",
+                        "id=" + spec.id + " bytes=" + spec.bytes
+                                + " completedBefore=" + downloaded + " total=" + bytesNeeded);
                 downloadAndVerify(spec, target, downloaded, bytesNeeded);
                 downloaded = Math.addExact(downloaded, spec.bytes);
+                WholeAppDiagnostics.worker("DataUpdateWorker", "file_verified",
+                        "id=" + spec.id + " bytes=" + spec.bytes
+                                + " downloaded=" + downloaded + " total=" + bytesNeeded);
                 publish("Downloading core RockMap data…", downloaded, bytesNeeded, false, true);
             }
 
             publish("Download complete. Verifying and activating core data…",
                     downloaded, bytesNeeded, true, true);
+            WholeAppDiagnostics.worker("DataUpdateWorker", "final_verification_start",
+                    "downloaded=" + downloaded + " total=" + bytesNeeded);
 
             for (DataFileSpec spec : manifest.files) {
                 if (!spec.required) continue;
@@ -111,6 +137,8 @@ public final class DataUpdateWorker extends Worker {
                 replaceFileAtomically(manager.getPreviousManifestFile(), previousBytes);
             }
 
+            WholeAppDiagnostics.worker("DataUpdateWorker", "activation_start",
+                    "version=" + manifest.version);
             replaceFileAtomically(active, rawManifest.getBytes(StandardCharsets.UTF_8));
             cleanupUnreferenced(manager, manifest, manager.getPreviousManifest());
             if (manifest.isBasemapTest()) {
@@ -134,21 +162,35 @@ public final class DataUpdateWorker extends Worker {
                 manager.setLastUpdateStatus("Verified map snapshot downloaded and activated: " + manifest.version);
             }
             publish("Core RockMap data installed.", bytesNeeded, bytesNeeded, false, true);
+            WholeAppDiagnostics.worker("DataUpdateWorker", "success",
+                    "version=" + manifest.version + " downloadedBytes=" + downloaded
+                            + " requiredBytes=" + bytesNeeded);
+            WholeAppDiagnostics.storageSnapshot("core_install_success");
+            WholeAppDiagnostics.success(diagnosticOperation, "data", "core_install",
+                    "version=" + manifest.version + " downloadedBytes=" + downloaded
+                            + " requiredBytes=" + bytesNeeded);
             return Result.success();
         } catch (ArithmeticException ex) {
-            return fail(manager, "Map update rejected because declared file sizes overflowed safely.");
+            return fail(manager, "Map update rejected because declared file sizes overflowed safely.", ex);
         } catch (JSONException ex) {
-            return fail(manager, "Map manifest rejected: " + ex.getMessage());
+            return fail(manager, "Map manifest rejected: " + ex.getMessage(), ex);
         } catch (IOException | NoSuchAlgorithmException ex) {
-            return fail(manager, "Map update failed; previous offline data was kept: " + ex.getMessage());
+            return fail(manager, "Map update failed; previous offline data was kept: " + ex.getMessage(), ex);
         } catch (RuntimeException ex) {
-            return fail(manager, "Map update aborted safely: " + ex.getMessage());
+            return fail(manager, "Map update aborted safely: " + ex.getMessage(), ex);
         }
     }
 
     private Result fail(OfflineDataManager manager, String message) {
+        return fail(manager, message, null);
+    }
+
+    private Result fail(OfflineDataManager manager, String message, Throwable error) {
         manager.setLastUpdateStatus(message);
         publish("Core data installation stopped.", 0L, 0L, true, true);
+        WholeAppDiagnostics.worker("DataUpdateWorker", "failure", message);
+        WholeAppDiagnostics.storageSnapshot("core_install_failure");
+        WholeAppDiagnostics.failure(diagnosticOperation, "data", "core_install", message, error);
         return Result.failure();
     }
 
@@ -166,6 +208,11 @@ public final class DataUpdateWorker extends Worker {
         lastProgressElapsed = now;
         setProgressAsync(DataInstallProgress.value(
                 DataInstallProgress.PACKAGE_CORE, phase, safeDone, safeTotal, indeterminate));
+        if (force) {
+            WholeAppDiagnostics.worker("DataUpdateWorker", "progress",
+                    "phase=" + phase + " done=" + safeDone + " total=" + safeTotal
+                            + " indeterminate=" + indeterminate);
+        }
     }
 
     private void enforceImmutableReferencedFiles(OfflineDataManager manager, DataManifest incoming,
