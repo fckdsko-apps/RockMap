@@ -4,6 +4,8 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.rockmap.app.WholeAppDiagnostics;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,17 +54,28 @@ public final class PlaceIndexRepository implements AutoCloseable {
     }
 
     public void search(String query, int limit, Callback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("search", "place_search",
+                "query=" + printableQuery(query) + " limit=" + limit
+                        + " ready=" + (engine != null) + " records=" + recordCount);
         executor.execute(() -> {
             try {
                 ensureLoaded();
                 if (engine == null) {
-                    postError(callback, loadError == null
-                            ? "Bundled offline place index is unavailable." : loadError);
+                    String message = loadError == null
+                            ? "Bundled offline place index is unavailable." : loadError;
+                    WholeAppDiagnostics.failure(diagnostic, "search", "place_search",
+                            "query=" + printableQuery(query) + " state=index_unavailable", null);
+                    postError(callback, message);
                     return;
                 }
                 List<PlaceSearchEngine.Match> matches = engine.search(query, limit);
+                WholeAppDiagnostics.success(diagnostic, "search", "place_search",
+                        "query=" + printableQuery(query) + " results=" + matches.size()
+                                + " indexRecords=" + recordCount);
                 mainHandler.post(() -> callback.onResult(matches));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "search", "place_search",
+                        "query=" + printableQuery(query) + " state=runtime_failure", ex);
                 postError(callback, "Offline place search failed safely: " + safeMessage(ex));
             }
         });
@@ -86,12 +99,18 @@ public final class PlaceIndexRepository implements AutoCloseable {
         if (engine != null || loadError != null) return;
         synchronized (this) {
             if (engine != null || loadError != null) return;
+            long diagnostic = WholeAppDiagnostics.start("storage", "place_index_load",
+                    "asset=" + ASSET);
             try {
                 ArrayList<PlaceRecord> records = loadAsset();
                 engine = new PlaceSearchEngine(records);
                 recordCount = records.size();
+                WholeAppDiagnostics.success(diagnostic, "storage", "place_index_load",
+                        "records=" + recordCount);
             } catch (IOException | RuntimeException ex) {
                 loadError = "Bundled offline place index could not be loaded: " + safeMessage(ex);
+                WholeAppDiagnostics.failure(diagnostic, "storage", "place_index_load",
+                        "state=load_failed", ex);
             }
         }
     }
@@ -148,6 +167,12 @@ public final class PlaceIndexRepository implements AutoCloseable {
         mainHandler.post(() -> callback.onError(message));
     }
 
+    private static String printableQuery(String query) {
+        if (query == null) return "";
+        String cleaned = query.replace('\n', ' ').replace('\r', ' ').trim();
+        return cleaned.length() <= 160 ? cleaned : cleaned.substring(0, 160) + "…";
+    }
+
     private static String safeMessage(Exception ex) {
         String message = ex.getMessage();
         return message == null || message.trim().isEmpty() ? ex.getClass().getSimpleName() : message;
@@ -155,6 +180,7 @@ public final class PlaceIndexRepository implements AutoCloseable {
 
     @Override
     public void close() {
+        WholeAppDiagnostics.event("REPOSITORY", "name=PlaceIndexRepository state=close");
         executor.shutdownNow();
     }
 }
