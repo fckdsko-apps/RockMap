@@ -12,6 +12,8 @@ import android.os.CancellationSignal;
 import android.os.Looper;
 import android.os.SystemClock;
 
+import com.rockmap.app.WholeAppDiagnostics;
+
 import java.util.function.Consumer;
 
 public final class LocationRepository implements LocationListener {
@@ -44,6 +46,8 @@ public final class LocationRepository implements LocationListener {
         try {
             return manager.isProviderEnabled(LocationManager.GPS_PROVIDER);
         } catch (RuntimeException ex) {
+            WholeAppDiagnostics.event("LOCATION_CAPABILITY",
+                    "state=gps_provider_check_failed error=" + WholeAppDiagnostics.errorSummary(ex));
             return false;
         }
     }
@@ -61,16 +65,32 @@ public final class LocationRepository implements LocationListener {
     }
 
     public void start() {
-        if (!hasCoarsePermission()) return;
-        if (!isGpsEnabled()) {
+        boolean coarse = hasCoarsePermission();
+        boolean fine = hasFinePermission();
+        boolean gps = isGpsEnabled();
+        WholeAppDiagnostics.event("LOCATION_UPDATES",
+                "state=request coarse=" + coarse + " fine=" + fine + " gpsEnabled=" + gps);
+        if (!coarse) {
+            WholeAppDiagnostics.permission(context, Manifest.permission.ACCESS_COARSE_LOCATION,
+                    "coarse_location", "continuous_location_start");
+            return;
+        }
+        if (!gps) {
+            WholeAppDiagnostics.event("LOCATION_UPDATES", "state=rejected reason=gps_disabled");
             listener.onLocationError("GPS provider is disabled.");
             return;
         }
         try {
             manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 2f, this, Looper.getMainLooper());
+            WholeAppDiagnostics.event("LOCATION_UPDATES",
+                    "state=registered provider=gps minTimeMs=3000 minDistanceM=2");
         } catch (SecurityException ex) {
+            WholeAppDiagnostics.event("LOCATION_UPDATES",
+                    "state=error reason=permission_revoked error=" + WholeAppDiagnostics.errorSummary(ex));
             listener.onLocationError("Location permission was revoked.");
         } catch (RuntimeException ex) {
+            WholeAppDiagnostics.event("LOCATION_UPDATES",
+                    "state=error reason=request_failed error=" + WholeAppDiagnostics.errorSummary(ex));
             listener.onLocationError("GPS update failed: " + ex.getMessage());
         }
     }
@@ -78,12 +98,16 @@ public final class LocationRepository implements LocationListener {
     public void stop() {
         try {
             manager.removeUpdates(this);
-        } catch (RuntimeException ignored) {
+            WholeAppDiagnostics.event("LOCATION_UPDATES", "state=stopped");
+        } catch (RuntimeException ex) {
+            WholeAppDiagnostics.event("LOCATION_UPDATES",
+                    "state=stop_failed error=" + WholeAppDiagnostics.errorSummary(ex));
         }
     }
 
     public void requestCurrent(Consumer<Location> onSuccess, Consumer<String> onError) {
         if (!hasCoarsePermission() && !hasFinePermission()) {
+            WholeAppDiagnostics.event("LOCATION_CURRENT", "state=rejected reason=no_location_permission");
             onError.accept("Location permission is required.");
             return;
         }
@@ -92,6 +116,9 @@ public final class LocationRepository implements LocationListener {
 
     public void requestFreshPrecise(Consumer<Location> onSuccess, Consumer<String> onError) {
         if (!hasFinePermission()) {
+            WholeAppDiagnostics.permission(context, Manifest.permission.ACCESS_FINE_LOCATION,
+                    "fine_location", "fresh_precise_location");
+            WholeAppDiagnostics.event("LOCATION_CURRENT", "state=rejected reason=no_precise_permission");
             onError.accept("Precise location permission is required to save a field waypoint.");
             return;
         }
@@ -99,7 +126,11 @@ public final class LocationRepository implements LocationListener {
     }
 
     private void requestCurrentFromGps(Consumer<Location> onSuccess, Consumer<String> onError, boolean precise) {
+        final long diagnostic = WholeAppDiagnostics.start("location", "current_fix",
+                "precise=" + precise + " sdk=" + Build.VERSION.SDK_INT);
         if (!isGpsEnabled()) {
+            WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                    "precise=" + precise + " reason=gps_disabled", null);
             onError.accept("GPS is disabled. Enable GPS and try again.");
             return;
         }
@@ -108,13 +139,21 @@ public final class LocationRepository implements LocationListener {
                 manager.getCurrentLocation(LocationManager.GPS_PROVIDER, new CancellationSignal(),
                         context.getMainExecutor(), location -> {
                             if (location == null) {
+                                WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                                        "precise=" + precise + " reason=null_fix", null);
                                 onError.accept("GPS could not obtain a current fix.");
                             } else if (!isUsableLocation(location, precise)) {
+                                WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                                        "precise=" + precise + " reason=stale_or_invalid accuracy="
+                                                + (location.hasAccuracy() ? location.getAccuracy() : -1f), null);
                                 onError.accept(precise
                                         ? "GPS fix was stale or invalid. Keep the phone where it can see the sky and try again."
                                         : "GPS returned an invalid current fix. Try again.");
                             } else {
                                 latest = location;
+                                WholeAppDiagnostics.success(diagnostic, "location", "current_fix",
+                                        "precise=" + precise + " accuracy="
+                                                + (location.hasAccuracy() ? location.getAccuracy() : -1f));
                                 onSuccess.accept(location);
                             }
                         });
@@ -122,6 +161,8 @@ public final class LocationRepository implements LocationListener {
                 LocationListener once = new LocationListener() {
                     @Override public void onLocationChanged(Location location) {
                         if (!isUsableLocation(location, precise)) {
+                            WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                                    "precise=" + precise + " reason=stale_or_invalid", null);
                             onError.accept(precise
                                     ? "GPS fix was stale or invalid. Keep the phone where it can see the sky and try again."
                                     : "GPS returned an invalid current fix. Try again.");
@@ -129,10 +170,15 @@ public final class LocationRepository implements LocationListener {
                             return;
                         }
                         latest = location;
+                        WholeAppDiagnostics.success(diagnostic, "location", "current_fix",
+                                "precise=" + precise + " accuracy="
+                                        + (location.hasAccuracy() ? location.getAccuracy() : -1f));
                         onSuccess.accept(location);
                         try { manager.removeUpdates(this); } catch (RuntimeException ignored) {}
                     }
                     @Override public void onProviderDisabled(String provider) {
+                        WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                                "precise=" + precise + " reason=gps_disabled_mid_request", null);
                         onError.accept("GPS was disabled before a current fix was obtained.");
                     }
                     @Override public void onProviderEnabled(String provider) {}
@@ -141,8 +187,12 @@ public final class LocationRepository implements LocationListener {
                 manager.requestSingleUpdate(LocationManager.GPS_PROVIDER, once, Looper.getMainLooper());
             }
         } catch (SecurityException ex) {
+            WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                    "precise=" + precise + " reason=permission_revoked", ex);
             onError.accept(precise ? "Precise location permission was revoked." : "Location permission was revoked.");
         } catch (RuntimeException ex) {
+            WholeAppDiagnostics.failure(diagnostic, "location", "current_fix",
+                    "precise=" + precise + " reason=request_failed", ex);
             onError.accept("GPS fix failed: " + ex.getMessage());
         }
     }
@@ -169,8 +219,11 @@ public final class LocationRepository implements LocationListener {
     }
 
     @Override public void onProviderDisabled(String provider) {
+        WholeAppDiagnostics.event("LOCATION_PROVIDER", "provider=" + provider + " state=disabled");
         listener.onLocationError("GPS provider is disabled.");
     }
-    @Override public void onProviderEnabled(String provider) {}
+    @Override public void onProviderEnabled(String provider) {
+        WholeAppDiagnostics.event("LOCATION_PROVIDER", "provider=" + provider + " state=enabled");
+    }
     @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
 }
