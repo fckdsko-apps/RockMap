@@ -37,6 +37,7 @@ public final class WholeAppDiagnostics {
     private static final String KEY_ENABLED = "enabled";
     private static final String LOG_FILE = "rockmap-diagnostics.log";
     private static final long STALL_THRESHOLD_MS = 6000L;
+    private static final long STALL_REPORT_COOLDOWN_MS = 15_000L;
     private static final long HEARTBEAT_INTERVAL_MS = 2000L;
     private static final int MAX_STACK_CHARS = 24000;
 
@@ -45,10 +46,12 @@ public final class WholeAppDiagnostics {
     private static final AtomicLong NEXT_OPERATION = new AtomicLong(1L);
     private static final AtomicLong NEXT_HEARTBEAT = new AtomicLong(1L);
     private static final AtomicLong ACK_HEARTBEAT = new AtomicLong();
-    private static final AtomicLong LAST_REPORTED_STALL = new AtomicLong();
+    private static final AtomicLong LAST_REPORTED_STALL_AT = new AtomicLong(Long.MIN_VALUE);
     private static final Object CRITICAL_FILE_LOCK = new Object();
 
-    private static final Handler MAIN = new Handler(Looper.getMainLooper());
+    // Deliberately lazy: pure JVM parser/export tests can load this class without initializing
+    // Android's main Looper. The Handler exists only after diagnostics are enabled in the app.
+    private static Handler mainHandler;
     private static final ScheduledExecutorService WATCHDOG =
             Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread thread = new Thread(r, "rockmap-diagnostics-watchdog");
@@ -85,6 +88,7 @@ public final class WholeAppDiagnostics {
 
     private static void startHooksIfNeeded() {
         if (!enabled() || app == null || !HOOKS_STARTED.compareAndSet(false, true)) return;
+        mainHandler = new Handler(Looper.getMainLooper());
         installCrashHandler();
         installMemoryCallbacks();
         startMainThreadWatchdog();
@@ -109,8 +113,13 @@ public final class WholeAppDiagnostics {
         event("OP_FAILURE", operationDetail(token, category, operation, detail, error));
     }
 
+    /** Safe to call from pure parser/export code; it becomes a no-op outside the Android runtime. */
     public static void event(String event, String detail) {
-        TourDebugLog.appDiagnostic(safe(event, 60), safe(detail, 3000));
+        try {
+            TourDebugLog.appDiagnostic(safe(event, 60), safe(detail, 3000));
+        } catch (Throwable ignored) {
+            // Diagnostics must never make local JVM tests or app code fail.
+        }
     }
 
     public static void worker(String worker, String state, String detail) {
@@ -221,18 +230,22 @@ public final class WholeAppDiagnostics {
     }
 
     private static void startMainThreadWatchdog() {
+        final Handler handler = mainHandler;
+        if (handler == null) return;
         WATCHDOG.scheduleAtFixedRate(() -> {
             if (!enabled()) return;
             final long token = NEXT_HEARTBEAT.getAndIncrement();
             final long postedAt = SystemClock.elapsedRealtime();
-            MAIN.post(() -> ACK_HEARTBEAT.accumulateAndGet(token, Math::max));
+            handler.post(() -> ACK_HEARTBEAT.accumulateAndGet(token, Math::max));
             WATCHDOG.schedule(() -> {
                 if (!enabled() || ACK_HEARTBEAT.get() >= token) return;
-                if (LAST_REPORTED_STALL.getAndSet(token) == token) return;
+                long now = SystemClock.elapsedRealtime();
+                long previous = LAST_REPORTED_STALL_AT.get();
+                if (previous != Long.MIN_VALUE && now - previous < STALL_REPORT_COOLDOWN_MS) return;
+                if (!LAST_REPORTED_STALL_AT.compareAndSet(previous, now)) return;
                 Thread mainThread = Looper.getMainLooper().getThread();
                 String detail = "heartbeat=" + token
-                        + " blockedMsAtLeast=" + Math.max(0L,
-                        SystemClock.elapsedRealtime() - postedAt)
+                        + " blockedMsAtLeast=" + Math.max(0L, now - postedAt)
                         + " activity=" + currentActivity()
                         + " cause={" + safe(causalContext(), 800) + "}"
                         + " mainStack=" + safe(stackTrace(mainThread), MAX_STACK_CHARS);
