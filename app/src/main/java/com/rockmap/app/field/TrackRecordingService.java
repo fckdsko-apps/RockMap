@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 
+import com.rockmap.app.WholeAppDiagnostics;
 
 public final class TrackRecordingService extends Service implements LocationListener {
     public static final String ACTION_START = "com.rockmap.app.field.START_TRACK";
@@ -35,16 +36,23 @@ public final class TrackRecordingService extends Service implements LocationList
         database = FieldDatabase.get(this);
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         ensureChannel();
+        WholeAppDiagnostics.service("TrackRecordingService", "created", "sdk=" + Build.VERSION.SDK_INT);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+        if (intent == null) {
+            WholeAppDiagnostics.service("TrackRecordingService", "ignored", "reason=null_intent startId=" + startId);
+            return START_NOT_STICKY;
+        }
         String action = intent.getAction();
         long requestedId = intent.getLongExtra(EXTRA_TRACK_ID, trackId);
         if (requestedId > 0L) trackId = requestedId;
+        WholeAppDiagnostics.service("TrackRecordingService", "command",
+                "action=" + action + " trackId=" + trackId + " startId=" + startId + " paused=" + paused);
 
         if (ACTION_START.equals(action)) {
             if (trackId <= 0L) {
+                WholeAppDiagnostics.service("TrackRecordingService", "rejected", "action=start reason=invalid_track_id");
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -52,12 +60,14 @@ public final class TrackRecordingService extends Service implements LocationList
             startForeground(NOTIFICATION_ID, notification("Recording track"));
             requestUpdates();
             database.setTrackStatus(trackId, FieldDatabase.TRACK_RECORDING, 0L);
+            WholeAppDiagnostics.service("TrackRecordingService", "recording", "trackId=" + trackId + " action=start");
         } else if (ACTION_PAUSE.equals(action)) {
             if (trackId > 0L) {
                 paused = true;
                 removeUpdates();
                 database.setTrackStatus(trackId, FieldDatabase.TRACK_PAUSED, 0L);
                 notifyState("Track paused");
+                WholeAppDiagnostics.service("TrackRecordingService", "paused", "trackId=" + trackId);
             }
         } else if (ACTION_RESUME.equals(action)) {
             if (trackId > 0L) {
@@ -66,9 +76,13 @@ public final class TrackRecordingService extends Service implements LocationList
                 database.setTrackStatus(trackId, FieldDatabase.TRACK_RECORDING, 0L);
                 requestUpdates();
                 notifyState("Recording track");
+                WholeAppDiagnostics.service("TrackRecordingService", "recording", "trackId=" + trackId + " action=resume");
             }
         } else if (ACTION_STOP.equals(action)) {
+            WholeAppDiagnostics.service("TrackRecordingService", "stopping", "trackId=" + trackId);
             finishTrack();
+        } else {
+            WholeAppDiagnostics.service("TrackRecordingService", "ignored", "reason=unknown_action action=" + action);
         }
         return START_NOT_STICKY;
     }
@@ -76,6 +90,10 @@ public final class TrackRecordingService extends Service implements LocationList
     private void requestUpdates() {
         if (trackId <= 0L || paused) return;
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            WholeAppDiagnostics.permission(this, Manifest.permission.ACCESS_FINE_LOCATION,
+                    "fine_location", "track_recording_service");
+            WholeAppDiagnostics.service("TrackRecordingService", "interrupted",
+                    "trackId=" + trackId + " reason=fine_location_missing");
             database.setTrackStatus(trackId, FieldDatabase.TRACK_INTERRUPTED, System.currentTimeMillis());
             stopForeground(true);
             stopSelf();
@@ -84,7 +102,12 @@ public final class TrackRecordingService extends Service implements LocationList
         try {
             locationManager.removeUpdates(this);
             locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 3000L, 2f, this);
+            WholeAppDiagnostics.service("TrackRecordingService", "gps_registered",
+                    "trackId=" + trackId + " minTimeMs=3000 minDistanceM=2");
         } catch (RuntimeException ex) {
+            WholeAppDiagnostics.service("TrackRecordingService", "interrupted",
+                    "trackId=" + trackId + " reason=gps_registration_failed error="
+                            + WholeAppDiagnostics.errorSummary(ex));
             database.setTrackStatus(trackId, FieldDatabase.TRACK_INTERRUPTED, System.currentTimeMillis());
             stopForeground(true);
             stopSelf();
@@ -94,12 +117,18 @@ public final class TrackRecordingService extends Service implements LocationList
     private void finishTrack() {
         removeUpdates();
         if (trackId > 0L) database.setTrackStatus(trackId, FieldDatabase.TRACK_COMPLETE, System.currentTimeMillis());
+        WholeAppDiagnostics.service("TrackRecordingService", "complete", "trackId=" + trackId);
         stopForeground(true);
         stopSelf();
     }
 
     private void removeUpdates() {
-        try { locationManager.removeUpdates(this); } catch (RuntimeException ignored) {}
+        try {
+            locationManager.removeUpdates(this);
+        } catch (RuntimeException ex) {
+            WholeAppDiagnostics.service("TrackRecordingService", "gps_remove_failed",
+                    "trackId=" + trackId + " error=" + WholeAppDiagnostics.errorSummary(ex));
+        }
     }
 
     @Override public void onLocationChanged(Location location) {
@@ -107,16 +136,24 @@ public final class TrackRecordingService extends Service implements LocationList
         double lat = location.getLatitude();
         double lon = location.getLongitude();
         if (!Double.isFinite(lat) || !Double.isFinite(lon)
-                || lat < -90d || lat > 90d || lon < -180d || lon > 180d) return;
+                || lat < -90d || lat > 90d || lon < -180d || lon > 180d) {
+            WholeAppDiagnostics.service("TrackRecordingService", "point_rejected",
+                    "trackId=" + trackId + " reason=invalid_coordinates");
+            return;
+        }
         float accuracy = location.hasAccuracy() && Float.isFinite(location.getAccuracy())
                 ? location.getAccuracy() : -1f;
         double altitude = location.hasAltitude() ? location.getAltitude() : Double.NaN;
         long time = location.getTime() > 0L ? location.getTime() : System.currentTimeMillis();
         database.addTrackPoint(trackId, new GeoMath.Point(lat, lon, altitude, accuracy, time));
+        // Accepted-point/DB/GeoJSON/render pipeline detail is supplied by the existing
+        // fail-closed track diagnostics injection; avoid duplicating every GPS point here.
     }
 
     @Override public void onProviderDisabled(String provider) {
         if (LocationManager.GPS_PROVIDER.equals(provider) && trackId > 0L) {
+            WholeAppDiagnostics.service("TrackRecordingService", "interrupted",
+                    "trackId=" + trackId + " reason=gps_provider_disabled");
             removeUpdates();
             database.setTrackStatus(trackId, FieldDatabase.TRACK_INTERRUPTED, System.currentTimeMillis());
             notifyState("Track interrupted — GPS disabled");
@@ -124,7 +161,9 @@ public final class TrackRecordingService extends Service implements LocationList
             stopSelf();
         }
     }
-    @Override public void onProviderEnabled(String provider) {}
+    @Override public void onProviderEnabled(String provider) {
+        WholeAppDiagnostics.service("TrackRecordingService", "provider_enabled", "provider=" + provider);
+    }
     @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
 
     private void ensureChannel() {
@@ -161,6 +200,8 @@ public final class TrackRecordingService extends Service implements LocationList
     }
 
     @Override public void onDestroy() {
+        WholeAppDiagnostics.service("TrackRecordingService", "destroyed",
+                "trackId=" + trackId + " paused=" + paused);
         removeUpdates();
         super.onDestroy();
     }
