@@ -1,5 +1,6 @@
 package com.rockmap.app.field;
 
+import com.rockmap.app.WholeAppDiagnostics;
 import com.rockmap.app.waypoints.WaypointEntity;
 
 import org.json.JSONArray;
@@ -36,13 +37,42 @@ public final class FieldImport {
     private FieldImport(){}
 
     public static Result parse(byte[] bytes, String displayName) throws Exception {
-        if (bytes == null || bytes.length == 0) throw new IllegalArgumentException("Selected file is empty.");
-        String text=new String(bytes, StandardCharsets.UTF_8).trim();
-        String lower=displayName==null?"":displayName.toLowerCase(java.util.Locale.US);
-        if (lower.endsWith(".gpx") || text.startsWith("<gpx") || text.contains("<gpx ")) return parseGpx(bytes);
-        if (lower.endsWith(".kml") || text.contains("<kml")) return parseKml(bytes);
-        if (lower.endsWith(".geojson") || lower.endsWith(".json") || text.startsWith("{")) return parseGeoJson(text);
-        throw new IllegalArgumentException("Supported imports are GPX, KML and GeoJSON.");
+        long started = System.nanoTime();
+        String format = "unknown";
+        WholeAppDiagnostics.event("IMPORT_START",
+                "type=field name=" + safeName(displayName) + " bytes=" + (bytes == null ? -1 : bytes.length));
+        try {
+            if (bytes == null || bytes.length == 0) throw new IllegalArgumentException("Selected file is empty.");
+            String text=new String(bytes, StandardCharsets.UTF_8).trim();
+            String lower=displayName==null?"":displayName.toLowerCase(java.util.Locale.US);
+            Result result;
+            if (lower.endsWith(".gpx") || text.startsWith("<gpx") || text.contains("<gpx ")) {
+                format = "gpx";
+                result = parseGpx(bytes);
+            } else if (lower.endsWith(".kml") || text.contains("<kml")) {
+                format = "kml";
+                result = parseKml(bytes);
+            } else if (lower.endsWith(".geojson") || lower.endsWith(".json") || text.startsWith("{")) {
+                format = "geojson";
+                result = parseGeoJson(text);
+            } else {
+                throw new IllegalArgumentException("Supported imports are GPX, KML and GeoJSON.");
+            }
+            WholeAppDiagnostics.event("IMPORT_SUCCESS",
+                    "type=field format=" + format + " bytes=" + bytes.length
+                            + " waypoints=" + result.waypoints.size()
+                            + " tracks=" + result.tracks.size()
+                            + " areas=" + result.areas.size()
+                            + " points=" + result.pointCount
+                            + " durationMs=" + elapsedMs(started));
+            return result;
+        } catch (Exception ex) {
+            WholeAppDiagnostics.event("IMPORT_FAILURE",
+                    "type=field format=" + format + " bytes=" + (bytes == null ? -1 : bytes.length)
+                            + " durationMs=" + elapsedMs(started)
+                            + " error=" + WholeAppDiagnostics.errorSummary(ex));
+            throw ex;
+        }
     }
 
     private static Result parseGpx(byte[] bytes) throws Exception {
@@ -175,6 +205,16 @@ public final class FieldImport {
     private static XmlPullParser parser(byte[] bytes) throws Exception {
         XmlPullParserFactory factory=XmlPullParserFactory.newInstance(); factory.setNamespaceAware(false);
         XmlPullParser parser=factory.newPullParser(); parser.setInput(new ByteArrayInputStream(bytes),"UTF-8"); return parser;
+    }
+
+    private static long elapsedMs(long started) {
+        return Math.max(0L, (System.nanoTime() - started) / 1_000_000L);
+    }
+
+    private static String safeName(String name) {
+        if (name == null) return "";
+        String cleaned = name.replace('\n', ' ').replace('\r', ' ').trim();
+        return cleaned.length() <= 180 ? cleaned : cleaned.substring(0, 180) + "…";
     }
 
     private static double number(String text){if(text==null)throw new IllegalArgumentException("Missing coordinate.");return Double.parseDouble(text);}
