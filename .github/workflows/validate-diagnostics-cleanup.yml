@@ -1,0 +1,53 @@
+name: Validate diagnostics cleanup
+
+on:
+  push:
+    branches:
+      - diagnostics-cleanup-2026-09-06
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Compile diagnostic injectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/inject_causal_tour_debugger_v2.py \
+            scripts/inject_causal_tour_debugger_v7.py \
+            scripts/inject_causal_tour_debugger_v8.py
+
+      - name: Run real tour-debug injection pipeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/inject_tour_debug.py
+
+      - name: Assert diagnostics cleanup output
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAUSAL=app/src/main/java/com/rockmap/app/TourDebugCausality.java
+          LOG=app/src/main/java/com/rockmap/app/TourDebugLog.java
+
+          grep -Fq 'SCHEMA = "causal-v8"' "$CAUSAL"
+          grep -Fq 'RECENT_USER_CONTINUATION_MS = 350L' "$CAUSAL"
+          grep -Fq 'pendingTourCallbacks' "$CAUSAL"
+          grep -Fq 'causal-v8-step-no-progress-pending-aware' "$CAUSAL"
+          grep -Fq '3500L, TimeUnit.MILLISECONDS' "$CAUSAL"
+
+          grep -Fq 'FIELD_RECORD_ZOOM_ITEM' "$LOG"
+          grep -Fq 'HEADING_OUTPUT' "$LOG"
+          grep -Fq 'HEADING_SENSOR_SAMPLE' "$LOG"
+          grep -Fq 'periodicHiddenRefresh' "$LOG"
+          grep -Fq 'continueRecentUserContext(activity)' "$LOG"
+
+          echo 'Diagnostics cleanup injection assertions passed.'
