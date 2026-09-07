@@ -1,5 +1,7 @@
 package com.rockmap.app.trips;
 
+import com.rockmap.app.WholeAppDiagnostics;
+
 import java.util.List;
 import java.util.Locale;
 
@@ -7,6 +9,7 @@ public final class TripExport {
     private TripExport() {}
 
     public static String geoJson(TripEntity trip, List<TripItemEntity> items) {
+        exportStart("trip_geojson", items);
         StringBuilder out = new StringBuilder();
         out.append("{\n  \"type\": \"FeatureCollection\",\n")
                 .append("  \"rockmapSchema\": 2,\n")
@@ -30,10 +33,11 @@ public final class TripExport {
                     .append(i + 1 == items.size() ? "\n" : ",\n");
         }
         out.append("  ]\n}\n");
-        return out.toString();
+        return exportSuccess("trip_geojson", items, out.toString());
     }
 
     public static String rockMapXml(TripEntity trip, List<TripItemEntity> items) {
+        exportStart("trip_rockmap_xml", items);
         StringBuilder out = new StringBuilder();
         out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 .append("<rockmapTrip schema=\"2\">\n")
@@ -58,10 +62,11 @@ public final class TripExport {
         }
         out.append("  </stops>\n")
                 .append("</rockmapTrip>\n");
-        return out.toString();
+        return exportSuccess("trip_rockmap_xml", items, out.toString());
     }
 
     public static String gpx(TripEntity trip, List<TripItemEntity> items) {
+        exportStart("trip_gpx", items);
         StringBuilder out = new StringBuilder();
         out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 .append("<gpx version=\"1.1\" creator=\"RockMap\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
@@ -85,10 +90,11 @@ public final class TripExport {
             out.append("  </wpt>\n");
         }
         out.append("</gpx>\n");
-        return out.toString();
+        return exportSuccess("trip_gpx", items, out.toString());
     }
 
     public static String csv(TripEntity trip, List<TripItemEntity> items) {
+        exportStart("trip_csv", items);
         StringBuilder out = new StringBuilder();
         out.append("order,name,kind,latitude,longitude,context,notes,source_type,source_ref,trip,planned_date,trip_notes\n");
         for (int i = 0; i < items.size(); i++) {
@@ -106,7 +112,18 @@ public final class TripExport {
                     .append(csvField(trip.plannedDate)).append(',')
                     .append(csvField(trip.notes)).append('\n');
         }
-        return out.toString();
+        return exportSuccess("trip_csv", items, out.toString());
+    }
+
+    private static void exportStart(String type, List<TripItemEntity> items) {
+        WholeAppDiagnostics.event("EXPORT_START", "type=" + type + " stops=" + (items == null ? -1 : items.size()));
+    }
+
+    private static String exportSuccess(String type, List<TripItemEntity> items, String output) {
+        WholeAppDiagnostics.event("EXPORT_GENERATED", "type=" + type
+                + " stops=" + (items == null ? -1 : items.size())
+                + " chars=" + (output == null ? -1 : output.length()));
+        return output;
     }
 
     private static String joinNonBlank(String... values) {
