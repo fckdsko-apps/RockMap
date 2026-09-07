@@ -1,5 +1,6 @@
 package com.rockmap.app.field;
 
+import com.rockmap.app.WholeAppDiagnostics;
 import com.rockmap.app.waypoints.WaypointEntity;
 
 import org.json.JSONArray;
@@ -30,6 +31,7 @@ public final class FieldExport {
     private FieldExport() {}
 
     public static String savedLocationsGeoJson(List<WaypointEntity> waypoints) throws JSONException {
+        exportStart("saved_locations_geojson", "items=" + size(waypoints));
         JSONObject root = baseCollection("savedLocations");
         // Keep schema 1 compatible with MainActivity's existing Saved locations backup importer.
         root.put("rockmapSchema", 1);
@@ -40,10 +42,11 @@ public final class FieldExport {
             }
         }
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("saved_locations_geojson", "features=" + features.length(), root.toString(2));
     }
 
     public static String savedLocationsGpx(List<WaypointEntity> waypoints) {
+        exportStart("saved_locations_gpx", "items=" + size(waypoints));
         StringBuilder out = new StringBuilder();
         gpxStart(out);
         if (waypoints != null) {
@@ -60,10 +63,11 @@ public final class FieldExport {
             }
         }
         gpxEnd(out);
-        return out.toString();
+        return exportSuccess("saved_locations_gpx", "items=" + size(waypoints), out.toString());
     }
 
     public static String tracksGeoJson(List<TrackData> tracks) throws JSONException {
+        exportStart("tracks_geojson", "items=" + size(tracks));
         JSONObject root = baseCollection("tracks");
         JSONArray features = new JSONArray();
         if (tracks != null) {
@@ -74,10 +78,11 @@ public final class FieldExport {
             }
         }
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("tracks_geojson", "features=" + features.length(), root.toString(2));
     }
 
     public static String tracksGpx(List<TrackData> tracks) {
+        exportStart("tracks_gpx", "items=" + size(tracks));
         StringBuilder out = new StringBuilder();
         gpxStart(out);
         if (tracks != null) {
@@ -98,10 +103,11 @@ public final class FieldExport {
             }
         }
         gpxEnd(out);
-        return out.toString();
+        return exportSuccess("tracks_gpx", "items=" + size(tracks), out.toString());
     }
 
     public static String fieldRecordsGeoJson(List<FieldDatabase.FieldRecord> records) throws JSONException {
+        exportStart("field_records_geojson", "items=" + size(records));
         JSONObject root = baseCollection("fieldRecords");
         JSONArray features = new JSONArray();
         if (records != null) {
@@ -110,10 +116,11 @@ public final class FieldExport {
             }
         }
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("field_records_geojson", "features=" + features.length(), root.toString(2));
     }
 
     public static String fieldRecordsCsv(List<FieldDatabase.FieldRecord> records) {
+        exportStart("field_records_csv", "items=" + size(records));
         StringBuilder out = new StringBuilder();
         out.append("name,category,mineral_material,sample_id,notes,latitude,longitude,altitude_m,accuracy_m,photo_reference,created_at_utc,updated_at_utc\n");
         if (records != null) {
@@ -135,10 +142,11 @@ public final class FieldExport {
                 out.append('\n');
             }
         }
-        return out.toString();
+        return exportSuccess("field_records_csv", "items=" + size(records), out.toString());
     }
 
     public static String areasGeoJson(List<FieldDatabase.Area> areas) throws JSONException {
+        exportStart("areas_geojson", "items=" + size(areas));
         JSONObject root = baseCollection("prospectingAreas");
         JSONArray features = new JSONArray();
         if (areas != null) {
@@ -149,10 +157,11 @@ public final class FieldExport {
             }
         }
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("areas_geojson", "features=" + features.length(), root.toString(2));
     }
 
     public static String areasKml(List<FieldDatabase.Area> areas) {
+        exportStart("areas_kml", "items=" + size(areas));
         StringBuilder out = new StringBuilder();
         out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
                 .append("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n")
@@ -178,13 +187,15 @@ public final class FieldExport {
             }
         }
         out.append("  </Document>\n</kml>\n");
-        return out.toString();
+        return exportSuccess("areas_kml", "items=" + size(areas), out.toString());
     }
 
     public static String importBatchGeoJson(FieldDatabase.ImportBatch batch,
                                             List<WaypointEntity> waypoints,
                                             List<TrackData> tracks,
                                             List<FieldDatabase.Area> areas) throws JSONException {
+        exportStart("import_batch_geojson", "batch=" + (batch == null ? "null" : batch.id)
+                + " waypoints=" + size(waypoints) + " tracks=" + size(tracks) + " areas=" + size(areas));
         JSONObject root = baseCollection("importBatch");
         if (batch != null) {
             root.put("sourceName", safe(batch.sourceName));
@@ -211,13 +222,15 @@ public final class FieldExport {
             }
         }
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("import_batch_geojson", "features=" + features.length(), root.toString(2));
     }
 
     public static String allFieldGeoJson(List<WaypointEntity> waypoints,
                                          List<TrackData> tracks,
                                          List<FieldDatabase.FieldRecord> records,
                                          List<FieldDatabase.Area> areas) throws JSONException {
+        exportStart("all_field_geojson", "waypoints=" + size(waypoints) + " tracks=" + size(tracks)
+                + " records=" + size(records) + " areas=" + size(areas));
         JSONObject root = baseCollection("allFieldSpatialData");
         root.put("restoreBackup", false);
         JSONArray features = new JSONArray();
@@ -226,7 +239,21 @@ public final class FieldExport {
         if (records != null) for (FieldDatabase.FieldRecord record : records) if (record != null) features.put(fieldRecordFeature(record));
         if (areas != null) for (FieldDatabase.Area area : areas) if (area != null && area.points != null && area.points.size() >= 3) features.put(areaFeature(area));
         root.put("features", features);
-        return root.toString(2);
+        return exportSuccess("all_field_geojson", "features=" + features.length(), root.toString(2));
+    }
+
+    private static void exportStart(String type, String detail) {
+        WholeAppDiagnostics.event("EXPORT_START", "type=" + type + " " + detail);
+    }
+
+    private static String exportSuccess(String type, String detail, String output) {
+        WholeAppDiagnostics.event("EXPORT_GENERATED", "type=" + type + " " + detail
+                + " chars=" + (output == null ? -1 : output.length()));
+        return output;
+    }
+
+    private static int size(List<?> values) {
+        return values == null ? 0 : values.size();
     }
 
     private static JSONObject baseCollection(String exportType) throws JSONException {
