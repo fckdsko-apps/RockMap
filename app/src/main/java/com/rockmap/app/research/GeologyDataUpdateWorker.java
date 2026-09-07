@@ -91,15 +91,17 @@ public final class GeologyDataUpdateWorker extends Worker {
             publish("Preparing Colorado geology…", 0L, 0L, true, true);
             String rawManifest = downloadSmallText(BuildConfig.GEOLOGY_MANIFEST_URL);
             GeologyManifest incoming = GeologyManifestParser.parse(rawManifest);
+            boolean published = incoming.isPublished();
             WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "manifest_parsed",
-                    "version=" + incoming.version + " published=" + incoming.isPublished()
-                            + " records=" + incoming.source.recordCount
-                            + " assetBytes=" + incoming.asset.bytes
-                            + " databaseBytes=" + incoming.database.bytes);
-            if (!incoming.isPublished()) {
+                    "version=" + incoming.version + " published=" + published);
+            if (!published) {
                 return fail(manager, incoming.message.isEmpty()
                         ? "No Colorado geology pack is currently published." : incoming.message);
             }
+            WholeAppDiagnostics.worker("GeologyDataUpdateWorker", "manifest_details",
+                    "version=" + incoming.version + " records=" + incoming.source.recordCount
+                            + " assetBytes=" + incoming.asset.bytes
+                            + " databaseBytes=" + incoming.database.bytes);
 
             GeologyManifest activeBefore = manager.getActiveManifest();
             GeologyManifest previousBefore = manager.getPreviousManifest();
