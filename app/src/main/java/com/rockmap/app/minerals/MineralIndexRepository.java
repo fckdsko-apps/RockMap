@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 
+import com.rockmap.app.WholeAppDiagnostics;
 import com.rockmap.app.mines.HistoricMineCatalog;
 import com.rockmap.app.offline.OfflineDataManager;
 
@@ -64,6 +65,7 @@ public final class MineralIndexRepository {
 
     public MineralIndexRepository(Context context, OfflineDataManager dataManager) {
         this.dataManager = dataManager;
+        WholeAppDiagnostics.event("REPOSITORY", "name=MineralIndexRepository state=created");
     }
 
     public boolean isAvailable() {
@@ -91,6 +93,9 @@ public final class MineralIndexRepository {
     }
 
     public void clearCache() {
+        WholeAppDiagnostics.event("CACHE", "name=mineral_index state=clear records="
+                + cachedRecordCount + " localities=" + cachedLocalityCount
+                + " evidence=" + cachedEvidenceCount);
         cachedRecords = null;
         cachedPath = "";
         cachedRecordCount = 0;
@@ -103,29 +108,51 @@ public final class MineralIndexRepository {
     }
 
     public void search(String query, MineralSearchEngine.Bounds bounds, Callback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("search", "mineral_search",
+                "query=" + printableQuery(query) + " scope=" + (bounds == null ? "statewide" : "bounds")
+                        + " cachedRecords=" + cachedRecordCount);
         new Thread(() -> {
             try {
                 List<MineralRecord> records = loadRecords();
                 MineralSearchEngine.SearchResult result = MineralSearchEngine.search(
                         records, query, MineralSearchEngine.DEFAULT_LIMIT, bounds);
+                WholeAppDiagnostics.success(diagnostic, "search", "mineral_search",
+                        "query=" + printableQuery(query) + " effective=" + printableQuery(result.effectiveQuery)
+                                + " totalMatches=" + result.totalMatches + " shown=" + result.hits.size()
+                                + " sourceRecords=" + records.size()
+                                + " alias=" + (!result.aliasNote.isEmpty()));
                 mainHandler.post(() -> callback.onResult(result));
             } catch (IllegalArgumentException | IOException | JSONException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "search", "mineral_search",
+                        "query=" + printableQuery(query) + " scope=" + (bounds == null ? "statewide" : "bounds"), ex);
                 mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "search", "mineral_search",
+                        "query=" + printableQuery(query) + " state=runtime_failure", ex);
                 mainHandler.post(() -> callback.onError("Mineral search failed safely."));
             }
         }, "rockmap-mineral-search").start();
     }
 
     public void analyzeArea(MineralSearchEngine.Bounds bounds, AreaAnalysisCallback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("research", "mineral_area_analysis",
+                "scope=" + (bounds == null ? "missing" : "bounds") + " cachedRecords=" + cachedRecordCount);
         new Thread(() -> {
             try {
                 MineralAreaAnalyzer.AnalysisResult result =
                         MineralAreaAnalyzer.analyze(loadRecords(), bounds);
+                WholeAppDiagnostics.success(diagnostic, "research", "mineral_area_analysis",
+                        "recordsInArea=" + result.recordsInArea
+                                + " explicitRecords=" + result.recordsWithExplicitMineralTerms
+                                + " minerals=" + result.minerals.size());
                 mainHandler.post(() -> callback.onResult(result));
             } catch (IllegalArgumentException | IOException | JSONException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "mineral_area_analysis",
+                        "scope=" + (bounds == null ? "missing" : "bounds"), ex);
                 mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "mineral_area_analysis",
+                        "state=runtime_failure", ex);
                 mainHandler.post(() -> callback.onError("Selected-area mineral analysis failed safely."));
             }
         }, "rockmap-mineral-area-analysis").start();
@@ -133,20 +160,30 @@ public final class MineralIndexRepository {
 
     public void loadAreaEvidence(MineralSearchEngine.Bounds bounds, String mineralKey,
                                  AreaEvidenceCallback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("research", "mineral_area_evidence",
+                "mineral=" + printableQuery(mineralKey) + " scope=" + (bounds == null ? "missing" : "bounds"));
         new Thread(() -> {
             try {
                 List<MineralAreaAnalyzer.EvidencePoint> evidence =
                         MineralAreaAnalyzer.evidenceFor(loadRecords(), bounds, mineralKey);
+                WholeAppDiagnostics.success(diagnostic, "research", "mineral_area_evidence",
+                        "mineral=" + printableQuery(mineralKey) + " results=" + evidence.size());
                 mainHandler.post(() -> callback.onResult(evidence));
             } catch (IllegalArgumentException | IOException | JSONException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "mineral_area_evidence",
+                        "mineral=" + printableQuery(mineralKey), ex);
                 mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "mineral_area_evidence",
+                        "mineral=" + printableQuery(mineralKey) + " state=runtime_failure", ex);
                 mainHandler.post(() -> callback.onError("Mineral heatmap evidence lookup failed safely."));
             }
         }, "rockmap-mineral-area-heatmap").start();
     }
 
     public void loadHistoricMines(RecordListCallback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("research", "historic_mines_load",
+                "cachedRecords=" + cachedRecordCount);
         new Thread(() -> {
             try {
                 List<MineralRecord> records = loadRecords();
@@ -154,10 +191,14 @@ public final class MineralIndexRepository {
                 for (MineralRecord record : records) {
                     if (HistoricMineCatalog.isMineRecord(record)) mines.add(record);
                 }
+                WholeAppDiagnostics.success(diagnostic, "research", "historic_mines_load",
+                        "results=" + mines.size() + " sourceRecords=" + records.size());
                 mainHandler.post(() -> callback.onResult(mines));
             } catch (IOException | JSONException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "historic_mines_load", "state=load_failure", ex);
                 mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "historic_mines_load", "state=runtime_failure", ex);
                 mainHandler.post(() -> callback.onError("Historic mine overlay failed safely."));
             }
         }, "rockmap-historic-mine-load").start();
@@ -165,14 +206,21 @@ public final class MineralIndexRepository {
 
     public void findNearbyHistoricMineEvidence(MineralRecord origin, double maxMeters, int maxResults,
                                                NearbyEvidenceCallback callback) {
+        final long diagnostic = WholeAppDiagnostics.start("research", "nearby_mine_evidence",
+                "originId=" + (origin == null ? "null" : printableQuery(origin.id))
+                        + " maxMeters=" + maxMeters + " maxResults=" + maxResults);
         new Thread(() -> {
             try {
                 List<HistoricMineCatalog.NearbyEvidence> evidence =
                         HistoricMineCatalog.nearbyEvidence(loadRecords(), origin, maxMeters, maxResults);
+                WholeAppDiagnostics.success(diagnostic, "research", "nearby_mine_evidence",
+                        "results=" + evidence.size());
                 mainHandler.post(() -> callback.onResult(evidence));
             } catch (IOException | JSONException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "nearby_mine_evidence", "state=load_failure", ex);
                 mainHandler.post(() -> callback.onError(ex.getMessage()));
             } catch (RuntimeException ex) {
+                WholeAppDiagnostics.failure(diagnostic, "research", "nearby_mine_evidence", "state=runtime_failure", ex);
                 mainHandler.post(() -> callback.onError("Nearby mineral evidence lookup failed safely."));
             }
         }, "rockmap-historic-mine-nearby").start();
@@ -184,23 +232,37 @@ public final class MineralIndexRepository {
         File localityFile = dataManager.getActiveFile(LOCALITY_ID);
         File evidenceFile = dataManager.getActiveFile(EVIDENCE_ID);
         String pathKey = fileKey(mrdsFile) + "|" + fileKey(localityFile) + "|" + fileKey(evidenceFile);
-        if (cachedRecords != null && pathKey.equals(cachedPath)) return cachedRecords;
+        if (cachedRecords != null && pathKey.equals(cachedPath)) {
+            WholeAppDiagnostics.event("CACHE", "name=mineral_index state=hit records=" + cachedRecordCount);
+            return cachedRecords;
+        }
 
-        ArrayList<MineralRecord> records = new ArrayList<>();
-        Set<String> identities = new HashSet<>();
-        loadFile(mrdsFile, "mrds", records, identities);
-        int baseCount = records.size();
-        if (localityFile != null) loadFile(localityFile, "locality", records, identities);
-        int afterLocalities = records.size();
-        if (evidenceFile != null) loadFile(evidenceFile, "evidence", records, identities);
-        if (baseCount == 0) throw new JSONException("Mineral index contains no usable Colorado records.");
+        long diagnostic = WholeAppDiagnostics.start("storage", "mineral_index_load",
+                "mrdsBytes=" + mrdsFile.length() + " locality=" + (localityFile != null)
+                        + " evidence=" + (evidenceFile != null));
+        try {
+            ArrayList<MineralRecord> records = new ArrayList<>();
+            Set<String> identities = new HashSet<>();
+            loadFile(mrdsFile, "mrds", records, identities);
+            int baseCount = records.size();
+            if (localityFile != null) loadFile(localityFile, "locality", records, identities);
+            int afterLocalities = records.size();
+            if (evidenceFile != null) loadFile(evidenceFile, "evidence", records, identities);
+            if (baseCount == 0) throw new JSONException("Mineral index contains no usable Colorado records.");
 
-        cachedRecords = records;
-        cachedRecordCount = records.size();
-        cachedLocalityCount = Math.max(0, afterLocalities - baseCount);
-        cachedEvidenceCount = Math.max(0, records.size() - afterLocalities);
-        cachedPath = pathKey;
-        return records;
+            cachedRecords = records;
+            cachedRecordCount = records.size();
+            cachedLocalityCount = Math.max(0, afterLocalities - baseCount);
+            cachedEvidenceCount = Math.max(0, records.size() - afterLocalities);
+            cachedPath = pathKey;
+            WholeAppDiagnostics.success(diagnostic, "storage", "mineral_index_load",
+                    "records=" + cachedRecordCount + " base=" + baseCount
+                            + " localities=" + cachedLocalityCount + " evidence=" + cachedEvidenceCount);
+            return records;
+        } catch (IOException | JSONException | RuntimeException ex) {
+            WholeAppDiagnostics.failure(diagnostic, "storage", "mineral_index_load", "state=load_failed", ex);
+            throw ex;
+        }
     }
 
     private void loadFile(File file, String kind, List<MineralRecord> output,
@@ -210,6 +272,7 @@ public final class MineralIndexRepository {
         if (root.optInt("schema", 0) != 1) throw new JSONException("Unsupported mineral index schema.");
         JSONArray items = root.getJSONArray("records");
         boolean officialLocalities = "locality".equals(kind);
+        int before = output.size();
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.getJSONObject(i);
             double lat = item.getDouble("lat");
@@ -242,6 +305,8 @@ public final class MineralIndexRepository {
                     item.optString("source_reliability", ""),
                     item.optString("source_note", "")));
         }
+        WholeAppDiagnostics.event("DATASET_LOAD", "dataset=mineral_index kind=" + kind
+                + " compressedBytes=" + file.length() + " parsedRecords=" + (output.size() - before));
     }
 
     private static String compactSourceTitle(String sourceCode, String fallback) {
@@ -266,6 +331,12 @@ public final class MineralIndexRepository {
             }
             return output.toByteArray();
         }
+    }
+
+    private static String printableQuery(String query) {
+        if (query == null) return "";
+        String cleaned = query.replace('\n', ' ').replace('\r', ' ').trim();
+        return cleaned.length() <= 160 ? cleaned : cleaned.substring(0, 160) + "…";
     }
 
     private static String fileKey(File file) {
